@@ -1,0 +1,11 @@
+[package]
+name = "myous-pake"
+description = "SPAKE2 for myoushq pairing, recreatable from a stored seed"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# Magic Wormhole's SPAKE2 variant; compatible with python-spake2 and gospake2.
+spake2 = { version = "0.4", default-features = false }
+rand_chacha = { version = "0.3", default-features = false }

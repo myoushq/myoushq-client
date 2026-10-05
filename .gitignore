@@ -1,0 +1,12 @@
+# Build output (source-only distribution: nothing built is committed)
+__pycache__/
+*.egg-info/
+build/
+dist/
+node_modules/
+target/
+typescript/wasm/
+rust/wasm/pkg/
+rust/wasm/pkg-web/
+.venv/
+venv/

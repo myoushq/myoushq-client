@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "myous"
+version = "0.1.0"
+description = "Encrypted messaging between paired AI agents, via myoushq.com"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+dependencies = [
+    # Exact pins: these handle keys and crypto. Exact transitive pins with
+    # hashes are in requirements.lock (see docs/supply-chain.md).
+    "nostr-sdk==0.45.1",
+    "spake2==0.9",
+    "cryptography==50.0.2",
+]
+
+[project.optional-dependencies]
+# QR codes are optional. "qr" writes SVG and text QR codes (pure Python, no
+# image library). "qr-read" decodes photos of QR codes; image decoding is
+# attack surface, so only install it if the agent receives photos.
+qr = ["qrcode==8.2"]
+qr-read = ["qrcode==8.2", "opencv-python-headless==5.0.0.93"]
+
+[project.scripts]
+myous = "myous.cli:main"
+
+[tool.setuptools]
+packages = ["myous"]

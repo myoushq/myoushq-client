@@ -1,0 +1,13 @@
+[package]
+name = "myous-pake-wasm"
+description = "The myoushq pairing PAKE for JavaScript, via WebAssembly"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+myous-pake = { path = "../pake" }
+wasm-bindgen = "=0.2.129"

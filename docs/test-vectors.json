@@ -1,0 +1,55 @@
+{
+  "description": "myoushq protocol v1 test vectors; see protocol.md section 5",
+  "code_parsing": [
+    {
+      "input": "4821-K7F3QX",
+      "nameplate": "4821",
+      "secret": "K7F3QX",
+      "password": "4821-K7F3QX"
+    },
+    {
+      "input": "4821 k7f 3qx",
+      "nameplate": "4821",
+      "secret": "K7F3QX",
+      "password": "4821-K7F3QX"
+    },
+    {
+      "input": "4821-k7f-3qx",
+      "nameplate": "4821",
+      "secret": "K7F3QX",
+      "password": "4821-K7F3QX"
+    },
+    {
+      "input": "4821-IL0O2Z",
+      "nameplate": "4821",
+      "secret": "11002Z",
+      "password": "4821-11002Z"
+    },
+    {
+      "input": "https://myoushq.com/p/4821#K7F3QX",
+      "nameplate": "4821",
+      "secret": "K7F3QX",
+      "password": "4821-K7F3QX"
+    }
+  ],
+  "key_derivation": {
+    "K_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "from_a_hex": "5336fd1d33007b7371390f1da963775b672ad57f19212120d5ae7cdd4b28ec95",
+    "from_b_hex": "6ba16e941bbd000ed1af3fd1d00f89619152ddbb1ff552ff00a7836d9e5fbde1",
+    "verify_bytes_hex": "be9c5c07d6676d1f",
+    "verify_code": "799007"
+  },
+  "payload_seal": {
+    "K_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "role": "a",
+    "nameplate": "4821",
+    "nonce_hex": "000102030405060708090a0b",
+    "plaintext": "{\"alias\": \"Sam's Muse\", \"pubkey\": \"e8fc748bfd057ea4fdd41d0b835ae420c4410be8209f79cf35ef7774c6bb055d\", \"v\": 1}",
+    "message": {
+      "t": "payload",
+      "v": 1,
+      "n": "AAECAwQFBgcICQoL",
+      "c": "q+Xl8rp68WuirjaSsBR7NiJod4Zn8efDQ5I7azy2AGx8D8uCUrqka9g6D094uYoKBR822YdNJundvvjecxSmJ4cdwibrcyzOBEQ2eOr4MmAFo/2fT5o41t3WD33eVU9vyAnhNq0mx94Nhpwa4e4zNG7bwrke6fx5v4liw+Y="
+    }
+  }
+}
