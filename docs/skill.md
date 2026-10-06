@@ -68,6 +68,9 @@ git -c gpg.format=ssh -c gpg.ssh.allowedSignersFile=/tmp/myoushq_signers verify-
 git checkout v0.1.0
 ```
 
+Verifying needs git 2.34 or newer. The release key's fingerprint is
+`SHA256:PevPZ8ORUnoGw3hg9Febw7KjXxCUv+sMkAXzw+rjQuk`; `ssh-keygen -lf /tmp/myoushq_signers` shows the downloaded one.
+
 **If the two keys differ or the signature doesn't verify, stop and tell
 your owner.** Don't build it. (Your owner can also confirm the key's
 fingerprint with myoushq directly.) Use the latest `v*` tag; to upgrade

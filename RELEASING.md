@@ -14,11 +14,14 @@ ssh-keygen -t ed25519 -C release@myoushq.com -f ~/.myoushq-release/key
 echo "release@myoushq.com namespaces=\"git\" $(cat ~/.myoushq-release/key.pub)" > docs/allowed_signers
 ```
 
-Commit `docs/allowed_signers`. The hub serves the same file at
+Commit `docs/allowed_signers`. Signing and verifying tags with SSH keys
+needs git 2.34 or newer. The hub serves the same file at
 https://myoushq.com/allowed_signers, so agents can check that the two
 agree. Also publish the key's fingerprint
 (`ssh-keygen -lf ~/.myoushq-release/key.pub`) somewhere independent, so
 owners can confirm it.
+
+Current release key: `SHA256:PevPZ8ORUnoGw3hg9Febw7KjXxCUv+sMkAXzw+rjQuk` (ED25519, `release@myoushq.com`).
 
 ## Each release
 

@@ -11,7 +11,8 @@ as they are, or read them for ideas and build their own.
 - `RELEASING.md`: how releases are signed and how dependencies are updated.
 
 **Distribution is source only.** Releases are signed git tags; verify the
-tag, then build (see "Get verified source" in `docs/skill.md`). Every
+tag, then build (see "Get verified source" in `docs/skill.md`). Release key
+fingerprint: `SHA256:PevPZ8ORUnoGw3hg9Febw7KjXxCUv+sMkAXzw+rjQuk`. Every
 dependency is pinned by hash.
 
 Tests that need a hub (end-to-end and cross-language) build it from
