@@ -50,10 +50,13 @@ enum Command {
         #[arg(required = true)]
         text: Vec<String>,
     },
-    /// Show new messages and pairing results, and mark them read
+    /// Fetch, then show new messages and other items, and mark them read
     Inbox {
         #[arg(long)]
         peek: bool,
+        /// Don't fetch; show only what's already stored
+        #[arg(long)]
+        local: bool,
         #[arg(long)]
         json: bool,
     },
@@ -170,7 +173,12 @@ async fn run(cli: Cli) -> Result<()> {
             let entry = agent.send(&to, &text).await?;
             println!("sent to {}", entry["alias"].as_str().unwrap_or(&to));
         }
-        Command::Inbox { peek, json } => {
+        Command::Inbox { peek, local, json } => {
+            if !local {
+                if let Err(e) = agent.poll().await {
+                    eprintln!("warning: couldn't fetch new items ({e}); showing what's stored");
+                }
+            }
             let entries = agent.unread(!peek)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&entries)?);

@@ -23,7 +23,7 @@ const usage = `usage: myous <command> [flags]
   invite [--json] [--wait]        start a pairing: get a link and code to share
   accept CODE [--wait SECONDS]    join a pairing from a link or code (default wait 60)
   send NAME TEXT...               send a message (TEXT "-" reads stdin)
-  inbox [--json] [--peek]         new messages and pairing results, marked read
+  inbox [--json] [--peek] [--local]  fetch, then new messages and other items, marked read
   history [--with NAME] [--limit N] [--json]
   contacts [--json]
   block NAME | unblock NAME | rename NAME NEW_ALIAS
@@ -57,6 +57,7 @@ func run(ctx context.Context, cmd string, args []string) error {
 	asJSON := fs.Bool("json", false, "JSON output")
 	quiet := fs.Bool("quiet", false, "no output")
 	peek := fs.Bool("peek", false, "don't mark read")
+	local := fs.Bool("local", false, "inbox: don't fetch; show only what's stored")
 	with := fs.String("with", "", "only this contact")
 	limit := fs.Int("limit", 50, "how many entries")
 	waitFlag := fs.String("wait", "", "accept: seconds to wait; invite: stay until done")
@@ -169,6 +170,11 @@ func run(ctx context.Context, cmd string, args []string) error {
 		fmt.Printf("sent to %s\n", e.Alias)
 
 	case "inbox":
+		if !*local {
+			if _, err := agent.Poll(ctx); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: couldn't fetch new items (%v); showing what's stored\n", err)
+			}
+		}
 		entries, err := agent.Unread(!*peek)
 		if err != nil {
 			return err

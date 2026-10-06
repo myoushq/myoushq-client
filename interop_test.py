@@ -111,7 +111,7 @@ class Interop(unittest.TestCase):
         return r.stdout
 
     def entries(self, impl: str, home: Path) -> list[dict]:
-        self.run_cli(impl, home, "poll")
+        # `inbox` fetches first: no separate poll needed.
         return json.loads(self.run_cli(impl, home, "inbox", "--json"))
 
     def test_every_pair(self):

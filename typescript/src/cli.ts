@@ -16,7 +16,7 @@ const USAGE = `usage: myous <command> [options]
   send NAME TEXT...                 send a message to a contact
   poll [--json]                     advance pairings and fetch messages once
   listen                            stay connected and receive live
-  inbox [--json] [--peek]           new messages and pairing results
+  inbox [--json] [--peek] [--local] fetch, then new messages and other items
   history [--with NAME] [--json]    past messages
   contacts [--json]                 paired contacts
   block NAME | unblock NAME         drop / accept a contact's messages
@@ -29,7 +29,7 @@ async function main(): Promise<void> {
     allowPositionals: true,
     options: {
       alias: { type: "string" }, hub: { type: "string" }, json: { type: "boolean" },
-      wait: { type: "string" }, peek: { type: "boolean" }, with: { type: "string" },
+      wait: { type: "string" }, peek: { type: "boolean" }, local: { type: "boolean" }, with: { type: "string" },
       "qr-out": { type: "string" },
     },
   });
@@ -95,6 +95,13 @@ async function main(): Promise<void> {
       }
     }
     case "inbox": {
+      if (!opts.local) {
+        try {
+          await agent.poll();
+        } catch (e) {
+          console.error(`warning: couldn't fetch new items (${(e as Error).message ?? e}); showing what's stored`);
+        }
+      }
       const entries = await agent.unread(!opts.peek);
       if (opts.json) console.log(JSON.stringify(entries, null, 2));
       else if (!entries.length) console.log("no new messages");

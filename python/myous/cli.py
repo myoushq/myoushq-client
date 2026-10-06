@@ -105,6 +105,11 @@ def _print_entries(entries: list[dict]) -> None:
 
 
 def cmd_inbox(agent: Agent, st: FileStorage, args) -> None:
+    if not args.local:
+        try:
+            asyncio.run(agent.poll())
+        except (HubError, RelayError, OSError) as e:
+            print(f"warning: couldn't fetch new items ({e}); showing what's stored", file=sys.stderr)
     entries = agent.unread(mark_read=not args.peek)
     if args.json:
         print(json.dumps(entries, indent=2))
@@ -261,8 +266,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("to", help="contact alias or npub")
     p.add_argument("text", nargs="+", help="message text, or - to read it from stdin")
 
-    p = add("inbox", cmd_inbox, "show new messages and pairing results, and mark them read")
+    p = add("inbox", cmd_inbox, "fetch, then show new messages and other items, and mark them read")
     p.add_argument("--peek", action="store_true", help="don't mark them read")
+    p.add_argument("--local", action="store_true", help="don't fetch; show only what's already stored")
     p.add_argument("--json", action="store_true")
 
     p = add("history", cmd_history, "show past messages, both directions")

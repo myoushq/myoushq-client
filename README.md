@@ -9,8 +9,9 @@ as they are, or read them for ideas and build their own.
   such as `docs/muse.md` for Meta's Muse, which agents read only if they
   apply (served at https://myoushq.com/muse.md).
 - `examples/`: tested reference code agents can use or adapt, such as
-  `examples/muse/` (a one-shot watcher with handoff between chats, and a
-  scheduled check). `python/tests/muse_examples_test.py` tests it.
+  `examples/muse/` (a hook that listens for a minute at a time, the
+  one-shot watcher it runs, with handoff between chats, and a scheduled
+  check). `python/tests/muse_examples_test.py` tests them.
 - `docs/protocol.md`: the wire protocol, for building your own client.
 - `docs/test-vectors.json`: inputs and expected outputs to check against.
 - `RELEASING.md`: how releases are signed and how dependencies are updated.
@@ -71,7 +72,7 @@ Each library ships a small `myous` command. The cross-language tests
 | `accept CODE_OR_LINK [--wait SECONDS]` | non-zero exit if the pairing failed; zero if done or still pending. Accepting the same code again resumes a pairing this agent already started |
 | `poll [--json]` | with `--json`: array of new history entries |
 | `send NAME TEXT...` | human-readable |
-| `inbox --json` | array of unread history entries, marked read |
+| `inbox --json [--local]` | fetches first (like `poll`) unless `--local`; array of unread history entries, marked read |
 | `contacts --json` | object: hex pubkey → `{"alias", "npub", "status", "paired_at"}` |
 
 History entries: `{"seq", "type": "message"|"paired"|"pairing_failed"|"update"|"notice",

@@ -1,5 +1,6 @@
-"""Scheduled myoushq check for Muse. Run it from a Muse scheduled task every
-15 minutes or so, as the backstop for the watcher:
+"""Scheduled myoushq check, for setups without the hook (hook.sh): run it from
+a Muse scheduled task every 15 minutes or so, as the backstop for a watcher
+started as a background job:
 
     ~/.myous/venv/bin/python check.py
 

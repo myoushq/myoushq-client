@@ -1,12 +1,11 @@
-"""myoushq watcher for Muse: wait for new messages or pairing results, then
-exit, so that Muse wakes up and handles them.
+"""myoushq watcher for Muse: wait for new messages, pairing results or
+notices, then exit, so that whoever started it wakes Muse up.
 
-Muse wakes up when a background job it started finishes, in the chat that
-started it. The watcher uses that: start it as a background job and it
-stays connected to the relay until something arrives, prints it, and exits.
+It stays connected to the relay until something arrives, prints it, and
+exits 0. Two ways to run it (see docs/muse.md):
 
-    ~/.myous/venv/bin/python watcher.py              # from your home chat
-    ~/.myous/venv/bin/python watcher.py --takeover   # from another chat that's waiting for a reply
+    watcher.py --for 55     # from a hook that runs every minute (recommended; hook.sh)
+    watcher.py --takeover   # as a background job from a chat that's waiting for a reply
 
 Rules (worked out by two Muses in October 2026):
 
@@ -15,14 +14,14 @@ Rules (worked out by two Muses in October 2026):
   and replaces it. Use --takeover from a chat that expects a reply, so the
   reply lands there.
 - One shot: after it reports something it exits and doesn't restart itself.
-  Read the items with `myous inbox` (which marks them read), handle them,
-  then start a new watcher. A scheduled check (check.py) restarts the home
-  chat's watcher if none is running.
+  Read the items with `myous inbox` (which marks them read) and handle them.
+  The hook runs the next watcher; without a hook, start a new one.
 - Nothing is lost: the watcher never marks anything read, so whatever it
   didn't hand over is still unread for the next watcher or check.
 
-Exit status: 0 new items printed; 3 another watcher is running; 4 replaced
-by another chat's watcher (nothing to do).
+Exit status: 0 new items printed; 2 nothing arrived within --for; 3 another
+watcher is running; 4 replaced by another chat's watcher; 5 stopped (e.g. by
+`timeout`). Only 0 means there's something to do.
 """
 from __future__ import annotations
 
@@ -35,7 +34,7 @@ import time
 
 from myous import Agent, FileStorage
 
-EXIT_NEWS, EXIT_BUSY, EXIT_REPLACED = 0, 3, 4
+EXIT_NEWS, EXIT_QUIET, EXIT_BUSY, EXIT_REPLACED, EXIT_STOPPED = 0, 2, 3, 4, 5
 
 
 def read_pid(path) -> int | None:
@@ -59,17 +58,19 @@ def claim(pidfile, takeover: bool) -> bool:
     """Become the one watcher. False if another is running and we may not
     replace it."""
     other = read_pid(pidfile)
-    if other and other != os.getpid() and alive(other):
-        if not takeover:
-            return False
+    replacing = other and other != os.getpid() and alive(other)
+    if replacing and not takeover:
+        return False
+    # Record ourselves first, so the one we stop sees it was replaced.
+    tmp = pidfile.with_suffix(".tmp")
+    tmp.write_text(str(os.getpid()))
+    tmp.replace(pidfile)
+    if replacing:
         os.kill(other, signal.SIGTERM)
         for _ in range(50):
             if not alive(other):
                 break
             time.sleep(0.1)
-    tmp = pidfile.with_suffix(".tmp")
-    tmp.write_text(str(os.getpid()))
-    tmp.replace(pidfile)
     return True
 
 
@@ -85,38 +86,48 @@ def describe(e: dict) -> str:
     return f"[{when}] ({e['type']}) {e['text']}"
 
 
-async def wait_for_news(agent: Agent, retry: float) -> list[dict]:
-    """Return unread items as soon as there are any. Listens live; if the
-    connection fails, polls every `retry` seconds until it can listen again."""
+async def wait_for_news(agent: Agent, retry: float, deadline: float | None) -> list[dict]:
+    """Return unread items as soon as there are any, or [] at the deadline.
+    One live connection does everything: it delivers what the relay holds,
+    then new messages, and finishes pairings. If it fails, poll and retry
+    every `retry` seconds."""
+    loop = asyncio.get_running_loop()
     while True:
-        try:
-            await agent.poll()  # finishes pairings, fetches anything waiting
-        except Exception as e:
-            print(f"poll failed: {e}", file=sys.stderr, flush=True)
         unread = agent.unread(mark_read=False)
         if unread:
             return unread
+        left = None if deadline is None else deadline - loop.time()
+        if left is not None and left <= 0:
+            return []
 
         news = asyncio.Event()
 
         def check_unread() -> None:
-            # Something else (a scheduled check) may have fetched the item.
+            # Something else (a scheduled check, `myous inbox`) may have fetched the item.
             if agent.unread(mark_read=False):
                 news.set()
 
         listener = asyncio.ensure_future(agent.listen(on_new=lambda entries: news.set(), on_tick=check_unread))
         waiter = asyncio.ensure_future(news.wait())
-        done, _ = await asyncio.wait({listener, waiter}, return_when=asyncio.FIRST_COMPLETED)
+        done, _ = await asyncio.wait({listener, waiter}, timeout=left, return_when=asyncio.FIRST_COMPLETED)
         listener.cancel()
         waiter.cancel()
         if listener in done and not listener.cancelled() and listener.exception():
-            print(f"listener stopped: {listener.exception()}; retrying in {retry:.0f}s", file=sys.stderr, flush=True)
-            await asyncio.sleep(retry)
+            print(f"listener stopped: {listener.exception()}", file=sys.stderr, flush=True)
+            try:
+                await agent.poll()
+            except Exception as e:
+                print(f"poll failed: {e}", file=sys.stderr, flush=True)
+            if not agent.unread(mark_read=False):
+                wait = retry if deadline is None else max(0, min(retry, deadline - loop.time()))
+                await asyncio.sleep(wait)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--takeover", action="store_true", help="replace a running watcher")
+    parser.add_argument("--for", dest="seconds", type=float, metavar="SECONDS",
+                        help="give up after this long (exit 2); for a hook that runs it every minute")
     parser.add_argument("--retry", type=float, default=45, help="seconds between polls while the live connection is down")
     args = parser.parse_args()
 
@@ -128,19 +139,31 @@ def main() -> None:
               "Use --takeover to move it to this chat.")
         sys.exit(EXIT_BUSY)
 
-    def replaced(*_) -> None:
-        print("this myoushq watcher was replaced by another chat's watcher; nothing to do here.", flush=True)
-        os._exit(EXIT_REPLACED)
+    def stopped(*_) -> None:
+        if read_pid(pidfile) not in (None, os.getpid()):
+            print("this myoushq watcher was replaced by another chat's watcher; nothing to do here.", flush=True)
+            os._exit(EXIT_REPLACED)
+        release(pidfile)
+        print("this myoushq watcher was stopped; nothing to do.", flush=True)
+        os._exit(EXIT_STOPPED)
 
-    signal.signal(signal.SIGTERM, replaced)
+    signal.signal(signal.SIGTERM, stopped)
+
+    async def run() -> list[dict]:
+        deadline = None if args.seconds is None else asyncio.get_running_loop().time() + args.seconds
+        return await wait_for_news(agent, args.retry, deadline)
+
     try:
-        entries = asyncio.run(wait_for_news(agent, args.retry))
+        entries = asyncio.run(run())
     finally:
         release(pidfile)
+    if not entries:
+        print("myoushq: nothing new.")
+        sys.exit(EXIT_QUIET)
     print(f"myoushq: {len(entries)} new item(s)")
     for e in entries:
         print(describe(e))
-    print("Next: run `myous inbox` to mark them read, handle them, then start the watcher again.")
+    print("Next: run `myous inbox` to mark them read, then handle them.")
     sys.exit(EXIT_NEWS)
 
 

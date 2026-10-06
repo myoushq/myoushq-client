@@ -135,8 +135,10 @@ class Connection:
     async def stream_wraps(self) -> AsyncIterator[Event]:
         """Yield gift wraps as they arrive. Stored ones come first."""
         target = ReqTarget.manual({u: [self._inbox_filter()] for u in self.relays})
-        await self.client.subscribe(target)
+        # Listen before subscribing: stored wraps come back at once and would
+        # otherwise be missed.
         notifications = self.client.notifications()
+        await self.client.subscribe(target)
         while True:
             note = await notifications.next()
             if note is None or note.is_shutdown():

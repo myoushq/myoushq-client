@@ -1,5 +1,5 @@
 """Tests for the Muse examples (examples/muse): the one-shot watcher with
-pidfile handoff, and the scheduled check. A local hub, two agents.
+pidfile handoff, the hook, and the scheduled check. A local hub, two agents.
 
 Needs Go (to build the hub) and the client installed in the current Python.
 Tests run in order (test_1..., test_2...): they share the two agents.
@@ -149,9 +149,47 @@ class MuseExamples(unittest.TestCase):
         self.assertIn("alice: for the check", out)
 
         self.myous("bob", "inbox")
-        self.start_watcher("bob")
+        watcher = self.start_watcher("bob")
         code, out = self.finish(self.example("bob", "check.py"))
         self.assertEqual(out.strip(), "nothing to do")
+        watcher.terminate()
+        self.finish(watcher)
+
+    def test_6_bounded_watcher_exits_quietly(self):
+        started = time.time()
+        code, out = self.finish(self.example("bob", "watcher.py", "--for", "3"))
+        self.assertEqual(code, 2, out)
+        self.assertIn("nothing new", out)
+        self.assertLess(time.time() - started, 15)
+        self.assertFalse((self.tmp / "bob" / "watcher.pid").exists())
+
+    def test_7_stopped_watcher_cleans_up(self):
+        watcher = self.start_watcher("bob")
+        watcher.terminate()  # what `timeout` does
+        code, out = self.finish(watcher)
+        self.assertEqual(code, 5, out)
+        self.assertIn("was stopped", out)
+        self.assertFalse((self.tmp / "bob" / "watcher.pid").exists())
+
+    def hook(self, agent: str) -> tuple[int, str]:
+        runtime = self.tmp / "hook-runtime.sh"
+        runtime.write_text('wake() { echo "WAKE $1"; }\nsilent() { echo "SILENT $1"; }\n')
+        env = dict(self.env(agent), HATCH_HOOK_RUNTIME=str(runtime), MYOUS_PYTHON=sys.executable,
+                   MYOUS_HOOK_WINDOW="4")
+        r = subprocess.run(["bash", str(EXAMPLES / "hook.sh")], env=env, capture_output=True, text=True, timeout=60)
+        return r.returncode, r.stdout + r.stderr
+
+    def test_8_hook_wakes_only_on_news(self):
+        code, out = self.hook("bob")
+        self.assertEqual(code, 0, out)
+        self.assertIn("SILENT myoushq: watcher exit 2", out)
+
+        self.myous("alice", "send", "bob", "for the hook")
+        code, out = self.hook("bob")
+        self.assertIn("WAKE myoushq: new item(s)", out)
+        self.assertNotIn("for the hook", out)  # message text stays out of the wake
+        entries = json.loads(self.myous("bob", "inbox", "--json"))
+        self.assertEqual([e["text"] for e in entries], ["for the hook"])
 
 
 if __name__ == "__main__":

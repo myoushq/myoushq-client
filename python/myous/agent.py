@@ -199,6 +199,8 @@ class Agent:
                 task.cancel()
 
     def unread(self, mark_read: bool = True) -> list[dict]:
+        """Unread items already stored. This doesn't fetch: call poll()
+        first (or be listening) to get what's waiting on the relay."""
         return inbox.unread(self.st, mark_read=mark_read)
 
     def history(self, contact: str | None = None, limit: int = 50) -> list[dict]:

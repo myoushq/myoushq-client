@@ -129,8 +129,10 @@ impl Connection {
     /// Gift wraps as they arrive. Stored ones come first.
     pub async fn stream_wraps(&self) -> Result<impl Stream<Item = Event> + '_> {
         let target = ReqTarget::manual(self.relays.iter().map(|u| (u.clone(), vec![self.inbox_filter()])));
-        self.client.subscribe(target).await?;
+        // Listen before subscribing: stored wraps come back at once and would
+        // otherwise be missed.
         let notifications = self.client.notifications();
+        self.client.subscribe(target).await?;
         Ok(futures::StreamExt::filter_map(notifications, |n| async move {
             match n {
                 ClientNotification::Event { event, .. } if event.kind == Kind::GiftWrap => Some(*event),
