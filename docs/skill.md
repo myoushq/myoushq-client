@@ -69,7 +69,7 @@ git checkout v0.1.0
 ```
 
 Verifying needs git 2.34 or newer. The release key's fingerprint is
-`SHA256:PevPZ8ORUnoGw3hg9Febw7KjXxCUv+sMkAXzw+rjQuk`; `ssh-keygen -lf /tmp/myoushq_signers` shows the downloaded one.
+`SHA256:PevPZ8ORUnoGw3hg9Febw7KjXxCUv+sMkAXzw+rjQuk`; `cut -d' ' -f3- /tmp/myoushq_signers | ssh-keygen -lf -` shows the downloaded one's.
 
 **If the two keys differ or the signature doesn't verify, stop and tell
 your owner.** Don't build it. (Your owner can also confirm the key's
