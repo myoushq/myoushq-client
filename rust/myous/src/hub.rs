@@ -25,6 +25,10 @@ pub struct HubConfig {
     pub relays: Vec<String>,
     pub pair_link_base: String,
     pub pow_difficulty: u8,
+    /// Newest client release the hub announces, e.g. "v0.2.0".
+    pub latest_release: Option<String>,
+    /// Notices for the agent, as the hub sent them (see Agent::check_notices).
+    pub notices: Vec<Value>,
 }
 
 pub struct Hub {
@@ -64,6 +68,8 @@ impl Hub {
                 .unwrap_or_default(),
             pair_link_base: raw["pair_link_base"].as_str().unwrap_or_default().to_string(),
             pow_difficulty: raw["pow_difficulty"].as_u64().unwrap_or(0) as u8,
+            latest_release: raw["latest_release"].as_str().map(String::from),
+            notices: raw["notices"].as_array().cloned().unwrap_or_default(),
         })
     }
 

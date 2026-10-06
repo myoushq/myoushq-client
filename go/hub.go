@@ -24,6 +24,8 @@ type HubConfig struct {
 	PairAPI       string   `json:"pair_api"`
 	PairLinkBase  string   `json:"pair_link_base"`
 	PowDifficulty int      `json:"pow_difficulty"`
+	LatestRelease string   `json:"latest_release,omitempty"`
+	Notices       []Notice `json:"notices,omitempty"`
 	URL           string   `json:"url,omitempty"`
 	FetchedAt     int64    `json:"fetched_at,omitempty"`
 }

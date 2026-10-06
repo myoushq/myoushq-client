@@ -301,6 +301,7 @@ func (a *Agent) Poll(ctx context.Context) ([]Entry, error) {
 		return nil, err
 	}
 	a.AdvancePairings(ctx)
+	a.checkNotices(ctx)
 	conn, err := a.connect(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -357,6 +358,7 @@ func (a *Agent) Listen(ctx context.Context, onNew func([]Entry), onTick func(), 
 			before, err := a.nextSeq()
 			if err == nil {
 				a.AdvancePairings(ctx)
+				a.checkNotices(ctx)
 				if entries, err := a.entriesSince(before); err == nil {
 					notify(entries)
 				}

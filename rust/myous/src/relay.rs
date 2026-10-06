@@ -22,12 +22,27 @@ pub struct Connection {
     pub client: Client,
     keys: Keys,
     relays: Vec<RelayUrl>,
+    proxy_bridge: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl Drop for Connection {
+    fn drop(&mut self) {
+        if let Some(task) = &self.proxy_bridge {
+            task.abort();
+        }
+    }
 }
 
 impl Connection {
     pub async fn open(keys: &Keys, relays: &[String]) -> Result<Self> {
         // Answers the relay's NIP-42 challenge by signing with our key.
-        let client = Client::builder().authenticator(SignerAuthenticator::new(keys.clone())).build();
+        let mut builder = Client::builder().authenticator(SignerAuthenticator::new(keys.clone()));
+        let mut proxy_bridge = None;
+        if let Some((addr, task)) = crate::proxy::relay_proxy(relays).await? {
+            builder = builder.proxy(Proxy::all(addr));
+            proxy_bridge = task;
+        }
+        let client = builder.build();
         let mut urls = vec![];
         for r in relays {
             let url = RelayUrl::parse(r)?;
@@ -35,7 +50,7 @@ impl Connection {
             urls.push(url);
         }
         client.connect().and_wait(TIMEOUT).await;
-        Ok(Self { client, keys: keys.clone(), relays: urls })
+        Ok(Self { client, keys: keys.clone(), relays: urls, proxy_bridge })
     }
 
     pub async fn close(self) {

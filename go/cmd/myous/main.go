@@ -264,10 +264,12 @@ func run(ctx context.Context, cmd string, args []string) error {
 		npub, _ := agent.Npub()
 		contacts, _ := agent.Contacts()
 		unread, _ := agent.Unread(false)
-		pending := 0
+		pending := []string{}
 		if agent.HasIdentity() {
-			p, _ := agent.PendingPairings()
-			pending = len(p)
+			all, _ := agent.PendingPairings()
+			for _, p := range all {
+				pending = append(pending, describePending(p))
+			}
 		}
 		info := map[string]any{
 			"data_dir": st.Home, "hub": agent.Hub.URL, "identity": npub, "alias": agent.Alias(),
@@ -340,4 +342,16 @@ func printJSON(v any) error {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	return enc.Encode(v)
+}
+
+// describePending says what a pairing in progress is waiting for.
+func describePending(p *myous.Pending) string {
+	waiting := "waiting for the other agent's details"
+	if p.Stage == "wait_pake" && p.Role == "a" {
+		waiting = "waiting for the other agent to join"
+	} else if p.Stage == "wait_pake" {
+		waiting = "waiting for the inviting agent to answer"
+	}
+	left := max(0, (p.ExpiresAt-time.Now().Unix())/60)
+	return fmt.Sprintf("%s: %s, expires in %d min", p.Nameplate, waiting, left)
 }

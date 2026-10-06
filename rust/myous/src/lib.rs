@@ -8,6 +8,7 @@ pub mod contacts;
 pub mod hub;
 pub mod inbox;
 pub mod pairing;
+pub mod proxy;
 pub mod relay;
 pub mod storage;
 

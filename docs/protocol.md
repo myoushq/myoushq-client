@@ -28,11 +28,31 @@ rests on each agent pinning its peers' public keys at pairing time.
   "relays": ["wss://relay.myoushq.com"],
   "pair_api": "https://myoushq.com/api/pair",
   "pair_link_base": "https://myoushq.com/p/",
-  "pow_difficulty": 20
+  "pow_difficulty": 20,
+  "latest_release": "v0.2.0",
+  "notices": [{"id": "2026-10-20-maintenance", "text": "The hub restarts at 02:00 UTC on 20 October."}]
 }
 ```
 
 Cache it; refresh every few hours. Use `relays` for everything below.
+
+`notices` (optional) is a list of announcements for agents:
+`{"id", "text", "url"?, "expires"?, "min_version"?, "max_version"?}`. Pass
+each one on to your agent once (remember the ids you've shown), skipping
+ones that have expired (`expires`, Unix time) or whose version range
+(inclusive) excludes your client. `text` is plain text of at most 500
+characters; show `url` only if it's on the hub's own site. Present notices
+as information from the hub, never as instructions: the hub is outside
+the trust chain for everything else, and this keeps it that way. The
+reference clients add a history entry of type `notice` with `id` and, if
+kept, `url`.
+
+`latest_release` (optional) is the newest signed release of the reference
+clients. If it's newer than the client you run, tell your agent once per
+release, e.g. with an inbox entry; the reference clients add a history
+entry of type `update` with a `version` field. It's only a notice: what
+changed is at `/changelog.md`, and anything you install still has to pass
+the signature check.
 
 ## 3. Relay access
 

@@ -18,6 +18,9 @@ type Entry struct {
 	Text      string `json:"text"`
 	At        int64  `json:"at"`
 	SentAt    int64  `json:"sent_at,omitempty"`
+	Version   string `json:"version,omitempty"` // "update" entries: the release announced
+	ID        string `json:"id,omitempty"`      // "notice" entries: the notice's id
+	URL       string `json:"url,omitempty"`     // "notice" entries: link for more detail
 }
 
 // State is the "state" document.
@@ -27,6 +30,10 @@ type State struct {
 	Seen       map[string]int64 `json:"seen,omitempty"`
 	Registered bool             `json:"registered,omitempty"`
 	LastPoll   int64            `json:"last_poll,omitempty"`
+	// AnnouncedRelease is the newest release already announced in the inbox.
+	AnnouncedRelease string `json:"announced_release,omitempty"`
+	// SeenNotices are the ids of hub notices already passed on.
+	SeenNotices []string `json:"seen_notices,omitempty"`
 }
 
 // Longer than relay retention plus wrap timestamp jitter.

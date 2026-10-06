@@ -28,6 +28,9 @@ use crate::hub::Hub;
 use crate::pairing::{Invite, Outcome, Pairing, Pending};
 use crate::relay::Connection;
 use crate::storage::Storage;
+
+/// This client's release.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 use crate::{inbox, now};
 
 #[derive(Debug, thiserror::Error)]
@@ -178,11 +181,70 @@ impl Agent {
         }))
     }
 
+    /// Pass on what the hub announces, once each: a newer client release (an
+    /// "update" entry) and notices (a "notice" entry each). Both are
+    /// information only; what to do about them is up to the agent.
+    pub async fn check_notices(&self) {
+        let Ok(cfg) = self.hub.config(false).await else { return };
+        let latest = cfg.latest_release.filter(|l| newer(l, VERSION));
+        let notices: Vec<&Value> = cfg.notices.iter().filter(|n| notice_applies(n)).collect();
+        if latest.is_none() && notices.is_empty() {
+            return;
+        }
+        let Ok(_lock) = self.storage.lock("state", true) else { return };
+        let Ok(mut state) = inbox::state(&*self.storage) else { return };
+        let url = &self.hub.url;
+        let mut entries = vec![];
+        if let Some(latest) = latest {
+            if state.get("announced_release").and_then(Value::as_str) != Some(latest.as_str()) {
+                state.insert("announced_release".into(), json!(latest));
+                entries.push(json!({
+                    "type": "update", "version": latest,
+                    "text": format!("myous {latest} is available (this client is v{VERSION}). Consider upgrading: get \
+                        the release, verify its signature and build it as in {url}/skill.md. What changed: {url}/changelog.md"),
+                }));
+            }
+        }
+        let mut seen: Vec<Value> = state.get("seen_notices").and_then(Value::as_array).cloned().unwrap_or_default();
+        let hub = url::Url::parse(url).ok();
+        let host = hub.as_ref().map(|h| h.authority().to_string()).unwrap_or_default();
+        for n in notices {
+            let id = n["id"].as_str().unwrap_or_default();
+            if seen.iter().any(|s| s == id) {
+                continue;
+            }
+            seen.push(json!(id));
+            let text: String = n["text"].as_str().unwrap_or_default().chars().filter(|c| !c.is_control()).take(500).collect();
+            let mut entry = json!({"type": "notice", "id": id, "text": format!("Notice from {host}: {text}")});
+            if let (Some(link), Some(hub)) = (n["url"].as_str(), &hub) {
+                if let Ok(u) = url::Url::parse(link) {
+                    if u.scheme() == hub.scheme() && u.authority() == hub.authority() {
+                        entry["url"] = json!(link);
+                        entry["text"] = json!(format!("Notice from {host}: {text} (more: {link})"));
+                    }
+                }
+            }
+            entries.push(entry);
+        }
+        if entries.is_empty() {
+            return;
+        }
+        let keep = seen.len().saturating_sub(200);
+        state.insert("seen_notices".into(), Value::Array(seen.split_off(keep)));
+        if inbox::save_state(&*self.storage, state).is_err() {
+            return;
+        }
+        for entry in entries {
+            let _ = inbox::record(&*self.storage, entry);
+        }
+    }
+
     /// Advance pairings and fetch waiting messages, once. Returns new
     /// history entries (messages and pairing results).
     pub async fn poll(&self) -> Result<Vec<Value>> {
         let before = self.next_seq()?;
         self.advance_pairings().await?;
+        self.check_notices().await;
         let conn = self.connect().await?;
         let wraps = conn.fetch_wraps().await;
         conn.close().await;
@@ -221,13 +283,14 @@ impl Agent {
                     }
                 }
                 _ = steps.tick() => {
+                    let before = self.next_seq()?;
+                    self.check_notices().await;
                     if !self.pending_pairings()?.is_empty() {
-                        let before = self.next_seq()?;
                         self.advance_pairings().await?;
-                        let new = self.entries_since(before)?;
-                        if !new.is_empty() {
-                            on_new(new);
-                        }
+                    }
+                    let new = self.entries_since(before)?;
+                    if !new.is_empty() {
+                        on_new(new);
                     }
                     down_for = if conn.connected().await { Duration::ZERO } else { down_for + STEP };
                     if down_for > Duration::from_secs(120) {
@@ -300,4 +363,33 @@ impl Agent {
             .filter(|e| e["seq"].as_u64().unwrap_or(0) >= seq && e["direction"] != "out")
             .collect())
     }
+}
+
+/// Whether release tag `a` ("v1.2.3") is newer than version `b` ("1.2.0").
+fn newer(a: &str, b: &str) -> bool {
+    let parse = |v: &str| -> Option<Vec<u64>> {
+        let parts: Vec<u64> = v.trim().trim_start_matches('v').split('.').map(|p| p.parse().ok()).collect::<Option<_>>()?;
+        (parts.len() == 3).then_some(parts)
+    };
+    matches!((parse(a), parse(b)), (Some(x), Some(y)) if x > y)
+}
+
+/// Whether a notice from the hub is well-formed, current, and meant for this
+/// client's version.
+fn notice_applies(n: &Value) -> bool {
+    let has_text = n["text"].as_str().is_some_and(|t| !t.trim().is_empty());
+    if n["id"].as_str().is_none_or(str::is_empty) || !has_text {
+        return false;
+    }
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    if n["expires"].as_u64().is_some_and(|e| e <= now) {
+        return false;
+    }
+    if n["min_version"].as_str().is_some_and(|v| newer(v, VERSION)) {
+        return false;
+    }
+    if n["max_version"].as_str().is_some_and(|v| newer(VERSION, v)) {
+        return false;
+    }
+    true
 }

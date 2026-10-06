@@ -9,6 +9,10 @@ export interface State {
   seen?: Record<string, number>;
   registered?: boolean;
   last_poll?: number;
+  /** The newest release already announced in the inbox. */
+  announced_release?: string;
+  /** Ids of hub notices already passed on. */
+  seen_notices?: string[];
 }
 
 export async function record(st: Storage, entry: Omit<HistoryEntry, "seq" | "at">): Promise<HistoryEntry> {

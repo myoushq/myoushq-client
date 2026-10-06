@@ -1,10 +1,12 @@
 // Nostr side: registering, publishing and fetching encrypted messages.
 
-import { finalizeEvent, generateSecretKey, getPublicKey, type Event, type EventTemplate } from "nostr-tools/pure";
+import { finalizeEvent, generateSecretKey, getPublicKey, verifyEvent, type Event, type EventTemplate } from "nostr-tools/pure";
+import { AbstractRelay } from "nostr-tools/abstract-relay";
 import { Relay } from "nostr-tools/relay";
 import { minePow } from "nostr-tools/nip13";
 import * as nip44 from "nostr-tools/nip44";
 import { createRumor, createSeal, unwrapEvent } from "nostr-tools/nip59";
+import { proxiedWebSocket, proxyFor } from "./proxy.js";
 
 export const KIND_PROFILE = 0;
 export const KIND_CHAT = 14;
@@ -139,7 +141,10 @@ export function unwrap(secretKey: Uint8Array, wrap: Event): [string, string, num
 }
 
 async function connectAuthed(secretKey: Uint8Array, url: string): Promise<Relay> {
-  const relay = new Relay(url);
+  const proxy = proxyFor(url);
+  const relay = proxy
+    ? (new AbstractRelay(url, { verifyEvent, websocketImplementation: await proxiedWebSocket(proxy, url.startsWith("wss:")) }) as Relay)
+    : new Relay(url);
   const sign = async (t: EventTemplate) => finalizeEvent(t, secretKey);
   relay.onauth = sign;
   await relay.connect();

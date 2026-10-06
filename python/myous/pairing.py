@@ -166,6 +166,10 @@ class Pairing:
         """Join someone else's invite. Finishes now if the other side answers
         within `wait` seconds; otherwise a later advance() finishes it."""
         nameplate, secret = parse_code(code, self.hub.config()["pair_link_base"])
+        mine = self.st.get(f"pending/{nameplate}")
+        if mine and mine["role"] == "b" and mine["secret"] == secret:
+            # Accepted before (e.g. the connection dropped); carry on with it.
+            return self.advance(mine, wait=wait)
         try:
             claim = self.hub.request("POST", f"/api/pair/{nameplate}/claim", {})
         except HubError as e:
@@ -220,6 +224,13 @@ class Pairing:
                 if e.status in (403, 404):
                     return self._fail(p, "pairing invite expired or was closed")
                 raise
+            except OSError:
+                # Network trouble (proxies drop long polls): retry while there's
+                # time, else leave it pending for the next poll.
+                if time.time() + 2 >= deadline:
+                    return p
+                time.sleep(2)
+                continue
             for body in got["messages"]:
                 p["after"] += 1
                 try:

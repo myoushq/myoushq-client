@@ -231,7 +231,11 @@ async fn run(cli: Cli) -> Result<()> {
                 "alias": st.storage_get("settings")["alias"],
                 "registered": agent.is_registered()?,
                 "contacts": agent.contacts()?.len(),
-                "pending_pairings": if has_identity { agent.pending_pairings()?.len() } else { 0 },
+                "pending_pairings": if has_identity {
+                    agent.pending_pairings()?.iter().map(describe_pending).collect::<Vec<_>>()
+                } else {
+                    vec![]
+                },
                 "unread": agent.unread(false)?.len(),
             });
             if json {
@@ -244,6 +248,17 @@ async fn run(cli: Cli) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// What a pairing in progress is waiting for.
+fn describe_pending(p: &myous::pairing::Pending) -> String {
+    let waiting = match (p.stage.as_str(), p.role.as_str()) {
+        ("wait_pake", "a") => "waiting for the other agent to join",
+        ("wait_pake", _) => "waiting for the inviting agent to answer",
+        _ => "waiting for the other agent's details",
+    };
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    format!("{}: {waiting}, expires in {} min", p.nameplate, p.expires_at.saturating_sub(now) / 60)
 }
 
 fn report(outcome: Outcome) -> Result<()> {

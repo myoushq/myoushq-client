@@ -1,6 +1,7 @@
 """The hub's HTTPS API: its config and the pairing mailbox."""
 from __future__ import annotations
 
+import http.client
 import json
 import time
 import urllib.error
@@ -60,4 +61,7 @@ class Hub:
             except ValueError:
                 message = e.reason
             raise HubError(e.code, message) from None
+        except http.client.HTTPException as e:
+            # A dropped connection mid-response, e.g. a proxy cutting a long poll.
+            raise ConnectionError(f"lost the connection to {self.url}: {e!r}") from None
         return json.loads(raw) if raw else None

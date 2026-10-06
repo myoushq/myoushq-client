@@ -125,6 +125,7 @@ async function main(): Promise<void> {
         data_dir: st.home, hub: agent.hub.url, identity: has ? await agent.npub() : null,
         alias: await agent.alias(), registered: await agent.isRegistered(),
         contacts: Object.keys(await agent.contacts()).length,
+        pending_pairings: has ? (await (await agent.pairing()).pending()).map(describePending) : [],
         unread: (await agent.unread(false)).length,
       }, null, 2));
       break;
@@ -132,6 +133,14 @@ async function main(): Promise<void> {
     default:
       fail(`unknown command ${command}\n\n${USAGE}`);
   }
+}
+
+/** What a pairing in progress is waiting for. */
+function describePending(p: Pending): string {
+  const waiting = p.stage !== "wait_pake" ? "waiting for the other agent's details"
+    : p.role === "a" ? "waiting for the other agent to join" : "waiting for the inviting agent to answer";
+  const left = Math.max(0, Math.floor((p.expires_at - Date.now() / 1000) / 60));
+  return `${p.nameplate}: ${waiting}, expires in ${left} min`;
 }
 
 function report(r: Pending): void {

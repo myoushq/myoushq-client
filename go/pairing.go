@@ -324,6 +324,11 @@ func (pr *pairing) accept(ctx context.Context, code string, wait time.Duration) 
 	if err != nil {
 		return nil, err
 	}
+	var mine Pending
+	if found, err := pr.st.Get("pending/"+nameplate, &mine); err == nil && found && mine.Role == "b" && mine.Secret == secret {
+		// Accepted before (e.g. the connection dropped); carry on with it.
+		return pr.advance(ctx, &mine, wait, true)
+	}
 	var claim struct {
 		Token     string `json:"token"`
 		ExpiresAt int64  `json:"expires_at"`
@@ -410,8 +415,18 @@ func (pr *pairing) advanceLocked(ctx context.Context, p *Pending, wait time.Dura
 		}
 		endpoint := fmt.Sprintf("/api/pair/%s/messages?after=%d&wait=%d", p.Nameplate, p.After, waitSecs)
 		if err := pr.hub.Request(ctx, "GET", endpoint, nil, p.Token, &got); err != nil {
-			if s := hubStatus(err); s == 403 || s == 404 {
+			s := hubStatus(err)
+			if s == 403 || s == 404 {
 				return pr.fail(ctx, p, "pairing invite expired or was closed")
+			}
+			if s == 0 && ctx.Err() == nil {
+				// Network trouble (proxies drop long polls): retry while there's
+				// time, else leave it pending for the next poll.
+				if time.Until(deadline) <= 2*time.Second {
+					return p, nil
+				}
+				time.Sleep(2 * time.Second)
+				continue
 			}
 			return nil, err
 		}

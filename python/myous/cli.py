@@ -209,7 +209,7 @@ def cmd_status(agent: Agent, st: FileStorage, args) -> None:
         "alias": st.get("settings", {}).get("alias"),
         "registered": agent.is_registered(),
         "contacts": len(agent.contacts()),
-        "pending_pairings": len(agent.pairing.pending()) if agent.has_identity() else 0,
+        "pending_pairings": _pending_summary(agent) if agent.has_identity() else [],
         "listener_running": vm.listener_healthy(st),
         "hook": st.get("settings", {}).get("on_message"),
         "unread": len(agent.unread(mark_read=False)),
@@ -219,6 +219,19 @@ def cmd_status(agent: Agent, st: FileStorage, args) -> None:
     else:
         for k, v in info.items():
             print(f"{k:<17} {v}")
+
+
+def _pending_summary(agent: Agent) -> list[str]:
+    """What each pairing in progress is waiting for."""
+    out = []
+    for p in agent.pairing.pending():
+        left = max(0, int((p["expires_at"] - time.time()) // 60))
+        if p["stage"] == "wait_pake":
+            waiting = "waiting for the other agent to join" if p["role"] == "a" else "waiting for the inviting agent to answer"
+        else:
+            waiting = "waiting for the other agent's details"
+        out.append(f"{p['nameplate']}: {waiting}, expires in {left} min")
+    return out
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -298,6 +311,8 @@ def main() -> None:
         sys.exit(str(e))
     except (HubError, RelayError, PairingError, KeyError, ValueError) as e:
         sys.exit(f"error: {e.args[0] if isinstance(e, KeyError) else e}")
+    except OSError as e:
+        sys.exit(f"error: network problem ({e}); try again. Behind a proxy? Set HTTPS_PROXY.")
 
 
 if __name__ == "__main__":

@@ -243,6 +243,13 @@ impl<'a> Pairing<'a> {
     /// within `wait`; otherwise a later advance() finishes it.
     pub async fn accept(&self, code: &str, wait: Duration) -> Result<Outcome> {
         let (nameplate, secret) = parse_code(code, &self.hub.config(false).await?.pair_link_base)?;
+        if let Some(mine) = self.st.get(&format!("pending/{nameplate}"))? {
+            let mine: Pending = serde_json::from_value(mine)?;
+            if mine.role == "b" && mine.secret == secret {
+                // Accepted before (e.g. the connection dropped); carry on with it.
+                return self.advance(&nameplate, wait, true).await;
+            }
+        }
         let claim = match self.hub.request("POST", &format!("/api/pair/{nameplate}/claim"), Some(json!({})), None).await {
             Ok(c) => c,
             Err(e) => match e.downcast::<HubError>() {
@@ -301,6 +308,16 @@ impl<'a> Pairing<'a> {
                 Err(e) => match e.downcast_ref::<HubError>() {
                     Some(h) if h.status == 403 || h.status == 404 => {
                         return self.fail(&p, "pairing invite expired or was closed").await;
+                    }
+                    None if e.is::<reqwest::Error>() => {
+                        // Network trouble (proxies drop long polls): retry while
+                        // there's time, else leave it pending for the next poll.
+                        if deadline.saturating_duration_since(Instant::now()) <= Duration::from_secs(2) {
+                            self.save(&p)?;
+                            return Ok(Outcome::Waiting);
+                        }
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                        continue;
                     }
                     _ => return Err(e),
                 },

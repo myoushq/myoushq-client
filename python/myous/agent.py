@@ -15,11 +15,14 @@ Network calls to relays are async; hub calls are plain blocking HTTPS.
 from __future__ import annotations
 
 import asyncio
+import re
 import time
+import urllib.parse
 from typing import Awaitable, Callable, Optional
 
 from nostr_sdk import Keys, PublicKey, RelayStatus
 
+import myous
 from myous import contacts, inbox, relay
 from myous.hub import Hub
 from myous.pairing import Pairing
@@ -142,6 +145,7 @@ class Agent:
         history entries (messages and pairing results)."""
         before = self._next_seq()
         self.advance_pairings()
+        self.check_notices()
         async with self._connect() as conn:
             wraps = await conn.fetch_wraps()
         with self.st.lock():
@@ -172,6 +176,7 @@ class Agent:
                 while True:
                     before = self._next_seq()
                     await loop.run_in_executor(None, self.advance_pairings)
+                    await loop.run_in_executor(None, self.check_notices)
                     await notify(self._entries_since(before))
                     states = [r.status() for r in (await conn.client.relays()).values()]
                     connected = any(s == RelayStatus.CONNECTED for s in states)
@@ -220,6 +225,54 @@ class Agent:
         with self.st.lock():
             return contacts.update(self.st, name, alias=new_alias)
 
+    # --- notices from the hub ----------------------------------------------
+
+    def check_notices(self) -> None:
+        """Pass on what the hub announces, once each: a newer client release
+        (an "update" entry) and notices (a "notice" entry each). Both are
+        information only; what to do about them is up to the agent."""
+        try:
+            cfg = self.hub.config()
+        except (OSError, ValueError):
+            return
+        mine = _version(myous.__version__)
+        latest = cfg.get("latest_release")
+        if not (isinstance(latest, str) and _version(latest) > mine):
+            latest = None
+        notices = [n for n in (cfg.get("notices") or []) if _notice_applies(n, mine)]
+        if not latest and not notices:
+            return
+        with self.st.lock():
+            state = self.st.get("state", {})
+            seen = state.get("seen_notices", [])
+            entries = []
+            if latest and state.get("announced_release") != latest:
+                state["announced_release"] = latest
+                entries.append({
+                    "type": "update", "version": latest,
+                    "text": f"myous {latest} is available (this client is v{myous.__version__}). "
+                            f"Consider upgrading: get the release, verify its signature and build it as in "
+                            f"{self.hub.url}/skill.md. What changed: {self.hub.url}/changelog.md",
+                })
+            hub = urllib.parse.urlparse(self.hub.url)
+            for n in notices:
+                if n["id"] in seen:
+                    continue
+                seen.append(n["id"])
+                text = "".join(c for c in n["text"] if c.isprintable())[:500]
+                url = n.get("url")
+                ok_url = isinstance(url, str) and urllib.parse.urlparse(url)[:2] == hub[:2]
+                entry = {"type": "notice", "id": n["id"], "text": f"Notice from {hub.netloc}: {text}"}
+                if ok_url:
+                    entry.update(url=url, text=entry["text"] + f" (more: {url})")
+                entries.append(entry)
+            if not entries:
+                return
+            state["seen_notices"] = seen[-200:]
+            self.st.put("state", state)
+            for entry in entries:
+                inbox.record(self.st, entry)
+
     # --- internals ---------------------------------------------------------
 
     def _connect(self, cfg: dict | None = None) -> relay.Connection:
@@ -232,3 +285,26 @@ class Agent:
         if self._next_seq() == seq:
             return []
         return [e for e in self.st.read_history() if e["seq"] >= seq and e.get("direction") != "out"]
+
+
+def _version(tag: str) -> tuple[int, ...]:
+    """(1, 2, 3) for "v1.2.3" or "1.2.3"; () if it isn't one."""
+    m = re.fullmatch(r"v?(\d+)\.(\d+)\.(\d+)", tag.strip())
+    return tuple(int(x) for x in m.groups()) if m else ()
+
+
+def _notice_applies(n, mine: tuple[int, ...]) -> bool:
+    """Whether a notice from the hub is well-formed, current, and meant for
+    this client's version."""
+    if not (isinstance(n, dict) and isinstance(n.get("id"), str) and n["id"]
+            and isinstance(n.get("text"), str) and n["text"].strip()):
+        return False
+    expires = n.get("expires")
+    if isinstance(expires, (int, float)) and expires <= time.time():
+        return False
+    low, high = n.get("min_version"), n.get("max_version")
+    if isinstance(low, str) and _version(low) and mine < _version(low):
+        return False
+    if isinstance(high, str) and _version(high) and mine > _version(high):
+        return False
+    return True

@@ -9,14 +9,18 @@
 //   await agent.send("Alex's Muse", "hi");
 //   await agent.unread();
 
+import { readFileSync } from "node:fs";
 import { generateSecretKey, getPublicKey, nip19, type Event } from "nostr-tools";
 import * as contacts from "./contacts.js";
 import type { Contact, Contacts } from "./contacts.js";
 import { record, type State } from "./history.js";
-import { Hub, type HubConfig } from "./hub.js";
+import { Hub, type HubConfig, type Notice } from "./hub.js";
 import { Pairing, type Invite, type Pending } from "./pairing.js";
 import { Connection, unwrap } from "./relay.js";
 import { locked, type HistoryEntry, type Storage } from "./storage.js";
+
+/** This client's release, from package.json. */
+export const VERSION: string = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 
 const SEEN_RETENTION = 3 * 86400; // longer than relay retention plus timestamp jitter
 
@@ -149,9 +153,58 @@ export class Agent {
   }
 
   /** Advance pairings and fetch waiting messages, once. Returns new history entries. */
+  /** Pass on what the hub announces, once each: a newer client release (an
+   * "update" entry) and notices (a "notice" entry each). Both are
+   * information only; what to do about them is up to the agent. */
+  async checkNotices(): Promise<void> {
+    let cfg: HubConfig;
+    try {
+      cfg = await this.hub.config();
+    } catch {
+      return;
+    }
+    const latest = cfg.latest_release && newer(cfg.latest_release, VERSION) ? cfg.latest_release : undefined;
+    const notices = (Array.isArray(cfg.notices) ? cfg.notices : []).filter(noticeApplies);
+    if (!latest && !notices.length) return;
+    await locked(this.st, "state", async () => {
+      const state = await this.st.get<State>("state", {});
+      const seen = state.seen_notices ?? [];
+      const entries: Omit<HistoryEntry, "seq" | "at">[] = [];
+      const url = this.hub.url;
+      if (latest && state.announced_release !== latest) {
+        state.announced_release = latest;
+        entries.push({
+          type: "update", version: latest,
+          text: `myous ${latest} is available (this client is v${VERSION}). Consider upgrading: get the release, ` +
+            `verify its signature and build it as in ${url}/skill.md. What changed: ${url}/changelog.md`,
+        });
+      }
+      const hub = new URL(url);
+      for (const n of notices) {
+        if (seen.includes(n.id)) continue;
+        seen.push(n.id);
+        const text = [...n.text].filter((c) => !/\p{Cc}/u.test(c)).slice(0, 500).join("");
+        const entry: Omit<HistoryEntry, "seq" | "at"> = { type: "notice", id: n.id, text: `Notice from ${hub.host}: ${text}` };
+        try {
+          const link = typeof n.url === "string" ? new URL(n.url) : undefined;
+          if (link && link.protocol === hub.protocol && link.host === hub.host) {
+            entry.url = n.url;
+            entry.text += ` (more: ${n.url})`;
+          }
+        } catch {}
+        entries.push(entry);
+      }
+      if (!entries.length) return;
+      state.seen_notices = seen.slice(-200);
+      await this.st.put("state", state);
+      for (const e of entries) await record(this.st, e);
+    });
+  }
+
   async poll(): Promise<HistoryEntry[]> {
     const before = await this.nextSeq();
     await this.advancePairings();
+    await this.checkNotices();
     const conn = await this.connect();
     let wraps: Event[];
     try {
@@ -183,6 +236,7 @@ export class Agent {
       while (!stopped) {
         const before = await this.nextSeq();
         await this.advancePairings();
+        await this.checkNotices();
         await notify(await this.entriesSince(before));
         await onTick?.();
         const pending = (await (await this.pairing()).pending()).length;
@@ -286,4 +340,23 @@ export class Agent {
     if ((await this.nextSeq()) === seq) return [];
     return (await this.st.readHistory()).filter((e) => e.seq >= seq && e.direction !== "out");
   }
+}
+
+/** Whether release tag a ("v1.2.3") is newer than version b ("1.2.0"). */
+function newer(a: string, b: string): boolean {
+  const parse = (v: string) => /^v?(\d+)\.(\d+)\.(\d+)$/.exec(v.trim())?.slice(1).map(Number);
+  const x = parse(a), y = parse(b);
+  if (!x || !y) return false;
+  for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] > y[i];
+  return false;
+}
+
+/** Whether a notice from the hub is well-formed, current, and meant for this
+ * client's version. */
+function noticeApplies(n: any): n is Notice {
+  if (!n || typeof n.id !== "string" || !n.id || typeof n.text !== "string" || !n.text.trim()) return false;
+  if (typeof n.expires === "number" && n.expires <= Date.now() / 1000) return false;
+  if (typeof n.min_version === "string" && newer(n.min_version, VERSION)) return false;
+  if (typeof n.max_version === "string" && newer(VERSION, n.max_version)) return false;
+  return true;
 }

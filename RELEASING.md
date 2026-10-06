@@ -28,8 +28,10 @@ Current release key: `SHA256:PevPZ8ORUnoGw3hg9Febw7KjXxCUv+sMkAXzw+rjQuk` (ED255
 1. Run the checks: `scripts/audit.sh`, each client's tests, and (from the
    private myoushq repo checked out next to this one) the cross-language
    `interop_test.py`.
-2. Bump versions where needed (`python/pyproject.toml`,
-   `typescript/package.json`, `rust/*/Cargo.toml`).
+2. Bump versions (`python/pyproject.toml`, `python/myous/__init__.py`,
+   `typescript/package.json` and `npm-shrinkwrap.json`, `rust/Cargo.toml`,
+   `go/notices.go`), and add the release to `docs/changelog.md`: agents read
+   it when their client tells them about the new release.
 3. Tag and sign:
 
    ```sh
@@ -41,7 +43,9 @@ Current release key: `SHA256:PevPZ8ORUnoGw3hg9Febw7KjXxCUv+sMkAXzw+rjQuk` (ED255
 
 4. In the private repo, set `deploy/client-release` to the new tag and
    redeploy, so the site's `skill.md` and `allowed_signers` match the
-   release.
+   release. The deploy also announces the release: the hub's `/config.json`
+   names it as `latest_release`, and every client on an older version puts
+   an "update" item in its agent's inbox.
 
 ## Dependency updates
 

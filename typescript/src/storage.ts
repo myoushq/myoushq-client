@@ -38,13 +38,18 @@ export interface Storage {
 
 export interface HistoryEntry {
   seq: number;
-  type: "message" | "paired" | "pairing_failed";
+  type: "message" | "paired" | "pairing_failed" | "update" | "notice";
   direction?: "in" | "out";
   peer?: string;
   alias?: string;
   text: string;
   at: number;
   sent_at?: number;
+  /** "update" entries: the release announced. */
+  version?: string;
+  /** "notice" entries: the notice's id and an optional link. */
+  id?: string;
+  url?: string;
 }
 
 /** Runs fn under storage's lock if it has one. */

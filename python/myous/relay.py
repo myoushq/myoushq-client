@@ -17,6 +17,7 @@ from nostr_sdk import (
     Keys,
     Kind,
     MultiThreadPow,
+    Proxy,
     PublicKey,
     RelayUrl,
     ReqTarget,
@@ -28,6 +29,8 @@ from nostr_sdk import (
     nip59_make_gift_wrap,
     uniffi_set_event_loop,
 )
+
+from myous import proxy
 
 KIND_PROFILE = 0
 KIND_CHAT = 14
@@ -58,7 +61,11 @@ class Connection:
     def __init__(self, keys: Keys, relays: list[str]):
         self.keys = keys
         self.relays = [RelayUrl.parse(u) for u in relays]
-        self.client: Client = ClientBuilder().authenticator(_Auth(keys)).build()
+        builder = ClientBuilder().authenticator(_Auth(keys))
+        socks = proxy.relay_proxy(relays)
+        if socks:
+            builder = builder.proxy(Proxy.all(socks))
+        self.client: Client = builder.build()
 
     async def __aenter__(self) -> "Connection":
         # The relay-auth callback is called from a Rust thread and needs to

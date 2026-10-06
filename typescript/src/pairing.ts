@@ -169,6 +169,11 @@ export class Pairing {
   /** Join someone else's invite; finishes now if the other side answers within `wait` seconds. */
   async accept(code: string, wait = 60): Promise<Pending> {
     const [nameplate, secret] = parseCode(code, (await this.hub.config()).pair_link_base);
+    const mine = await this.st.get<Pending | null>(`pending/${nameplate}`, null);
+    if (mine && mine.role === "b" && mine.secret === secret) {
+      // Accepted before (e.g. the connection dropped); carry on with it.
+      return this.advance(mine, wait);
+    }
     let claim;
     try {
       claim = await this.hub.request("POST", `/api/pair/${nameplate}/claim`, {});
@@ -222,7 +227,12 @@ export class Pairing {
         if (e instanceof HubError && (e.status === 403 || e.status === 404)) {
           return this.fail(p, "pairing invite expired or was closed");
         }
-        throw e;
+        if (e instanceof HubError || e instanceof SyntaxError) throw e;
+        // Network trouble (proxies drop long polls): retry while there's
+        // time, else leave it pending for the next poll.
+        if (now() + 2 >= deadline) return p;
+        await new Promise((r) => setTimeout(r, 2000));
+        continue;
       }
       for (const body of got.messages as string[]) {
         p.after += 1;
