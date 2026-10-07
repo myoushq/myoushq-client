@@ -2,6 +2,7 @@ package myous
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -21,6 +22,52 @@ type Contact struct {
 	Npub     string `json:"npub"`
 	Status   string `json:"status"`
 	PairedAt int64  `json:"paired_at"`
+	// Relationship context, kept only here: how the owner knows this contact
+	// (one of Relationships) and what may be shared with it.
+	Relationship string `json:"relationship,omitempty"`
+	Sharing      string `json:"sharing,omitempty"`
+}
+
+// Relationships are the accepted values of Contact.Relationship.
+var Relationships = []string{"family", "friend", "colleague", "business", "service", "other"}
+
+const maxSharing = 500
+
+// ContactContext is relationship context to record on a contact; empty
+// fields are left as they are.
+type ContactContext struct {
+	Relationship string
+	Sharing      string
+}
+
+func (cc ContactContext) validate() error {
+	if cc.Relationship != "" && !slices.Contains(Relationships, cc.Relationship) {
+		return fmt.Errorf("relationship must be one of: %s", strings.Join(Relationships, ", "))
+	}
+	if len([]rune(cc.Sharing)) > maxSharing {
+		return fmt.Errorf("sharing guidance is limited to %d characters", maxSharing)
+	}
+	return nil
+}
+
+func (cc ContactContext) apply(c *Contact) {
+	if cc.Relationship != "" {
+		c.Relationship = cc.Relationship
+	}
+	if s := strings.TrimSpace(cc.Sharing); s != "" {
+		c.Sharing = s
+	}
+}
+
+// contextOf returns the relationship context of the contact with this npub.
+func contextOf(st Storage, npub string) (relationship, sharing string) {
+	contacts, _ := loadContacts(st)
+	for _, c := range contacts {
+		if c.Npub == npub {
+			return c.Relationship, c.Sharing
+		}
+	}
+	return "", ""
 }
 
 // Callers hold the "state" lock around changes.

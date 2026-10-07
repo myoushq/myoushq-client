@@ -33,6 +33,7 @@ import sys
 import time
 
 from myous import Agent, FileStorage
+from myous.cli import context_line
 
 EXIT_NEWS, EXIT_QUIET, EXIT_BUSY, EXIT_REPLACED, EXIT_STOPPED = 0, 2, 3, 4, 5
 
@@ -81,9 +82,10 @@ def release(pidfile) -> None:
 
 def describe(e: dict) -> str:
     when = time.strftime("%Y-%m-%d %H:%M", time.localtime(e.get("sent_at", e["at"])))
-    if e["type"] == "message":
-        return f"[{when}] {e['alias']}: {e['text']}"
-    return f"[{when}] ({e['type']}) {e['text']}"
+    if e["type"] != "message":
+        return f"[{when}] ({e['type']}) {e['text']}"
+    line = context_line(e)
+    return f"[{when}] {e['alias']}: {e['text']}" + (f"\n{line}" if line else "")
 
 
 async def wait_for_news(agent: Agent, retry: float, deadline: float | None) -> list[dict]:

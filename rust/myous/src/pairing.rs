@@ -180,6 +180,9 @@ pub struct Pending {
     /// Shared key, base64, once the PAKE is done.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
+    /// Relationship context to record on the contact once paired.
+    #[serde(default)]
+    pub context: crate::contacts::ContactContext,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -224,12 +227,12 @@ impl<'a> Pairing<'a> {
     }
 
     /// Open a mailbox and post our half of the PAKE. Returns immediately.
-    pub async fn invite(&self) -> Result<Invite> {
+    pub async fn invite(&self, context: crate::contacts::ContactContext) -> Result<Invite> {
         let box_ = self.hub.request("POST", "/api/pair", Some(json!({})), None).await?;
         let nameplate = box_["nameplate"].as_str().unwrap_or_default().to_string();
         let token = box_["token"].as_str().unwrap_or_default().to_string();
         let secret = make_secret();
-        let p = self.begin(Role::A, nameplate, secret, token, box_["expires_at"].as_u64().unwrap_or(0)).await?;
+        let p = self.begin(Role::A, nameplate, secret, token, box_["expires_at"].as_u64().unwrap_or(0), context).await?;
         let link_base = self.hub.config(false).await?.pair_link_base;
         Ok(Invite {
             code: format_code(&p.nameplate, &p.secret),
@@ -241,7 +244,7 @@ impl<'a> Pairing<'a> {
 
     /// Join someone else's invite. Finishes now if the other side answers
     /// within `wait`; otherwise a later advance() finishes it.
-    pub async fn accept(&self, code: &str, wait: Duration) -> Result<Outcome> {
+    pub async fn accept(&self, code: &str, wait: Duration, context: crate::contacts::ContactContext) -> Result<Outcome> {
         let (nameplate, secret) = parse_code(code, &self.hub.config(false).await?.pair_link_base)?;
         if let Some(mine) = self.st.get(&format!("pending/{nameplate}"))? {
             let mine: Pending = serde_json::from_value(mine)?;
@@ -258,11 +261,12 @@ impl<'a> Pairing<'a> {
             },
         };
         let token = claim["token"].as_str().unwrap_or_default().to_string();
-        let p = self.begin(Role::B, nameplate, secret, token, claim["expires_at"].as_u64().unwrap_or(0)).await?;
+        let p = self.begin(Role::B, nameplate, secret, token, claim["expires_at"].as_u64().unwrap_or(0), context).await?;
         self.advance(&p.nameplate, wait, true).await
     }
 
-    async fn begin(&self, role: Role, nameplate: String, secret: String, token: String, expires_at: u64) -> Result<Pending> {
+    async fn begin(&self, role: Role, nameplate: String, secret: String, token: String, expires_at: u64,
+                   context: crate::contacts::ContactContext) -> Result<Pending> {
         let mut seed = [0u8; 32];
         rand::rngs::OsRng.fill_bytes(&mut seed);
         let message = myous_pake::start(role, &format_code(&nameplate, &secret), seed);
@@ -270,7 +274,7 @@ impl<'a> Pairing<'a> {
         let p = Pending {
             role: if role == Role::A { "a" } else { "b" }.into(),
             nameplate, secret, token, expires_at,
-            pake_seed: hex(&seed), after: 0, stage: "wait_pake".into(), key: None,
+            pake_seed: hex(&seed), after: 0, stage: "wait_pake".into(), key: None, context,
         };
         self.save(&p)?;
         Ok(p)
@@ -368,11 +372,18 @@ impl<'a> Pairing<'a> {
             let alias: String = payload["alias"].as_str().unwrap_or_default().chars().take(64).collect();
             let verify = verify_code(&key);
             let _lock = self.st.lock("state", true)?;
-            let contact = contacts::add(&*self.st, pubkey, &alias)?;
+            let mut contact = contacts::add(&*self.st, pubkey, &alias)?;
+            if !p.context.is_empty() {
+                contact = contacts::set_context(&*self.st, pubkey, &p.context)?;
+            }
             self.st.delete(&format!("pending/{}", p.nameplate))?;
+            let mut text = format!("paired with {} (verification code {verify})", contact.alias);
+            if contact.relationship.is_none() {
+                text += &format!(". Ask your owner how they know this contact and what you may share with it, \
+                    then record it: myous context {:?} --relationship ... --sharing \"...\"", contact.alias);
+            }
             inbox::record(&*self.st, json!({
-                "type": "paired", "peer": contact.npub, "alias": contact.alias,
-                "text": format!("paired with {} (verification code {verify})", contact.alias),
+                "type": "paired", "peer": contact.npub, "alias": contact.alias, "text": text,
             }))?;
             // Don't close the mailbox: the peer may not have read our payload
             // yet. It only holds ciphertext and expires on its own.

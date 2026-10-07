@@ -3,6 +3,11 @@
 Statuses: approved, blocked. `pending` is reserved for future contact
 requests that the owner approves.
 
+Relationship context (optional, kept only here): `relationship`, one of
+RELATIONSHIPS, and `sharing`, the owner's guidance on what may be shared
+with this contact. Incoming messages carry both when read, so the agent has
+them when it answers.
+
 Callers hold `storage.lock()` around changes.
 """
 from __future__ import annotations
@@ -15,6 +20,30 @@ from myous.storage import Storage
 
 APPROVED = "approved"
 BLOCKED = "blocked"
+RELATIONSHIPS = ("family", "friend", "colleague", "business", "service", "other")
+MAX_SHARING = 500
+
+
+def context_fields(relationship: str | None = None, sharing: str | None = None) -> dict:
+    """Validated relationship context to store on a contact (only what's given)."""
+    fields = {}
+    if relationship is not None:
+        if relationship not in RELATIONSHIPS:
+            raise ValueError(f"relationship must be one of: {', '.join(RELATIONSHIPS)}")
+        fields["relationship"] = relationship
+    if sharing is not None:
+        if len(sharing) > MAX_SHARING:
+            raise ValueError(f"sharing guidance is limited to {MAX_SHARING} characters")
+        fields["sharing"] = sharing.strip()
+    return fields
+
+
+def context_of(st: Storage, npub: str) -> dict:
+    """{"relationship", "sharing"} for the contact with this npub (None if unset)."""
+    for c in load(st).values():
+        if c["npub"] == npub:
+            return {"relationship": c.get("relationship"), "sharing": c.get("sharing")}
+    return {"relationship": None, "sharing": None}
 
 
 def load(st: Storage) -> dict[str, dict]:

@@ -10,6 +10,39 @@ export interface Contact {
   npub: string;
   status: "approved" | "blocked";
   paired_at: number;
+  /** How the owner knows this contact (one of RELATIONSHIPS), kept only here. */
+  relationship?: string;
+  /** The owner's guidance on what may be shared with this contact. */
+  sharing?: string;
+}
+
+export const RELATIONSHIPS = ["family", "friend", "colleague", "business", "service", "other"];
+const MAX_SHARING = 500;
+
+/** Relationship context to record on a contact; missing fields are left as they are. */
+export interface ContactContext {
+  relationship?: string;
+  sharing?: string;
+}
+
+/** Validated fields to store (only what's given). Throws on bad input. */
+export function contextFields(cc: ContactContext = {}): Partial<Contact> {
+  const fields: Partial<Contact> = {};
+  if (cc.relationship !== undefined) {
+    if (!RELATIONSHIPS.includes(cc.relationship)) throw new Error(`relationship must be one of: ${RELATIONSHIPS.join(", ")}`);
+    fields.relationship = cc.relationship;
+  }
+  if (cc.sharing !== undefined) {
+    if ([...cc.sharing].length > MAX_SHARING) throw new Error(`sharing guidance is limited to ${MAX_SHARING} characters`);
+    if (cc.sharing.trim()) fields.sharing = cc.sharing.trim();
+  }
+  return fields;
+}
+
+/** The current relationship context of the contact with this npub. */
+export async function contextOf(st: Storage, npub: string): Promise<{ relationship: string | null; sharing: string | null }> {
+  const c = Object.values(await load(st)).find((c) => c.npub === npub);
+  return { relationship: c?.relationship ?? null, sharing: c?.sharing ?? null };
 }
 
 export type Contacts = Record<string, Contact>;

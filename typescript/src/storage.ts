@@ -47,6 +47,9 @@ export interface HistoryEntry {
   sent_at?: number;
   /** "update" entries: the release announced. */
   version?: string;
+  /** The contact's current relationship context, filled in when read. */
+  relationship?: string | null;
+  sharing?: string | null;
   /** A long message whose missing parts never arrived. */
   incomplete?: boolean;
   /** "notice" entries: the notice's id and an optional link. */

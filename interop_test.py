@@ -17,6 +17,7 @@ import base64
 import itertools
 import json
 import os
+import re
 import select
 import shutil
 import socket
@@ -133,7 +134,8 @@ class Interop(unittest.TestCase):
         self.run_cli(inviter, a_home, "init", "--alias", a_name, "--hub", self.hub_url)
         self.run_cli(joiner, b_home, "init", "--alias", b_name, "--hub", self.hub_url)
 
-        invite = json.loads(self.run_cli(inviter, a_home, "invite", "--json"))
+        invite = json.loads(self.run_cli(inviter, a_home, "invite", "--json",
+                                         "--relationship", "friend", "--sharing", "calendar yes"))
         # Accepting again resumes the pairing (as after a dropped connection)
         # instead of failing with "invite already used".
         self.run_cli(joiner, b_home, "accept", invite["code"], "--wait", "0")
@@ -145,25 +147,40 @@ class Interop(unittest.TestCase):
         b_paired = [e for e in b_events if e["type"] == "paired"]
         self.assertEqual(len(a_paired), 1, a_events)
         self.assertEqual(len(b_paired), 1, b_events)
-        self.assertEqual(a_paired[0]["text"].split()[-1].strip(")"),
-                         b_paired[0]["text"].split()[-1].strip(")"), "verification codes differ")
+        code_of = lambda e: re.search(r"verification code (\d{6})", e["text"]).group(1)  # noqa: E731
+        self.assertEqual(code_of(a_paired[0]), code_of(b_paired[0]), "verification codes differ")
 
         a_contacts = json.loads(self.run_cli(inviter, a_home, "contacts", "--json"))
         b_contacts = json.loads(self.run_cli(joiner, b_home, "contacts", "--json"))
         self.assertEqual([c["alias"] for c in a_contacts.values()], [b_name])
         self.assertEqual([c["alias"] for c in b_contacts.values()], [a_name])
+        # Relationship context: set at invite on one side, not yet on the other.
+        a_contact, b_contact = next(iter(a_contacts.values())), next(iter(b_contacts.values()))
+        self.assertEqual((a_contact.get("relationship"), a_contact.get("sharing")), ("friend", "calendar yes"))
+        self.assertIsNone(b_contact.get("relationship"))
+        self.assertIn("Ask your owner", b_paired[0]["text"])
+        self.assertNotIn("Ask your owner", a_paired[0]["text"])
 
         for i in range(2):
             self.run_cli(inviter, a_home, "send", b_name, f"hello {joiner} {i}")
-        self.assertEqual([e["text"] for e in self.entries(joiner, b_home)],
-                         [f"hello {joiner} 0", f"hello {joiner} 1"])
+        got = self.entries(joiner, b_home)
+        self.assertEqual([e["text"] for e in got], [f"hello {joiner} 0", f"hello {joiner} 1"])
+        self.assertTrue(all(e.get("relationship") is None for e in got), got)
+        set_out = json.loads(self.run_cli(joiner, b_home, "context", a_name, "--relationship", "family",
+                                          "--sharing", "anything", "--json"))
+        self.assertEqual((set_out["relationship"], set_out["sharing"]), ("family", "anything"))
+        r = subprocess.run(self.impls[joiner] + ["context", a_name, "--relationship", "enemy"],
+                           env=self.cli_env(b_home), capture_output=True, text=True, timeout=60)
+        self.assertNotEqual(r.returncode, 0, "an unknown relationship was accepted")
         self.run_cli(joiner, b_home, "send", a_name, f"hi {inviter}")
         received = self.entries(inviter, a_home)
-        self.assertEqual([(e["alias"], e["text"]) for e in received], [(b_name, f"hi {inviter}")])
+        self.assertEqual([(e["alias"], e["text"], e.get("relationship"), e.get("sharing")) for e in received],
+                         [(b_name, f"hi {inviter}", "friend", "calendar yes")])
 
         # A long message goes out in parts and arrives whole.
         self.run_cli(inviter, a_home, "send", b_name, "-", stdin=LONG_TEXT)
-        self.assertEqual([e["text"] for e in self.entries(joiner, b_home)], [LONG_TEXT])
+        got = self.entries(joiner, b_home)
+        self.assertEqual([(e["text"], e.get("relationship")) for e in got], [(LONG_TEXT, "family")])
         # Over the limit: refused before sending, with a clear error.
         r = subprocess.run(self.impls[inviter] + ["send", b_name, "-"], env=self.cli_env(a_home),
                            capture_output=True, text=True, timeout=60, input="x" * 300_000)

@@ -33,7 +33,7 @@ def cmd_init(agent: Agent, st: FileStorage, args) -> None:
 
 
 def cmd_invite(agent: Agent, st: FileStorage, args) -> None:
-    inv = agent.invite()
+    inv = agent.invite(args.relationship, args.sharing)
     svg = args.qr_out or str(st.path(f"invite-{inv['nameplate']}.svg"))
     try:
         qr.write_svg(inv["link"], svg)
@@ -66,7 +66,7 @@ def cmd_accept(agent: Agent, st: FileStorage, args) -> None:
     code = args.code
     if os.path.isfile(code):
         code = qr.read_image(code)
-    r = agent.accept(code, wait=args.wait)
+    r = agent.accept(code, wait=args.wait, relationship=args.relationship, sharing=args.sharing)
     if r["stage"] not in ("done", "failed", "elsewhere"):
         print("the other agent hasn't answered yet; it finishes the next time this agent polls "
               "or listens (result in `myous inbox`)")
@@ -93,6 +93,19 @@ def cmd_send(agent: Agent, st: FileStorage, args) -> None:
     print(f"sent to {entry['alias']}")
 
 
+def context_line(e: dict) -> str | None:
+    """How the owner knows the sender and what may be shared, for an incoming message."""
+    if e.get("type") != "message" or e.get("direction") != "in" or "relationship" not in e:
+        return None
+    if not e.get("relationship") and not e.get("sharing"):
+        return (f"    (relationship not set: until your owner tells you, share nothing personal; record it with "
+                f"myous context \"{e['alias']}\" --relationship ... --sharing \"...\")")
+    parts = [e.get("relationship") or "relationship not set"]
+    if e.get("sharing"):
+        parts.append(f"may share: {e['sharing']}")
+    return f"    ({'; '.join(parts)})"
+
+
 def _print_entries(entries: list[dict]) -> None:
     for e in entries:
         when = time.strftime("%Y-%m-%d %H:%M", time.localtime(e.get("sent_at", e["at"])))
@@ -102,6 +115,9 @@ def _print_entries(entries: list[dict]) -> None:
             print(f"[{when}] me -> {e['alias']}: {e['text']}")
         else:
             print(f"[{when}] {e['alias']}: {e['text']}")
+            line = context_line(e)
+            if line:
+                print(line)
 
 
 def cmd_inbox(agent: Agent, st: FileStorage, args) -> None:
@@ -135,7 +151,16 @@ def cmd_contacts(agent: Agent, st: FileStorage, args) -> None:
     if not all_contacts:
         print("no contacts yet; pair with `myous invite` or `myous accept`")
     for c in all_contacts.values():
-        print(f"{c['alias']:<20} {c['status']:<9} {c['npub']}")
+        print(f"{c['alias']:<20} {c['status']:<9} {c.get('relationship') or '-':<10} {c['npub']}")
+
+
+def cmd_context(agent: Agent, st: FileStorage, args) -> None:
+    c = agent.set_context(args.name, args.relationship, args.sharing)
+    if args.json:
+        print(json.dumps({"alias": c["alias"], "relationship": c.get("relationship"), "sharing": c.get("sharing")}))
+        return
+    print(f"{c['alias']}: relationship {c.get('relationship') or '(not set)'}; "
+          f"may share: {c.get('sharing') or '(not set: share nothing personal)'}")
 
 
 def cmd_block(agent: Agent, st: FileStorage, args) -> None:
@@ -239,6 +264,12 @@ def _pending_summary(agent: Agent) -> list[str]:
     return out
 
 
+def _context_options(p: argparse.ArgumentParser) -> None:
+    from myous.contacts import RELATIONSHIPS
+    p.add_argument("--relationship", choices=RELATIONSHIPS, help="how your owner knows this contact")
+    p.add_argument("--sharing", metavar="TEXT", help="your owner's guidance on what you may share with this contact")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="myous", description="Encrypted messaging between paired AI agents.")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -257,10 +288,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--qr-text", action="store_true", help="also print the QR code as text")
     p.add_argument("--wait", action="store_true", help="stay until the other side joins")
     p.add_argument("--json", action="store_true", help="print code, link and QR path as JSON")
+    _context_options(p)
 
     p = add("accept", cmd_accept, "join a pairing from a link, code, or photo of the QR code")
     p.add_argument("code", help="pairing link, code like 4821-K7F3QX, or path to a QR image")
     p.add_argument("--wait", type=float, default=60, help="seconds to wait for the other side (default 60)")
+    _context_options(p)
 
     p = add("send", cmd_send, "send a message to a paired contact")
     p.add_argument("to", help="contact alias or npub")
@@ -277,6 +310,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--json", action="store_true")
 
     p = add("contacts", cmd_contacts, "list paired contacts")
+    p.add_argument("--json", action="store_true")
+
+    p = add("context", cmd_context, "show or set how your owner knows a contact and what you may share with it")
+    p.add_argument("name")
+    _context_options(p)
     p.add_argument("--json", action="store_true")
 
     add("block", cmd_block, "drop all messages from a contact").add_argument("name")

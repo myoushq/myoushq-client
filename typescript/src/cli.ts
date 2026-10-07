@@ -19,6 +19,10 @@ const USAGE = `usage: myous <command> [options]
   inbox [--json] [--peek] [--local] fetch, then new messages and other items
   history [--with NAME] [--json]    past messages
   contacts [--json]                 paired contacts
+  context NAME [--relationship R] [--sharing TEXT] [--json]
+                                    show or set how your owner knows a contact and what you
+                                    may share (R: family, friend, colleague, business,
+                                    service, other); invite and accept take the same options
   block NAME | unblock NAME         drop / accept a contact's messages
   status                            identity, hub and contacts`;
 
@@ -30,7 +34,7 @@ async function main(): Promise<void> {
     options: {
       alias: { type: "string" }, hub: { type: "string" }, json: { type: "boolean" },
       wait: { type: "string" }, peek: { type: "boolean" }, local: { type: "boolean" }, with: { type: "string" },
-      "qr-out": { type: "string" },
+      "qr-out": { type: "string" }, relationship: { type: "string" }, sharing: { type: "string" },
     },
   });
   if (!command || command === "--help" || command === "-h") {
@@ -54,7 +58,7 @@ async function main(): Promise<void> {
       break;
     }
     case "invite": {
-      const inv = await agent.invite();
+      const inv = await agent.invite({ relationship: opts.relationship, sharing: opts.sharing });
       let svg: string | null = opts["qr-out"] ?? st.path(`invite-${inv.nameplate}.svg`);
       try {
         // Optional dependency. SVG works wherever images do and needs no image library.
@@ -73,7 +77,7 @@ async function main(): Promise<void> {
     }
     case "accept": {
       if (!args[0]) fail("give the pairing link or code");
-      report(await agent.accept(args[0], Number(opts.wait ?? 60)));
+      report(await agent.accept(args[0], Number(opts.wait ?? 60), { relationship: opts.relationship, sharing: opts.sharing }));
       break;
     }
     case "send": {
@@ -119,7 +123,14 @@ async function main(): Promise<void> {
     case "contacts": {
       const all = await agent.contacts();
       if (opts.json) console.log(JSON.stringify(all, null, 2));
-      else for (const c of Object.values(all)) console.log(`${c.alias.padEnd(20)} ${c.status.padEnd(9)} ${c.npub}`);
+      else for (const c of Object.values(all)) console.log(`${c.alias.padEnd(20)} ${c.status.padEnd(9)} ${(c.relationship ?? "-").padEnd(10)} ${c.npub}`);
+      break;
+    }
+    case "context": {
+      if (!args[0]) fail("usage: myous context NAME [--relationship R] [--sharing TEXT]");
+      const c = await agent.setContext(args[0], { relationship: opts.relationship, sharing: opts.sharing });
+      if (opts.json) console.log(JSON.stringify({ alias: c.alias, relationship: c.relationship ?? null, sharing: c.sharing ?? null }));
+      else console.log(`${c.alias}: relationship ${c.relationship ?? "(not set)"}; may share: ${c.sharing ?? "(not set: share nothing personal)"}`);
       break;
     }
     case "block":
@@ -170,8 +181,20 @@ function printEntries(entries: HistoryEntry[]): void {
     const when = new Date((e.sent_at ?? e.at) * 1000).toISOString().slice(0, 16).replace("T", " ");
     if (e.type !== "message") console.log(`[${when}] (${e.type}) ${e.text}`);
     else if (e.direction === "out") console.log(`[${when}] me -> ${e.alias}: ${e.text}`);
-    else console.log(`[${when}] ${e.alias}: ${e.text}`);
+    else {
+      console.log(`[${when}] ${e.alias}: ${e.text}`);
+      console.log(contextLine(e));
+    }
   }
+}
+
+/** How the owner knows the sender of an incoming message and what may be shared. */
+function contextLine(e: HistoryEntry): string {
+  if (!e.relationship && !e.sharing) {
+    return `    (relationship not set: until your owner tells you, share nothing personal; record it with ` +
+      `myous context ${JSON.stringify(e.alias)} --relationship ... --sharing "...")`;
+  }
+  return `    (${e.relationship ?? "relationship not set"}${e.sharing ? `; may share: ${e.sharing}` : ""})`;
 }
 
 function fail(message: string): never {

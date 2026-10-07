@@ -96,8 +96,8 @@ async fn pair_and_message() {
     let bob = agent(tmp.path(), "bob", &hub.url).await;
 
     // Rust <-> Rust: bob joins with the link; alice finishes on her next poll.
-    let invite = alice.invite().await.unwrap();
-    assert_eq!(bob.accept(&invite.link, Duration::from_secs(1)).await.unwrap(), Outcome::Waiting);
+    let invite = alice.invite(Default::default()).await.unwrap();
+    assert_eq!(bob.accept(&invite.link, Duration::from_secs(1), Default::default()).await.unwrap(), Outcome::Waiting);
     let alice_new = alice.poll().await.unwrap();
     let bob_new = bob.poll().await.unwrap();
     assert_eq!(alice_new.last().unwrap()["type"], "paired");
@@ -113,9 +113,9 @@ async fn pair_and_message() {
     assert!(bob.poll().await.unwrap().is_empty(), "no duplicates");
 
     // A wrong code fails for the inviter.
-    let invite = alice.invite().await.unwrap();
+    let invite = alice.invite(Default::default()).await.unwrap();
     let wrong = format!("{}-AAAAAA", invite.nameplate);
-    let _ = bob.accept(&wrong, Duration::from_secs(1)).await.unwrap();
+    let _ = bob.accept(&wrong, Duration::from_secs(1), Default::default()).await.unwrap();
     assert_eq!(alice.poll().await.unwrap().last().unwrap()["type"], "pairing_failed");
 
     // Blocked contacts are dropped.
@@ -132,13 +132,13 @@ async fn pair_and_message() {
 
     // Python invites, Rust accepts.
     let inv: Value = serde_json::from_str(&python(tmp.path(), &py, &["invite", "--json"])).unwrap();
-    let _ = alice.accept(inv["code"].as_str().unwrap(), Duration::from_secs(1)).await.unwrap();
+    let _ = alice.accept(inv["code"].as_str().unwrap(), Duration::from_secs(1), Default::default()).await.unwrap();
     let py_new: Value = serde_json::from_str(&python(tmp.path(), &py, &["poll", "--json"])).unwrap();
     assert_eq!(py_new.as_array().unwrap().last().unwrap()["type"], "paired");
     assert_eq!(alice.poll().await.unwrap().last().unwrap()["type"], "paired");
 
     // Rust invites, Python accepts.
-    let invite = bob.invite().await.unwrap();
+    let invite = bob.invite(Default::default()).await.unwrap();
     python(tmp.path(), &py, &["accept", &invite.code, "--wait", "1"]);
     assert_eq!(bob.poll().await.unwrap().last().unwrap()["type"], "paired");
     python(tmp.path(), &py, &["poll"]);

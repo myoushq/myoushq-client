@@ -19,6 +19,9 @@ type Entry struct {
 	At        int64  `json:"at"`
 	SentAt    int64  `json:"sent_at,omitempty"`
 	Version   string `json:"version,omitempty"` // "update" entries: the release announced
+	// The contact's current relationship context, filled in when read.
+	Relationship string `json:"relationship,omitempty"`
+	Sharing      string `json:"sharing,omitempty"`
 	// Incomplete marks a long message whose missing parts never arrived.
 	Incomplete bool   `json:"incomplete,omitempty"`
 	ID         string `json:"id,omitempty"`  // "notice" entries: the notice's id
@@ -170,6 +173,10 @@ func unread(st Storage, markRead bool) ([]Entry, error) {
 	entries := []Entry{}
 	for _, e := range history {
 		if e.Seq > s.ReadSeq && e.Direction != "out" {
+			if e.Peer != "" {
+				// So the agent has it when it answers.
+				e.Relationship, e.Sharing = contextOf(st, e.Peer)
+			}
 			entries = append(entries, e)
 		}
 	}

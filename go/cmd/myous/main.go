@@ -26,6 +26,10 @@ const usage = `usage: myous <command> [flags]
   inbox [--json] [--peek] [--local]  fetch, then new messages and other items, marked read
   history [--with NAME] [--limit N] [--json]
   contacts [--json]
+  context NAME [--relationship R] [--sharing TEXT] [--json]
+                                  show or set how your owner knows a contact and what you
+                                  may share (R: family, friend, colleague, business,
+                                  service, other); invite and accept take the same flags
   block NAME | unblock NAME | rename NAME NEW_ALIAS
   poll [--json] [--quiet]         advance pairings and fetch waiting messages, once
   listen                          stay connected and receive messages live
@@ -61,6 +65,8 @@ func run(ctx context.Context, cmd string, args []string) error {
 	with := fs.String("with", "", "only this contact")
 	limit := fs.Int("limit", 50, "how many entries")
 	waitFlag := fs.String("wait", "", "accept: seconds to wait; invite: stay until done")
+	relationship := fs.String("relationship", "", "how your owner knows this contact: "+strings.Join(myous.Relationships, ", "))
+	sharing := fs.String("sharing", "", "your owner's guidance on what you may share with this contact")
 	pos, err := parseInterleaved(fs, args)
 	if err != nil {
 		return err
@@ -106,7 +112,7 @@ func run(ctx context.Context, cmd string, args []string) error {
 			verb, npub, *alias, st.Home)
 
 	case "invite":
-		inv, err := agent.Invite(ctx)
+		inv, err := agent.Invite(ctx, myous.ContactContext{Relationship: *relationship, Sharing: *sharing})
 		if err != nil {
 			return err
 		}
@@ -138,7 +144,8 @@ func run(ctx context.Context, cmd string, args []string) error {
 				return fmt.Errorf("--wait wants seconds: %w", err)
 			}
 		}
-		p, err := agent.Accept(ctx, pos[0], time.Duration(wait*float64(time.Second)))
+		p, err := agent.Accept(ctx, pos[0], time.Duration(wait*float64(time.Second)),
+			myous.ContactContext{Relationship: *relationship, Sharing: *sharing})
 		if err != nil {
 			return err
 		}
@@ -209,8 +216,26 @@ func run(ctx context.Context, cmd string, args []string) error {
 			fmt.Println("no contacts yet; pair with `myous invite` or `myous accept`")
 		}
 		for _, c := range contacts {
-			fmt.Printf("%-20s %-9s %s\n", c.Alias, c.Status, c.Npub)
+			rel := c.Relationship
+			if rel == "" {
+				rel = "-"
+			}
+			fmt.Printf("%-20s %-9s %-10s %s\n", c.Alias, c.Status, rel, c.Npub)
 		}
+
+	case "context":
+		if len(pos) != 1 {
+			return errors.New("usage: myous context NAME [--relationship R] [--sharing TEXT]")
+		}
+		c, err := agent.SetContext(pos[0], myous.ContactContext{Relationship: *relationship, Sharing: *sharing})
+		if err != nil {
+			return err
+		}
+		if *asJSON {
+			return printJSON(map[string]any{"alias": c.Alias, "relationship": nullable(c.Relationship), "sharing": nullable(c.Sharing)})
+		}
+		fmt.Printf("%s: relationship %s; may share: %s\n", c.Alias, orElse(c.Relationship, "(not set)"),
+			orElse(c.Sharing, "(not set: share nothing personal)"))
 
 	case "block", "unblock":
 		if len(pos) != 1 {
@@ -340,6 +365,7 @@ func printEntries(entries []myous.Entry) {
 			fmt.Printf("[%s] me -> %s: %s\n", when, e.Alias, e.Text)
 		default:
 			fmt.Printf("[%s] %s: %s\n", when, e.Alias, e.Text)
+			fmt.Println(contextLine(e))
 		}
 	}
 }
@@ -360,4 +386,32 @@ func describePending(p *myous.Pending) string {
 	}
 	left := max(0, (p.ExpiresAt-time.Now().Unix())/60)
 	return fmt.Sprintf("%s: %s, expires in %d min", p.Nameplate, waiting, left)
+}
+
+// contextLine says how the owner knows the sender of an incoming message and
+// what may be shared, so the agent has it when it answers.
+func contextLine(e myous.Entry) string {
+	if e.Relationship == "" && e.Sharing == "" {
+		return fmt.Sprintf("    (relationship not set: until your owner tells you, share nothing personal; record it with "+
+			"myous context %q --relationship ... --sharing \"...\")", e.Alias)
+	}
+	line := orElse(e.Relationship, "relationship not set")
+	if e.Sharing != "" {
+		line += "; may share: " + e.Sharing
+	}
+	return "    (" + line + ")"
+}
+
+func orElse(s, fallback string) string {
+	if s == "" {
+		return fallback
+	}
+	return s
+}
+
+func nullable(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
 }

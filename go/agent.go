@@ -218,22 +218,47 @@ func (a *Agent) pairing() (*pairing, error) {
 
 // Invite starts a pairing. It finishes during a later Poll, Listen or
 // AdvancePairings.
-func (a *Agent) Invite(ctx context.Context) (*Invite, error) {
+// An optional ContactContext is recorded on the new contact.
+func (a *Agent) Invite(ctx context.Context, cc ...ContactContext) (*Invite, error) {
 	pr, err := a.pairing()
 	if err != nil {
 		return nil, err
 	}
-	return pr.invite(ctx)
+	c, err := oneContext(cc)
+	if err != nil {
+		return nil, err
+	}
+	return pr.invite(ctx, c)
+}
+
+func oneContext(cc []ContactContext) (ContactContext, error) {
+	if len(cc) == 0 {
+		return ContactContext{}, nil
+	}
+	return cc[0], cc[0].validate()
+}
+
+// SetContext records how the owner knows a contact and what may be shared
+// with it. Empty fields are left as they are.
+func (a *Agent) SetContext(name string, cc ContactContext) (Contact, error) {
+	if err := cc.validate(); err != nil {
+		return Contact{}, err
+	}
+	return a.changeContact(name, cc.apply)
 }
 
 // Accept joins a pairing from a code or link. It returns with Stage "done",
 // "failed", or still pending if the other side didn't answer within wait.
-func (a *Agent) Accept(ctx context.Context, code string, wait time.Duration) (*Pending, error) {
+func (a *Agent) Accept(ctx context.Context, code string, wait time.Duration, cc ...ContactContext) (*Pending, error) {
 	pr, err := a.pairing()
 	if err != nil {
 		return nil, err
 	}
-	return pr.accept(ctx, code, wait)
+	c, err := oneContext(cc)
+	if err != nil {
+		return nil, err
+	}
+	return pr.accept(ctx, code, wait, c)
 }
 
 // Advance moves one pairing forward, waiting up to wait for the peer.

@@ -125,13 +125,23 @@ export class Agent {
   }
 
   /** Start a pairing; it finishes during a later poll(), listen() or advancePairings(). */
-  async invite(): Promise<Invite> {
-    return (await this.pairing()).invite();
+  /** Start a pairing; the optional relationship context is recorded on the new contact. */
+  async invite(context?: contacts.ContactContext): Promise<Invite> {
+    contacts.contextFields(context); // validate
+    return (await this.pairing()).invite(context);
   }
 
   /** Join a pairing; returns with stage "done", "failed", or still pending. */
-  async accept(codeOrLink: string, wait = 60): Promise<Pending> {
-    return (await this.pairing()).accept(codeOrLink, wait);
+  async accept(codeOrLink: string, wait = 60, context?: contacts.ContactContext): Promise<Pending> {
+    contacts.contextFields(context); // validate
+    return (await this.pairing()).accept(codeOrLink, wait, context);
+  }
+
+  /** Record how the owner knows a contact and what may be shared with it. */
+  async setContext(name: string, context: contacts.ContactContext): Promise<Contact> {
+    const fields = contacts.contextFields(context);
+    return (await locked(this.st, "state", async () =>
+      Object.keys(fields).length ? contacts.update(this.st, name, fields) : (await contacts.find(this.st, name))[1]))!;
   }
 
   async advancePairings(): Promise<Pending[]> {
@@ -278,6 +288,8 @@ export class Agent {
       const state = await this.st.get<State>("state", {});
       const last = state.read_seq ?? 0;
       const entries = (await this.st.readHistory()).filter((e) => e.seq > last && e.direction !== "out");
+      // The contact's current relationship context, so the agent has it when it answers.
+      for (const e of entries) if (e.peer) Object.assign(e, await contacts.contextOf(this.st, e.peer));
       if (markRead && entries.length) await this.st.put("state", { ...state, read_seq: entries[entries.length - 1].seq });
       return entries;
     }))!;

@@ -8,7 +8,7 @@
 //! let agent = Agent::new(Arc::new(FileStorage::new(None)?), None)?;
 //! agent.create_identity()?;                 // once, ever
 //! agent.register(Some("Sam's Agent")).await?;
-//! let invite = agent.invite().await?;       // share invite.link / invite.code
+//! let invite = agent.invite(Default::default()).await?; // share invite.link / invite.code
 //! agent.poll().await?;                      // pairings + new messages
 //! agent.send("Alex's Agent", "hi").await?;
 //! agent.unread(true)?;
@@ -136,16 +136,25 @@ impl Agent {
 
     /// Start a pairing. It finishes during a later poll(), listen() or
     /// advance_pairings().
-    pub async fn invite(&self) -> Result<Invite> {
+    /// The optional relationship context is recorded on the new contact.
+    pub async fn invite(&self, context: contacts::ContactContext) -> Result<Invite> {
+        context.validate()?;
         let keys = self.keys()?;
-        Pairing::new(self.storage.clone(), &self.hub, &keys, self.alias()?).invite().await
+        Pairing::new(self.storage.clone(), &self.hub, &keys, self.alias()?).invite(context).await
     }
 
     /// Join a pairing. Returns Waiting if the other side didn't answer
     /// within `wait`; a later poll finishes it.
-    pub async fn accept(&self, code_or_link: &str, wait: Duration) -> Result<Outcome> {
+    pub async fn accept(&self, code_or_link: &str, wait: Duration, context: contacts::ContactContext) -> Result<Outcome> {
+        context.validate()?;
         let keys = self.keys()?;
-        Pairing::new(self.storage.clone(), &self.hub, &keys, self.alias()?).accept(code_or_link, wait).await
+        Pairing::new(self.storage.clone(), &self.hub, &keys, self.alias()?).accept(code_or_link, wait, context).await
+    }
+
+    /// Record how the owner knows a contact and what may be shared with it.
+    pub fn set_context(&self, name: &str, context: &contacts::ContactContext) -> Result<Contact> {
+        let _lock = self.storage.lock("state", true)?;
+        contacts::set_context(&*self.storage, name, context)
     }
 
     /// Advance one pending pairing, waiting up to `wait` for the peer.

@@ -12,7 +12,7 @@ import { sha256 } from "@noble/hashes/sha2.js";
 import { randomBytes } from "@noble/hashes/utils.js";
 import { nip19 } from "nostr-tools";
 import * as contacts from "./contacts.js";
-import type { Contact } from "./contacts.js";
+import type { Contact, ContactContext } from "./contacts.js";
 import { record } from "./history.js";
 import { Hub, HubError, now } from "./hub.js";
 import { pakeFinish, pakeStart, type Role } from "./pake.js";
@@ -132,6 +132,8 @@ export interface Pending {
   after: number;
   stage: "wait_pake" | "wait_payload" | "done" | "failed" | "elsewhere";
   key?: string;
+  /** Relationship context to record on the contact once paired. */
+  context?: ContactContext;
   contact?: Contact;
   verify?: string;
   error?: string;
@@ -151,7 +153,7 @@ export class Pairing {
   }
 
   /** Open a mailbox and post our half of the PAKE. Returns the code and link to share. */
-  async invite(): Promise<Invite> {
+  async invite(context?: ContactContext): Promise<Invite> {
     const box = await this.hub.request("POST", "/api/pair", {});
     const nameplate: string = box.nameplate;
     const secret = makeSecret();
@@ -159,7 +161,7 @@ export class Pairing {
     await this.post(nameplate, box.token, { t: "pake", v: VERSION, m: b64(pakeStart("a", formatCode(nameplate, secret), seed)) });
     const p: Pending = {
       role: "a", nameplate, secret, token: box.token, expires_at: box.expires_at,
-      seed: b64(seed), after: 0, stage: "wait_pake",
+      seed: b64(seed), after: 0, stage: "wait_pake", ...(context ? { context } : {}),
     };
     await this.save(p);
     const linkBase = (await this.hub.config()).pair_link_base;
@@ -167,7 +169,7 @@ export class Pairing {
   }
 
   /** Join someone else's invite; finishes now if the other side answers within `wait` seconds. */
-  async accept(code: string, wait = 60): Promise<Pending> {
+  async accept(code: string, wait = 60, context?: ContactContext): Promise<Pending> {
     const [nameplate, secret] = parseCode(code, (await this.hub.config()).pair_link_base);
     const mine = await this.st.get<Pending | null>(`pending/${nameplate}`, null);
     if (mine && mine.role === "b" && mine.secret === secret) {
@@ -185,7 +187,7 @@ export class Pairing {
     await this.post(nameplate, claim.token, { t: "pake", v: VERSION, m: b64(pakeStart("b", formatCode(nameplate, secret), seed)) });
     const p: Pending = {
       role: "b", nameplate, secret, token: claim.token, expires_at: claim.expires_at,
-      seed: b64(seed), after: 0, stage: "wait_pake",
+      seed: b64(seed), after: 0, stage: "wait_pake", ...(context ? { context } : {}),
     };
     await this.save(p);
     return this.advance(p, wait);
@@ -268,15 +270,19 @@ export class Pairing {
       const payload = unseal(key, peerRole, p.nameplate, msg);
       if (payload.pubkey === this.pubkey) throw new PairingError("that's this agent's own invite");
       await locked(this.st, "state", async () => {
-        const contact = await contacts.add(this.st, payload.pubkey, String(payload.alias ?? "").slice(0, 64));
+        let contact = await contacts.add(this.st, payload.pubkey, String(payload.alias ?? "").slice(0, 64));
+        const fields = contacts.contextFields(p.context);
+        if (Object.keys(fields).length) contact = await contacts.update(this.st, payload.pubkey, fields);
         p.stage = "done";
         p.contact = contact;
         p.verify = verifyCode(key);
         await this.st.delete(`pending/${p.nameplate}`);
-        await record(this.st, {
-          type: "paired", peer: contact.npub, alias: contact.alias,
-          text: `paired with ${contact.alias} (verification code ${p.verify})`,
-        });
+        let text = `paired with ${contact.alias} (verification code ${p.verify})`;
+        if (!contact.relationship) {
+          text += `. Ask your owner how they know this contact and what you may share with it, ` +
+            `then record it: myous context ${JSON.stringify(contact.alias)} --relationship ... --sharing "..."`;
+        }
+        await record(this.st, { type: "paired", peer: contact.npub, alias: contact.alias, text });
       });
       // Don't close the mailbox: the peer may not have read our payload yet.
     } else {

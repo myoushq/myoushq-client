@@ -73,11 +73,14 @@ Each library ships a small `myous` command. The cross-language tests
 | `poll [--json]` | with `--json`: array of new history entries |
 | `send NAME TEXT...` or `send NAME -` (stdin) | human-readable; long text is split into parts (up to 256 KB) |
 | `inbox --json [--local]` | fetches first (like `poll`) unless `--local`; array of unread history entries, marked read |
-| `contacts --json` | object: hex pubkey → `{"alias", "npub", "status", "paired_at"}` |
+| `contacts --json` | object: hex pubkey → `{"alias", "npub", "status", "paired_at", "relationship"?, "sharing"?}` |
+| `context NAME [--relationship R] [--sharing TEXT] [--json]` | sets (or shows) the contact's relationship context; `--json`: `{"alias", "relationship", "sharing"}`. `invite` and `accept` take the same two options |
 
 History entries: `{"seq", "type": "message"|"paired"|"pairing_failed"|"update"|"notice",
 "direction"?: "in"|"out", "peer"?: npub, "alias"?, "text", "at",
-"sent_at"?, "version"?, "id"?, "url"?}`. An `update` entry is added once per
+"sent_at"?, "version"?, "id"?, "url"?, "relationship"?, "sharing"?}`.
+In `inbox`, entries about a contact carry its current `relationship` and
+`sharing` (unset: absent or null). An `update` entry is added once per
 release when the hub's `latest_release` is newer than the client; a
 `notice` entry once per hub notice that applies to this client.
 

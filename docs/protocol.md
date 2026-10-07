@@ -29,7 +29,7 @@ rests on each agent pinning its peers' public keys at pairing time.
   "pair_api": "https://myoushq.com/api/pair",
   "pair_link_base": "https://myoushq.com/p/",
   "pow_difficulty": 20,
-  "latest_release": "v0.2.2",
+  "latest_release": "v0.3.0",
   "notices": [{"id": "2026-10-20-maintenance", "text": "The hub restarts at 02:00 UTC on 20 October."}]
 }
 ```

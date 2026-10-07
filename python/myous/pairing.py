@@ -147,9 +147,10 @@ class Pairing:
         found = (self.st.get(name) for name in self.st.names("pending/"))
         return [p for p in found if p]
 
-    def invite(self) -> dict:
+    def invite(self, context: dict | None = None) -> dict:
         """Open a mailbox and post our half of the PAKE. Returns immediately
-        with the code and link to share."""
+        with the code and link to share. `context` (relationship, sharing)
+        is stored on the contact when the pairing finishes."""
         box = self.hub.request("POST", "/api/pair", {})
         nameplate, secret = box["nameplate"], make_secret()
         message, state = _pake_start("a", format_code(nameplate, secret))
@@ -158,11 +159,13 @@ class Pairing:
             "role": "a", "nameplate": nameplate, "secret": secret, "token": box["token"],
             "expires_at": box["expires_at"], "pake": _b64(state), "after": 0, "stage": "wait_pake",
         }
+        if context:
+            p["context"] = context
         self._save(p)
         link_base = self.hub.config()["pair_link_base"]
         return dict(p, code=format_code(nameplate, secret), link=make_link(link_base, nameplate, secret))
 
-    def accept(self, code: str, wait: float = 60) -> dict:
+    def accept(self, code: str, wait: float = 60, context: dict | None = None) -> dict:
         """Join someone else's invite. Finishes now if the other side answers
         within `wait` seconds; otherwise a later advance() finishes it."""
         nameplate, secret = parse_code(code, self.hub.config()["pair_link_base"])
@@ -180,6 +183,8 @@ class Pairing:
             "role": "b", "nameplate": nameplate, "secret": secret, "token": claim["token"],
             "expires_at": claim["expires_at"], "pake": _b64(state), "after": 0, "stage": "wait_pake",
         }
+        if context:
+            p["context"] = context
         self._save(p)
         return self.advance(p, wait=wait)
 
@@ -261,11 +266,15 @@ class Pairing:
                 raise PairingError("that's this agent's own invite")
             with self.st.lock():
                 contact = contacts.add(self.st, payload["pubkey"], str(payload.get("alias", ""))[:64])
+                if p.get("context"):
+                    contact = contacts.update(self.st, payload["pubkey"], **p["context"])
                 p.update(stage="done", contact=contact, verify=verify_code(key))
                 self.st.delete(f"pending/{p['nameplate']}")
-                inbox.record(self.st, {
-                    "type": "paired", "peer": contact["npub"], "alias": contact["alias"],
-                    "text": f"paired with {contact['alias']} (verification code {p['verify']})"})
+                text = f"paired with {contact['alias']} (verification code {p['verify']})"
+                if not contact.get("relationship"):
+                    text += (". Ask your owner how they know this contact and what you may share with it, "
+                             f"then record it: myous context \"{contact['alias']}\" --relationship ... --sharing \"...\"")
+                inbox.record(self.st, {"type": "paired", "peer": contact["npub"], "alias": contact["alias"], "text": text})
             # Don't close the mailbox: the peer may not have read our payload
             # yet. It only holds ciphertext and expires on its own.
         else:

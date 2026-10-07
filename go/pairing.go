@@ -250,10 +250,13 @@ type Pending struct {
 	After     int    `json:"after"`
 	// Stage is wait_pake, wait_payload, or, in results only: done, failed,
 	// elsewhere (another run finished it).
-	Stage   string   `json:"stage"`
-	Contact *Contact `json:"contact,omitempty"`
-	Verify  string   `json:"verify,omitempty"`
-	Error   string   `json:"error,omitempty"`
+	Stage string `json:"stage"`
+	// Relationship context to record on the contact once paired.
+	Relationship string   `json:"relationship,omitempty"`
+	Sharing      string   `json:"sharing,omitempty"`
+	Contact      *Contact `json:"contact,omitempty"`
+	Verify       string   `json:"verify,omitempty"`
+	Error        string   `json:"error,omitempty"`
 }
 
 // Finished reports whether the pairing is over, one way or another.
@@ -291,7 +294,7 @@ func (pr *pairing) pending() ([]*Pending, error) {
 	return out, nil
 }
 
-func (pr *pairing) invite(ctx context.Context) (*Invite, error) {
+func (pr *pairing) invite(ctx context.Context, cc ContactContext) (*Invite, error) {
 	cfg, err := pr.hub.Config(ctx, false)
 	if err != nil {
 		return nil, err
@@ -308,14 +311,15 @@ func (pr *pairing) invite(ctx context.Context) (*Invite, error) {
 	if err != nil {
 		return nil, err
 	}
-	p := &Pending{Role: "a", Nameplate: box.Nameplate, Secret: secret, Token: box.Token, ExpiresAt: box.ExpiresAt, Stage: "wait_pake"}
+	p := &Pending{Role: "a", Nameplate: box.Nameplate, Secret: secret, Token: box.Token, ExpiresAt: box.ExpiresAt, Stage: "wait_pake",
+		Relationship: cc.Relationship, Sharing: cc.Sharing}
 	if err := pr.start(ctx, p); err != nil {
 		return nil, err
 	}
 	return &Invite{Pending: *p, Code: FormatCode(p.Nameplate, secret), Link: MakeLink(cfg.PairLinkBase, p.Nameplate, secret)}, nil
 }
 
-func (pr *pairing) accept(ctx context.Context, code string, wait time.Duration) (*Pending, error) {
+func (pr *pairing) accept(ctx context.Context, code string, wait time.Duration, cc ContactContext) (*Pending, error) {
 	cfg, err := pr.hub.Config(ctx, false)
 	if err != nil {
 		return nil, err
@@ -340,7 +344,8 @@ func (pr *pairing) accept(ctx context.Context, code string, wait time.Duration) 
 		}
 		return nil, err
 	}
-	p := &Pending{Role: "b", Nameplate: nameplate, Secret: secret, Token: claim.Token, ExpiresAt: claim.ExpiresAt, Stage: "wait_pake"}
+	p := &Pending{Role: "b", Nameplate: nameplate, Secret: secret, Token: claim.Token, ExpiresAt: claim.ExpiresAt, Stage: "wait_pake",
+		Relationship: cc.Relationship, Sharing: cc.Sharing}
 	if err := pr.start(ctx, p); err != nil {
 		return nil, err
 	}
@@ -516,12 +521,21 @@ func (pr *pairing) step(ctx context.Context, p *Pending, body string) error {
 		if err != nil {
 			return err
 		}
+		if cc := (ContactContext{p.Relationship, p.Sharing}); cc != (ContactContext{}) {
+			if c, err = updateContact(pr.st, peer.Pubkey, cc.apply); err != nil {
+				return err
+			}
+		}
 		p.Stage, p.Contact, p.Verify = "done", &c, VerifyCode(key)
 		if err := pr.st.Delete("pending/" + p.Nameplate); err != nil {
 			return err
 		}
-		_, err = record(pr.st, Entry{Type: "paired", Peer: c.Npub, Alias: c.Alias,
-			Text: fmt.Sprintf("paired with %s (verification code %s)", c.Alias, p.Verify)})
+		text := fmt.Sprintf("paired with %s (verification code %s)", c.Alias, p.Verify)
+		if c.Relationship == "" {
+			text += fmt.Sprintf(". Ask your owner how they know this contact and what you may share with it, "+
+				"then record it: myous context %q --relationship ... --sharing \"...\"", c.Alias)
+		}
+		_, err = record(pr.st, Entry{Type: "paired", Peer: c.Npub, Alias: c.Alias, Text: text})
 		// Don't close the mailbox: the peer may not have read our payload
 		// yet. It only holds ciphertext and expires on its own.
 		return err

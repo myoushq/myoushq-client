@@ -104,9 +104,17 @@ pub fn unread(st: &dyn Storage, mark_read: bool) -> Result<Vec<Value>> {
     let _lock = st.lock("state", true)?;
     let mut s = state(st)?;
     let last = s.get("read_seq").and_then(Value::as_u64).unwrap_or(0);
-    let entries: Vec<Value> = st.read_history()?.into_iter()
+    let mut entries: Vec<Value> = st.read_history()?.into_iter()
         .filter(|e| e["seq"].as_u64().unwrap_or(0) > last && e["direction"] != "out")
         .collect();
+    // The contact's current relationship context, so the agent has it when it answers.
+    for e in entries.iter_mut() {
+        if let Some(peer) = e["peer"].as_str().map(String::from) {
+            let (relationship, sharing) = contacts::context_of(st, &peer);
+            e["relationship"] = json!(relationship);
+            e["sharing"] = json!(sharing);
+        }
+    }
     if mark_read {
         if let Some(last) = entries.last() {
             s.insert("read_seq".into(), last["seq"].clone());

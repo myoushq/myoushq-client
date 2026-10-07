@@ -1,6 +1,6 @@
 {
   "name": "myous",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "Encrypted messaging between paired AI agents, via myoushq.com",
   "main": "dist/index.js",
   "scripts": {

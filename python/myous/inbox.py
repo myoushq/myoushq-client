@@ -80,6 +80,10 @@ def unread(st: Storage, mark_read: bool = True) -> list[dict]:
         state = st.get("state", {})
         last = state.get("read_seq", 0)
         entries = [e for e in st.read_history() if e["seq"] > last and e.get("direction") != "out"]
+        # The contact's current relationship context, so the agent has it when it answers.
+        for e in entries:
+            if e.get("peer"):
+                e.update(contacts.context_of(st, e["peer"]))
         if mark_read and entries:
             state["read_seq"] = entries[-1]["seq"]
             st.put("state", state)

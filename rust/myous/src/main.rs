@@ -36,6 +36,8 @@ enum Command {
         /// Stay until the other side joins
         #[arg(long)]
         wait: bool,
+        #[command(flatten)]
+        context: ContextArgs,
     },
     /// Join a pairing from a link or code
     Accept {
@@ -43,6 +45,16 @@ enum Command {
         /// Seconds to wait for the other side
         #[arg(long, default_value_t = 60.0)]
         wait: f64,
+        #[command(flatten)]
+        context: ContextArgs,
+    },
+    /// Show or set how your owner knows a contact and what you may share with it
+    Context {
+        name: String,
+        #[command(flatten)]
+        context: ContextArgs,
+        #[arg(long)]
+        json: bool,
     },
     /// Send a message to a paired contact (text "-" reads stdin)
     Send {
@@ -132,8 +144,8 @@ async fn run(cli: Cli) -> Result<()> {
             println!("alias: {alias}");
             println!("data directory: {} (keep it; the key file must never be lost)", st.home.display());
         }
-        Command::Invite { json, wait } => {
-            let inv = agent.invite().await?;
+        Command::Invite { json, wait, context } => {
+            let inv = agent.invite(context.into()).await?;
             if json {
                 println!("{}", serde_json::to_string(&inv)?);
                 return Ok(());
@@ -152,7 +164,17 @@ async fn run(cli: Cli) -> Result<()> {
                 }
             }
         }
-        Command::Accept { code, wait } => match agent.accept(&code, Duration::from_secs_f64(wait)).await? {
+        Command::Context { name, context, json } => {
+            let c = agent.set_context(&name, &context.into())?;
+            if json {
+                println!("{}", json!({"alias": c.alias, "relationship": c.relationship, "sharing": c.sharing}));
+            } else {
+                println!("{}: relationship {}; may share: {}", c.alias,
+                    c.relationship.as_deref().unwrap_or("(not set)"),
+                    c.sharing.as_deref().unwrap_or("(not set: share nothing personal)"));
+            }
+        }
+        Command::Accept { code, wait, context } => match agent.accept(&code, Duration::from_secs_f64(wait), context.into()).await? {
             Outcome::Waiting => println!(
                 "the other agent hasn't answered yet; it finishes the next time this agent polls or listens \
                  (result in `myous inbox`)"
@@ -204,7 +226,7 @@ async fn run(cli: Cli) -> Result<()> {
                 println!("no contacts yet; pair with `myous invite` or `myous accept`");
             } else {
                 for c in contacts.values() {
-                    println!("{:<20} {:<9} {}", c.alias, c.status, c.npub);
+                    println!("{:<20} {:<9} {:<10} {}", c.alias, c.status, c.relationship.as_deref().unwrap_or("-"), c.npub);
                 }
             }
         }
@@ -289,7 +311,10 @@ fn print_entries(entries: &[Value]) {
         let alias = e["alias"].as_str().unwrap_or("");
         match (e["type"].as_str(), e["direction"].as_str()) {
             (Some("message"), Some("out")) => println!("[{when}] me -> {alias}: {text}"),
-            (Some("message"), _) => println!("[{when}] {alias}: {text}"),
+            (Some("message"), _) => {
+                println!("[{when}] {alias}: {text}");
+                println!("{}", context_line(e));
+            }
             (kind, _) => println!("[{when}] ({}) {text}", kind.unwrap_or("")),
         }
     }
@@ -324,4 +349,36 @@ impl GetOrEmpty for FileStorage {
         use myous::Storage;
         self.get(name).ok().flatten().unwrap_or(json!({}))
     }
+}
+
+/// Relationship context options, shared by invite, accept and context.
+#[derive(clap::Args, Debug)]
+struct ContextArgs {
+    /// How your owner knows this contact: family, friend, colleague, business, service or other
+    #[arg(long)]
+    relationship: Option<String>,
+    /// Your owner's guidance on what you may share with this contact
+    #[arg(long)]
+    sharing: Option<String>,
+}
+
+impl From<ContextArgs> for myous::contacts::ContactContext {
+    fn from(a: ContextArgs) -> Self {
+        Self { relationship: a.relationship, sharing: a.sharing }
+    }
+}
+
+/// How the owner knows the sender of an incoming message and what may be
+/// shared, so the agent has it when it answers.
+fn context_line(e: &Value) -> String {
+    let (relationship, sharing) = (e["relationship"].as_str(), e["sharing"].as_str());
+    if relationship.is_none() && sharing.is_none() {
+        return format!("    (relationship not set: until your owner tells you, share nothing personal; record it with \
+            myous context {:?} --relationship ... --sharing \"...\")", e["alias"].as_str().unwrap_or(""));
+    }
+    let mut line = relationship.unwrap_or("relationship not set").to_string();
+    if let Some(s) = sharing {
+        line += &format!("; may share: {s}");
+    }
+    format!("    ({line})")
 }

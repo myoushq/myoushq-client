@@ -22,6 +22,66 @@ pub struct Contact {
     pub npub: String,
     pub status: String,
     pub paired_at: u64,
+    /// How the owner knows this contact (one of RELATIONSHIPS), kept only here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relationship: Option<String>,
+    /// The owner's guidance on what may be shared with this contact.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sharing: Option<String>,
+}
+
+pub const RELATIONSHIPS: [&str; 6] = ["family", "friend", "colleague", "business", "service", "other"];
+const MAX_SHARING: usize = 500;
+
+/// Relationship context to record on a contact; `None` fields are left as they are.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct ContactContext {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relationship: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sharing: Option<String>,
+}
+
+impl ContactContext {
+    pub fn validate(&self) -> Result<()> {
+        if let Some(r) = &self.relationship {
+            if !RELATIONSHIPS.contains(&r.as_str()) {
+                bail!("relationship must be one of: {}", RELATIONSHIPS.join(", "));
+            }
+        }
+        if self.sharing.as_ref().is_some_and(|s| s.chars().count() > MAX_SHARING) {
+            bail!("sharing guidance is limited to {MAX_SHARING} characters");
+        }
+        Ok(())
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.relationship.is_none() && self.sharing.is_none()
+    }
+}
+
+/// Record relationship context on a contact.
+pub fn set_context(st: &dyn Storage, name: &str, cc: &ContactContext) -> Result<Contact> {
+    cc.validate()?;
+    let (key, _) = find(st, name)?;
+    let mut contacts = load(st)?;
+    let c = contacts.get_mut(&key).unwrap();
+    if let Some(r) = &cc.relationship {
+        c.relationship = Some(r.clone());
+    }
+    if let Some(s) = cc.sharing.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        c.sharing = Some(s.to_string());
+    }
+    save(st, &contacts)?;
+    Ok(contacts[&key].clone())
+}
+
+/// (relationship, sharing) of the contact with this npub.
+pub fn context_of(st: &dyn Storage, npub: &str) -> (Option<String>, Option<String>) {
+    load(st).ok()
+        .and_then(|cs| cs.into_values().find(|c| c.npub == npub))
+        .map(|c| (c.relationship, c.sharing))
+        .unwrap_or((None, None))
 }
 
 /// Contacts keyed by hex public key.
@@ -46,7 +106,9 @@ pub fn add(st: &dyn Storage, pubkey_hex: &str, alias: &str) -> Result<Contact> {
     } else {
         let alias = unique_alias(&contacts, if alias.is_empty() { "peer" } else { alias });
         let npub = PublicKey::from_hex(pubkey_hex)?.to_bech32()?;
-        contacts.insert(pubkey_hex.into(), Contact { alias, npub, status: APPROVED.into(), paired_at: now() });
+        contacts.insert(pubkey_hex.into(), Contact {
+            alias, npub, status: APPROVED.into(), paired_at: now(), relationship: None, sharing: None,
+        });
     }
     save(st, &contacts)?;
     Ok(contacts[pubkey_hex].clone())
