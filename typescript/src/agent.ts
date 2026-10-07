@@ -16,7 +16,8 @@ import type { Contact, Contacts } from "./contacts.js";
 import { record, type State } from "./history.js";
 import { Hub, type HubConfig, type Notice } from "./hub.js";
 import { Pairing, type Invite, type Pending } from "./pairing.js";
-import { Connection, unwrap } from "./relay.js";
+import * as parts from "./parts.js";
+import { Connection, unwrap, type Unwrapped } from "./relay.js";
 import { locked, type HistoryEntry, type Storage } from "./storage.js";
 
 /** This client's release, from package.json. */
@@ -142,9 +143,22 @@ export class Agent {
   async send(name: string, text: string): Promise<HistoryEntry> {
     const [pubkey, contact] = await contacts.find(this.st, name);
     if (contact.status !== "approved") throw new Error(`${contact.alias} is ${contact.status}`);
+    const chunks = parts.split(text); // throws if it's too long to send
     const conn = await this.connect();
     try {
-      await conn.sendMessage(pubkey, text);
+      if (chunks.length === 1) {
+        await conn.sendMessage(pubkey, text);
+      } else {
+        const targets = await conn.deliveryTargets(pubkey);
+        const id = parts.newId();
+        for (const [i, chunk] of chunks.entries()) {
+          try {
+            await conn.sendMessage(pubkey, chunk, [["part", id, String(i + 1), String(chunks.length)]], targets);
+          } catch (e) {
+            throw new Error(`sent ${i} of ${chunks.length} parts, then: ${(e as Error).message ?? e}`);
+          }
+        }
+      }
     } finally {
       conn.close();
     }
@@ -152,7 +166,6 @@ export class Agent {
       record(this.st, { type: "message", direction: "out", peer: contact.npub, alias: contact.alias, text })))!;
   }
 
-  /** Advance pairings and fetch waiting messages, once. Returns new history entries. */
   /** Pass on what the hub announces, once each: a newer client release (an
    * "update" entry) and notices (a "notice" entry each). Both are
    * information only; what to do about them is up to the agent. */
@@ -201,6 +214,7 @@ export class Agent {
     });
   }
 
+  /** Advance pairings and fetch waiting messages, once. Returns new history entries. */
   async poll(): Promise<HistoryEntry[]> {
     const before = await this.nextSeq();
     await this.advancePairings();
@@ -315,16 +329,35 @@ export class Agent {
     const sk = await this.key();
     const messages = fresh
       .map((w) => unwrap(sk, w))
-      .filter((m): m is [string, string, number, number] => m !== null)
-      .sort((a, b) => a[2] - b[2] || a[3] - b[3]);
+      .filter((m): m is Unwrapped => m !== null)
+      .sort((a, b) => a[2] - b[2] || a[3] - b[3] || (a[4]?.index ?? 0) - (b[4]?.index ?? 0));
+    const buf = await this.st.get<parts.Buffer>("partials", {});
+    let changed = false;
     const stored: HistoryEntry[] = [];
-    for (const [sender, text, sentAt] of messages) {
+    for (const [sender, rawText, rawSentAt, ms, part] of messages) {
       const contact = await contacts.approved(this.st, sender);
       if (!contact) continue; // not paired, or blocked: drop silently
+      let text = rawText, sentAt = rawSentAt;
+      if (part) {
+        changed = true;
+        const done = parts.add(buf, sender, part, rawText, rawSentAt, ms, now);
+        if (!done) continue; // waiting for the other parts
+        [text, sentAt] = done;
+      }
       stored.push(await record(this.st, {
         type: "message", direction: "in", peer: contact.npub, alias: contact.alias, text, sent_at: sentAt,
       }));
     }
+    for (const [sender, text, sentAt] of parts.expire(buf, now)) {
+      changed = true;
+      const contact = await contacts.approved(this.st, sender);
+      if (contact) {
+        stored.push(await record(this.st, {
+          type: "message", direction: "in", peer: contact.npub, alias: contact.alias, text, sent_at: sentAt, incomplete: true,
+        }));
+      }
+    }
+    if (changed) await this.st.put("partials", buf);
     return stored;
   }
 

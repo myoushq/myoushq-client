@@ -171,8 +171,22 @@ impl Agent {
         if contact.status != contacts::APPROVED {
             bail!("{} is {}", contact.alias, contact.status);
         }
+        let chunks = crate::parts::split(text)?;
+        let recipient = PublicKey::from_hex(&pubkey)?;
         let conn = self.connect().await?;
-        let sent = conn.send_message(PublicKey::from_hex(&pubkey)?, text).await;
+        let sent = async {
+            if chunks.len() == 1 {
+                return conn.send_message(recipient, text, vec![], None).await.map(|_| ());
+            }
+            let targets = conn.delivery_targets(recipient).await?;
+            let (id, total) = (crate::parts::new_id(), chunks.len().to_string());
+            for (i, chunk) in chunks.iter().enumerate() {
+                let tag = nostr_sdk::prelude::Tag::parse(["part".to_string(), id.clone(), (i + 1).to_string(), total.clone()])?;
+                conn.send_message(recipient, chunk, vec![tag], Some(targets.clone())).await
+                    .map_err(|e| anyhow::anyhow!("sent {i} of {} parts, then: {e}", chunks.len()))?;
+            }
+            Ok(())
+        }.await;
         conn.close().await;
         sent?;
         let _lock = self.storage.lock("state", true)?;

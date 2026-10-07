@@ -60,6 +60,11 @@ def find_impls(tmp: Path) -> dict[str, list[str]]:
     return impls
 
 
+# About 70 KB, so three parts, with characters that are awkward to split or
+# escape: multi-byte UTF-8, emoji, quotes, backslashes, newlines, <>&.
+LONG_TEXT = "".join(f"line {i}: naïve café 日本語 😀👍🏽 \"quoted\" back\\slash <tag> & more\n" for i in range(1000))
+
+
 class Interop(unittest.TestCase):
     HUB_HOST = "127.0.0.1"  # the name clients use for the hub and relay
     LATEST_RELEASE = "v0.0.1"  # what the hub announces; older than every client, so no notices
@@ -79,6 +84,7 @@ class Interop(unittest.TestCase):
                    PUBLIC_URL=cls.hub_url, POW_DIFFICULTY="10", RATE_LIMIT_SCALE="100",
                    LATEST_RELEASE=cls.LATEST_RELEASE, **cls.extra_hub_env())
         cls.hub_log = open(cls.tmp / "hub.log", "w")
+        cls.hub_env, cls.hub_port = env, port
         cls.hub = subprocess.Popen([str(hub_bin)], env=env, stdout=cls.hub_log, stderr=cls.hub_log)
         for _ in range(50):
             try:
@@ -103,9 +109,10 @@ class Interop(unittest.TestCase):
     def cli_env(self, home: Path) -> dict:
         return dict(os.environ, MYOUS_HOME=str(home))
 
-    def run_cli(self, impl: str, home: Path, *args: str, check: bool = True) -> str:
+    def run_cli(self, impl: str, home: Path, *args: str, check: bool = True, stdin: str | None = None) -> str:
         env = self.cli_env(home)
-        r = subprocess.run(self.impls[impl] + list(args), env=env, capture_output=True, text=True, timeout=120)
+        r = subprocess.run(self.impls[impl] + list(args), env=env, capture_output=True, text=True, timeout=120,
+                           input=stdin)
         if check and r.returncode != 0:
             self.fail(f"{impl} {' '.join(args)} failed ({r.returncode}):\n{r.stdout}\n{r.stderr}")
         return r.stdout
@@ -154,6 +161,15 @@ class Interop(unittest.TestCase):
         received = self.entries(inviter, a_home)
         self.assertEqual([(e["alias"], e["text"]) for e in received], [(b_name, f"hi {inviter}")])
 
+        # A long message goes out in parts and arrives whole.
+        self.run_cli(inviter, a_home, "send", b_name, "-", stdin=LONG_TEXT)
+        self.assertEqual([e["text"] for e in self.entries(joiner, b_home)], [LONG_TEXT])
+        # Over the limit: refused before sending, with a clear error.
+        r = subprocess.run(self.impls[inviter] + ["send", b_name, "-"], env=self.cli_env(a_home),
+                           capture_output=True, text=True, timeout=60, input="x" * 300_000)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("limit", r.stdout + r.stderr)
+
 
 class HubNotices(Interop):
     """What the hub announces reaches every client's agent once: a newer
@@ -194,6 +210,52 @@ class HubNotices(Interop):
                     ("n-offsite", f"Notice from {host}: Read this.", None),
                 ])
                 self.assertEqual(self.entries(impl, home), [])  # only once
+
+
+class StorageQuota(Interop):
+    """An agent that stores too much on the relay is refused, clearly, while
+    others carry on, and the hub still remembers after a restart."""
+
+    @classmethod
+    def extra_hub_env(cls) -> dict:
+        return {"SENDER_QUOTA_BYTES": "100000"}
+
+    def restart_hub(self) -> None:
+        cls = type(self)
+        cls.hub.terminate()
+        cls.hub.wait()
+        cls.hub = subprocess.Popen(cls.hub.args, env=cls.hub_env, stdout=cls.hub_log, stderr=cls.hub_log)
+        for _ in range(50):
+            try:
+                urllib.request.urlopen(f"http://127.0.0.1:{cls.hub_port}/config.json", timeout=1)
+                return
+            except OSError:
+                time.sleep(0.1)
+
+    def test_every_pair(self):
+        for impl in self.impls:
+            with self.subTest(impl=impl):
+                a, b = self.tmp / f"quota-{impl}-a", self.tmp / f"quota-{impl}-b"
+                self.run_cli(impl, a, "init", "--alias", f"{impl}-qa", "--hub", self.hub_url)
+                self.run_cli("python", b, "init", "--alias", f"{impl}-qb", "--hub", self.hub_url)
+                code = json.loads(self.run_cli("python", b, "invite", "--json"))["code"]
+                self.run_cli(impl, a, "accept", code, "--wait", "3")
+                self.entries("python", b)
+                self.entries(impl, a)
+                # ~79 KB of text is ~150 KB of wraps: over the 100 KB quota partway.
+                r = subprocess.run(self.impls[impl] + ["send", f"{impl}-qb", "-"], env=self.cli_env(a),
+                                   capture_output=True, text=True, timeout=60, input=LONG_TEXT)
+                self.assertNotEqual(r.returncode, 0, r.stdout)
+                self.assertIn("storage quota", r.stdout + r.stderr)
+                # Only that agent is limited: its contact can still write to it.
+                self.run_cli("python", b, "send", f"{impl}-qa", "still fine")
+                self.assertEqual([e["text"] for e in self.entries(impl, a)], ["still fine"])
+        # The hub remembers who stored what across a restart.
+        self.restart_hub()
+        impl = next(iter(self.impls))
+        r = subprocess.run(self.impls[impl] + ["send", f"{impl}-qb", "-"], env=self.cli_env(self.tmp / f"quota-{impl}-a"),
+                           capture_output=True, text=True, timeout=60, input=LONG_TEXT)
+        self.assertIn("storage quota", r.stdout + r.stderr)
 
 
 class TestProxy:

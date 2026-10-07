@@ -19,8 +19,10 @@ type Entry struct {
 	At        int64  `json:"at"`
 	SentAt    int64  `json:"sent_at,omitempty"`
 	Version   string `json:"version,omitempty"` // "update" entries: the release announced
-	ID        string `json:"id,omitempty"`      // "notice" entries: the notice's id
-	URL       string `json:"url,omitempty"`     // "notice" entries: link for more detail
+	// Incomplete marks a long message whose missing parts never arrived.
+	Incomplete bool   `json:"incomplete,omitempty"`
+	ID         string `json:"id,omitempty"`  // "notice" entries: the notice's id
+	URL        string `json:"url,omitempty"` // "notice" entries: link for more detail
 }
 
 // State is the "state" document.
@@ -101,23 +103,52 @@ func handleWraps(st Storage, sk string, wraps []*nostr.Event) ([]Entry, error) {
 		if msgs[i].sentAt != msgs[j].sentAt {
 			return msgs[i].sentAt < msgs[j].sentAt
 		}
-		return msgs[i].ms < msgs[j].ms
+		if msgs[i].ms != msgs[j].ms {
+			return msgs[i].ms < msgs[j].ms
+		}
+		return msgs[i].part != nil && msgs[j].part != nil && msgs[i].part.index < msgs[j].part.index
 	})
 
+	buf := map[string]*unfinished{}
+	if _, err := st.Get("partials", &buf); err != nil {
+		return nil, err
+	}
+	changed := false
 	var stored []Entry
-	for _, m := range msgs {
+	keep := func(m message, incomplete bool) error {
 		c, err := approvedContact(st, m.sender)
-		if err != nil {
+		if err != nil || c == nil {
+			return err // c == nil: not paired, or blocked: drop silently
+		}
+		if m.part != nil {
+			changed = true
+			whole, done := addPart(buf, m, now)
+			if !done {
+				return nil // waiting for the other parts
+			}
+			m = whole
+		}
+		e, err := record(st, Entry{Type: "message", Direction: "in", Peer: c.Npub, Alias: c.Alias, Text: m.text, SentAt: m.sentAt, Incomplete: incomplete})
+		if err == nil {
+			stored = append(stored, e)
+		}
+		return err
+	}
+	for _, m := range msgs {
+		if err := keep(m, false); err != nil {
 			return stored, err
 		}
-		if c == nil {
-			continue // not paired, or blocked: drop silently
-		}
-		e, err := record(st, Entry{Type: "message", Direction: "in", Peer: c.Npub, Alias: c.Alias, Text: m.text, SentAt: m.sentAt})
-		if err != nil {
+	}
+	for _, m := range expireParts(buf, now) {
+		changed = true
+		if err := keep(m, true); err != nil {
 			return stored, err
 		}
-		stored = append(stored, e)
+	}
+	if changed {
+		if err := st.Put("partials", buf); err != nil {
+			return stored, err
+		}
 	}
 	return stored, nil
 }

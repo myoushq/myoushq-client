@@ -19,6 +19,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -273,13 +274,31 @@ func (a *Agent) Send(ctx context.Context, name, text string) (Entry, error) {
 	if c.Status != Approved {
 		return Entry{}, fmt.Errorf("%s is %s", c.Alias, c.Status)
 	}
+	chunks, err := splitMessage(text)
+	if err != nil {
+		return Entry{}, err
+	}
 	conn, err := a.connect(ctx, nil)
 	if err != nil {
 		return Entry{}, err
 	}
 	defer conn.close()
-	if _, err := conn.sendMessage(ctx, pk, text); err != nil {
-		return Entry{}, err
+	if len(chunks) == 1 {
+		if _, err := conn.sendMessage(ctx, pk, text, nil, nil); err != nil {
+			return Entry{}, err
+		}
+	} else {
+		targets, err := conn.deliveryTargets(ctx, pk)
+		if err != nil {
+			return Entry{}, err
+		}
+		id, total := newPartID(), strconv.Itoa(len(chunks))
+		for i, chunk := range chunks {
+			tag := nostr.Tags{{"part", id, strconv.Itoa(i + 1), total}}
+			if _, err := conn.sendMessage(ctx, pk, chunk, tag, targets); err != nil {
+				return Entry{}, fmt.Errorf("sent %d of %d parts, then: %w", i, len(chunks), err)
+			}
+		}
 	}
 	unlock, _, err := lock(a.st, "state", true)
 	if err != nil {

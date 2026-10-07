@@ -13,7 +13,7 @@ const USAGE = `usage: myous <command> [options]
   init --alias NAME [--hub URL]     create the identity (once) and register
   invite [--json]                   start a pairing: link, code and QR image
   accept CODE_OR_LINK [--wait S]    join a pairing
-  send NAME TEXT...                 send a message to a contact
+  send NAME TEXT... | send NAME -   send a message to a contact (- reads it from stdin)
   poll [--json]                     advance pairings and fetch messages once
   listen                            stay connected and receive live
   inbox [--json] [--peek] [--local] fetch, then new messages and other items
@@ -77,8 +77,10 @@ async function main(): Promise<void> {
       break;
     }
     case "send": {
-      if (args.length < 2) fail("usage: myous send NAME TEXT...");
-      const entry = await agent.send(args[0], args.slice(1).join(" "));
+      if (args.length < 2) fail("usage: myous send NAME TEXT... (or - to read it from stdin)");
+      const text = args.length === 2 && args[1] === "-" ? await readStdin() : args.slice(1).join(" ");
+      if (!text.trim()) fail("nothing to send");
+      const entry = await agent.send(args[0], text);
       console.log(`sent to ${entry.alias}`);
       break;
     }
@@ -180,3 +182,9 @@ function fail(message: string): never {
 main().catch((e) => {
   fail(e instanceof IdentityError ? e.message : `error: ${e?.message ?? e}`);
 });
+
+async function readStdin(): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
+  return Buffer.concat(chunks).toString("utf8");
+}

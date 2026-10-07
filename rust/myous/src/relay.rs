@@ -94,18 +94,26 @@ impl Connection {
     }
 
     /// Send a NIP-17 private message to the peer's inbox relays.
-    pub async fn send_message(&self, recipient: PublicKey, text: &str) -> Result<EventId> {
+    /// The peer's inbox relays that we know; unknown relays wouldn't accept us anyway.
+    pub async fn delivery_targets(&self, recipient: PublicKey) -> Result<Vec<RelayUrl>> {
         let known: HashSet<&RelayUrl> = self.relays.iter().collect();
-        // Only deliver to relays we know; unknown relays wouldn't accept us anyway.
-        let mut targets: Vec<RelayUrl> =
+        let targets: Vec<RelayUrl> =
             self.inbox_relays(recipient).await?.into_iter().filter(|u| known.contains(u)).collect();
-        if targets.is_empty() {
-            targets = self.relays.clone();
-        }
+        Ok(if targets.is_empty() { self.relays.clone() } else { targets })
+    }
+
+    pub async fn send_message(&self, recipient: PublicKey, text: &str, extra_tags: Vec<Tag>,
+                              targets: Option<Vec<RelayUrl>>) -> Result<EventId> {
+        let targets = match targets {
+            Some(t) => t,
+            None => self.delivery_targets(recipient).await?,
+        };
         // Nostr timestamps are whole seconds; the encrypted "ms" tag keeps
         // messages sent within the same second in order.
+        let mut tags = vec![Tag::public_key(recipient), Tag::parse(["ms".to_string(), now_ms().to_string()])?];
+        tags.extend(extra_tags);
         let rumor = EventBuilder::new(Kind::PrivateDirectMessage, text)
-            .tags([Tag::public_key(recipient), Tag::parse(["ms".to_string(), now_ms().to_string()])?])
+            .tags(tags)
             .finalize_unsigned(self.keys.public_key());
         // Expiration from the real time: the wrap's created_at is randomized
         // into the past, and anchoring to it would expire messages early.
@@ -157,6 +165,8 @@ pub struct Unwrapped {
     pub text: String,
     pub sent_at: u64,
     pub ms: u64,
+    /// One part of a long message (see parts.rs).
+    pub part: Option<crate::parts::Part>,
 }
 
 pub fn unwrap(keys: &Keys, wrap: &Event) -> Option<Unwrapped> {
@@ -174,7 +184,12 @@ pub fn unwrap(keys: &Keys, wrap: &Event) -> Option<Unwrapped> {
             _ => None,
         })
         .unwrap_or(sent_at * 1000);
-    Some(Unwrapped { sender: gift.sender, text: rumor.content, sent_at, ms })
+    let part = match rumor.tags.iter().find(|t| t.as_slice().first().map(String::as_str) == Some("part")) {
+        // A malformed part tag drops the message.
+        Some(t) => Some(crate::parts::parse_tag(t.as_slice())?),
+        None => None,
+    };
+    Some(Unwrapped { sender: gift.sender, text: rumor.content, sent_at, ms, part })
 }
 
 fn now_ms() -> u128 {

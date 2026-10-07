@@ -6,6 +6,7 @@ import { Relay } from "nostr-tools/relay";
 import { minePow } from "nostr-tools/nip13";
 import * as nip44 from "nostr-tools/nip44";
 import { createRumor, createSeal, unwrapEvent } from "nostr-tools/nip59";
+import { parseTag, type Part } from "./parts.js";
 import { proxiedWebSocket, proxyFor } from "./proxy.js";
 
 export const KIND_PROFILE = 0;
@@ -70,14 +71,19 @@ export class Connection {
   }
 
   /** Send a NIP-17 private message to the peer's inbox relays. */
-  async sendMessage(recipient: string, text: string): Promise<string> {
+  /** The peer's inbox relays that we know; unknown relays wouldn't accept us anyway. */
+  async deliveryTargets(recipient: string): Promise<Relay[]> {
     const known = new Set(this.relays.map((r) => r.url));
     const inbox = (await this.inboxRelays(recipient)).map(normalizeUrl).filter((u) => known.has(u));
-    const targets = inbox.length ? this.relays.filter((r) => inbox.includes(r.url)) : this.relays;
+    return inbox.length ? this.relays.filter((r) => inbox.includes(r.url)) : this.relays;
+  }
+
+  async sendMessage(recipient: string, text: string, extraTags: string[][] = [], targets?: Relay[]): Promise<string> {
+    targets ??= await this.deliveryTargets(recipient);
     // Nostr timestamps are whole seconds; the encrypted "ms" tag keeps
     // messages sent within the same second in order.
     const rumor = createRumor({
-      kind: KIND_CHAT, content: text, tags: [["p", recipient], ["ms", String(Date.now())]],
+      kind: KIND_CHAT, content: text, tags: [["p", recipient], ["ms", String(Date.now())], ...extraTags],
     }, this.secretKey);
     const wrap = giftWrap(createSeal(rumor, this.secretKey, recipient), recipient);
     await this.publish(wrap, targets);
@@ -127,7 +133,10 @@ function giftWrap(seal: Event, recipient: string): Event {
 }
 
 /** Returns [sender, text, sent_at, ms] for a valid chat message, else null. */
-export function unwrap(secretKey: Uint8Array, wrap: Event): [string, string, number, number] | null {
+/** [sender, text, sentAt, ms, part]; `part` is set for one part of a long message (see parts.ts). */
+export type Unwrapped = [string, string, number, number, Part | null];
+
+export function unwrap(secretKey: Uint8Array, wrap: Event): Unwrapped | null {
   let rumor;
   try {
     // Checks the seal's signature and that the rumor's author is the seal's signer.
@@ -137,7 +146,10 @@ export function unwrap(secretKey: Uint8Array, wrap: Event): [string, string, num
   }
   if (rumor.kind !== KIND_CHAT) return null;
   const msTag = rumor.tags.find((t) => t[0] === "ms" && /^\d+$/.test(t[1] ?? ""));
-  return [rumor.pubkey, rumor.content, rumor.created_at, msTag ? Number(msTag[1]) : rumor.created_at * 1000];
+  const partTag = rumor.tags.find((t) => t[0] === "part");
+  const part = partTag ? parseTag(partTag) : null;
+  if (partTag && !part) return null; // malformed part tag: drop it
+  return [rumor.pubkey, rumor.content, rumor.created_at, msTag ? Number(msTag[1]) : rumor.created_at * 1000, part];
 }
 
 async function connectAuthed(secretKey: Uint8Array, url: string): Promise<Relay> {

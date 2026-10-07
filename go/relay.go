@@ -169,22 +169,33 @@ func (c *connection) inboxRelays(ctx context.Context, pubkey string) ([]string, 
 }
 
 // sendMessage sends a NIP-17 private message to the peer's inbox relays.
-func (c *connection) sendMessage(ctx context.Context, recipient, text string) (string, error) {
+// deliveryTargets returns the peer's inbox relays that we know; unknown
+// relays wouldn't accept us anyway.
+func (c *connection) deliveryTargets(ctx context.Context, recipient string) ([]string, error) {
 	var known, targets []string
 	for _, r := range c.relays {
 		known = append(known, r.URL)
 	}
 	inbox, err := c.inboxRelays(ctx, recipient)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	// Only deliver to relays we know; unknown relays wouldn't accept us anyway.
 	for _, u := range inbox {
 		if slices.Contains(known, u) {
 			targets = append(targets, u)
 		}
 	}
-	wrap, err := c.wrap(recipient, text)
+	return targets, nil
+}
+
+func (c *connection) sendMessage(ctx context.Context, recipient, text string, extraTags nostr.Tags, targets []string) (string, error) {
+	if targets == nil {
+		var err error
+		if targets, err = c.deliveryTargets(ctx, recipient); err != nil {
+			return "", err
+		}
+	}
+	wrap, err := c.wrap(recipient, text, extraTags)
 	if err != nil {
 		return "", err
 	}
@@ -194,14 +205,14 @@ func (c *connection) sendMessage(ctx context.Context, recipient, text string) (s
 // wrap builds rumor → seal → gift wrap by hand. Library helpers tend to
 // derive the expiration from the wrap's randomized (past) timestamp, so
 // messages would expire anywhere from 0 to 24 hours after sending.
-func (c *connection) wrap(recipient, text string) (nostr.Event, error) {
+func (c *connection) wrap(recipient, text string, extraTags nostr.Tags) (nostr.Event, error) {
 	rumor := nostr.Event{
 		PubKey:    c.pk,
 		CreatedAt: nostr.Now(),
 		Kind:      kindChat,
 		// Nostr timestamps are whole seconds; "ms" keeps messages sent within
 		// the same second in order.
-		Tags:    nostr.Tags{{"p", recipient}, {"ms", strconv.FormatInt(time.Now().UnixMilli(), 10)}},
+		Tags:    append(nostr.Tags{{"p", recipient}, {"ms", strconv.FormatInt(time.Now().UnixMilli(), 10)}}, extraTags...),
 		Content: text,
 	}
 	rumor.ID = rumor.GetID()
@@ -318,6 +329,7 @@ type message struct {
 	text   string
 	sentAt int64
 	ms     int64
+	part   *partInfo // one part of a long message (see parts.go)
 }
 
 // unwrap opens a gift wrap. Only a valid chat message whose seal is signed
@@ -359,6 +371,12 @@ func unwrap(sk string, wrap *nostr.Event) (message, bool) {
 			if v, err := strconv.ParseInt(t[1], 10, 64); err == nil && v >= 0 {
 				m.ms = v
 			}
+		} else if len(t) >= 1 && t[0] == "part" {
+			p, ok := parsePartTag(t)
+			if !ok {
+				return message{}, false // malformed part tag: drop it
+			}
+			m.part = &p
 		}
 	}
 	return m, true

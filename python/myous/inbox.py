@@ -14,7 +14,7 @@ import time
 
 from nostr_sdk import Event, Keys
 
-from myous import contacts, relay
+from myous import contacts, parts, relay
 from myous.storage import Storage
 
 SEEN_RETENTION = 3 * 86400  # longer than relay retention plus timestamp jitter
@@ -46,16 +46,32 @@ def handle_wraps(st: Storage, keys: Keys, wraps: list[Event]) -> list[dict]:
 
     # Wrap timestamps are randomized, so put messages in the order they were written.
     unwrapped = (relay.unwrap(keys, w) for w in fresh)
-    messages = sorted((m for m in unwrapped if m), key=lambda m: (m[2], m[3]))
+    messages = sorted((m for m in unwrapped if m), key=lambda m: (m[2], m[3], m[4][1] if m[4] else 0))
+    buffer = st.get("partials", {})
+    before = dict(buffer)
     stored = []
-    for sender, text, sent_at, _ in messages:
+    for sender, text, sent_at, ms, part in messages:
         contact = contacts.approved(st, sender)
         if contact is None:
             continue  # not paired, or blocked: drop silently
+        if part:
+            done = parts.add(buffer, sender, part, text, sent_at, ms, now)
+            if done is None:
+                continue  # waiting for the other parts
+            text, sent_at, _ = done
         stored.append(record(st, {
             "type": "message", "direction": "in", "peer": contact["npub"],
             "alias": contact["alias"], "text": text, "sent_at": sent_at,
         }))
+    for sender, text, sent_at in parts.expire(buffer, now):
+        contact = contacts.approved(st, sender)
+        if contact:
+            stored.append(record(st, {
+                "type": "message", "direction": "in", "peer": contact["npub"],
+                "alias": contact["alias"], "text": text, "sent_at": sent_at, "incomplete": True,
+            }))
+    if buffer != before:
+        st.put("partials", buffer)
     return stored
 
 

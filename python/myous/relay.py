@@ -30,7 +30,7 @@ from nostr_sdk import (
     uniffi_set_event_loop,
 )
 
-from myous import proxy
+from myous import parts, proxy
 
 KIND_PROFILE = 0
 KIND_CHAT = 14
@@ -106,17 +106,22 @@ class Connection:
         newest = max(events, key=lambda e: e.created_at().as_secs())
         return nip17_extract_relay_list(newest)
 
-    async def send_message(self, recipient: PublicKey, text: str) -> str:
-        """Send a NIP-17 private message to the peer's inbox relays."""
+    async def delivery_targets(self, recipient: PublicKey) -> list[RelayUrl]:
+        """The peer's inbox relays that we know; unknown relays wouldn't accept us anyway."""
         known = {str(u): u for u in self.relays}
-        # Only deliver to relays we know; unknown relays wouldn't accept us anyway.
-        targets = [u for u in await self.inbox_relays(recipient) if str(u) in known] or self.relays
+        return [u for u in await self.inbox_relays(recipient) if str(u) in known] or self.relays
+
+    async def send_message(self, recipient: PublicKey, text: str, extra_tags: list[list[str]] | None = None,
+                           targets: list[RelayUrl] | None = None) -> str:
+        """Send a NIP-17 private message to the peer's inbox relays."""
+        targets = targets or await self.delivery_targets(recipient)
         # Build the wrap by hand: nip17_make_private_msg derives the expiration
         # from the wrap's randomized (past) timestamp, so messages would expire
         # anywhere from 0 to 24 hours after sending.
         # Nostr timestamps are whole seconds; the encrypted "ms" tag keeps
         # messages sent within the same second in order.
         tags = [Tag.public_key(recipient), Tag.parse(["ms", str(time.time_ns() // 1_000_000)])]
+        tags += [Tag.parse(t) for t in extra_tags or []]
         rumor = EventBuilder(Kind(KIND_CHAT), text).tags(tags).finalize_unsigned(self.keys.public_key())
         expires = Timestamp.from_secs(now() + int(MESSAGE_TTL.total_seconds()))
         wrap = nip59_make_gift_wrap(self.keys, recipient, rumor, None, [Tag.expiration(expires)])
@@ -147,9 +152,10 @@ class Connection:
                 yield note.event
 
 
-def unwrap(keys: Keys, wrap: Event) -> tuple[str, str, int, int] | None:
-    """Return (sender hex, text, sent_at seconds, sent_at ms) for a valid
-    chat message, else None."""
+def unwrap(keys: Keys, wrap: Event) -> tuple[str, str, int, int, tuple[str, int, int] | None] | None:
+    """Return (sender hex, text, sent_at seconds, sent_at ms, part) for a
+    valid chat message, else None. `part` is (id, index, total) for one part
+    of a long message (see parts.py), else None."""
     try:
         gift = UnwrappedGift.from_gift_wrap(keys, wrap)
     except Exception:
@@ -161,11 +167,16 @@ def unwrap(keys: Keys, wrap: Event) -> tuple[str, str, int, int] | None:
         return None
     sent_at = rumor.created_at().as_secs()
     ms = sent_at * 1000
+    part = None
     for tag in rumor.tags():
         v = tag.to_vec()
         if len(v) >= 2 and v[0] == "ms" and v[1].isdigit():
             ms = int(v[1])
-    return sender, rumor.content(), sent_at, ms
+        elif v and v[0] == "part":
+            part = parts.parse_tag(v)
+            if part is None:
+                return None  # malformed part tag: drop it
+    return sender, rumor.content(), sent_at, ms, part
 
 
 def now() -> int:

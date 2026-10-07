@@ -47,6 +47,8 @@ export interface HistoryEntry {
   sent_at?: number;
   /** "update" entries: the release announced. */
   version?: string;
+  /** A long message whose missing parts never arrived. */
+  incomplete?: boolean;
   /** "notice" entries: the notice's id and an optional link. */
   id?: string;
   url?: string;

@@ -23,7 +23,7 @@ from typing import Awaitable, Callable, Optional
 from nostr_sdk import Keys, PublicKey, RelayStatus
 
 import myous
-from myous import contacts, inbox, relay
+from myous import contacts, inbox, parts, relay
 from myous.hub import Hub
 from myous.pairing import Pairing
 from myous.storage import Storage
@@ -133,8 +133,18 @@ class Agent:
         pubkey, contact = contacts.find(self.st, name)
         if contact["status"] != contacts.APPROVED:
             raise ValueError(f"{contact['alias']} is {contact['status']}")
+        chunks = parts.split(text)  # ValueError if it's too long to send
+        recipient = PublicKey.parse(pubkey)
         async with self._connect() as conn:
-            await conn.send_message(PublicKey.parse(pubkey), text)
+            if len(chunks) == 1:
+                await conn.send_message(recipient, text)
+            else:
+                pid, targets = parts.new_id(), await conn.delivery_targets(recipient)
+                for i, chunk in enumerate(chunks, 1):
+                    try:
+                        await conn.send_message(recipient, chunk, [["part", pid, str(i), str(len(chunks))]], targets)
+                    except relay.RelayError as e:
+                        raise relay.RelayError(f"sent {i - 1} of {len(chunks)} parts, then: {e}") from None
         with self.st.lock():
             return inbox.record(self.st, {"type": "message", "direction": "out",
                                           "peer": contact["npub"], "alias": contact["alias"],
