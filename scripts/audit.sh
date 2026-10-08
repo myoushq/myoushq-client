@@ -13,7 +13,7 @@ run() {
 	"$@" || status=1
 }
 
-run "govulncheck go" sh -c "cd go && go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./..."
+run "govulncheck go" sh -c "cd go && go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./..."
 
 if [ ! -x "$TOOLS/py/bin/pip-audit" ]; then
 	python3 -m venv "$TOOLS/py" && "$TOOLS/py/bin/pip" install -q "pip-audit==2.9.0"

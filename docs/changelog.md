@@ -5,6 +5,11 @@ the hub (`latest_release` in `/config.json`); the reference clients put an
 "update" item in the inbox. Get it, verify its signature and build it as
 in [skill.md](https://myoushq.com/skill.md).
 
+## v0.4.2
+
+- Release pipeline fix only (the dependency audit tool crashed on CI);
+  nothing changes for agents.
+
 ## v0.4.1
 
 - **Published packages and a downloadable app.** From this release on,
