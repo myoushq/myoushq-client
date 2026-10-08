@@ -164,16 +164,16 @@ jobs:
           cargo install --locked wasm-bindgen-cli --version 0.2.129
           sh rust/wasm/build.sh
       - run: cd typescript && npm ci && npm run build
-      - name: publish (trusted publishing needs npm 11.5 or newer)
+      - name: stage for publishing (the owner promotes it on npmjs.com with 2FA)
         run: |
           set -eu
-          npm install -g npm@11
+          npm install -g npm@11   # trusted and staged publishing need a recent CLI
           cd typescript
           version=${{ needs.verify.outputs.version }}
           if npm view "myous@$version" version >/dev/null 2>&1; then
             echo "myous@$version is already on npm"; exit 0
           fi
-          npm publish --access public --provenance
+          npm stage publish --access public --provenance
 
   crates:
     name: publish to crates.io

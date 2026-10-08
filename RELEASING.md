@@ -53,7 +53,8 @@ Current release key: `SHA256:PevPZ8ORUnoGw3hg9Febw7KjXxCUv+sMkAXzw+rjQuk` (ED255
    their trusted publishing (OpenID Connect): no tokens are stored. Every
    step skips what is already published, so the workflow can be re-run
    for a tag from the Actions tab ("Run workflow", give the tag) after a
-   registry or secret is set up.
+   registry or secret is set up. npm is staged, not published: after the
+   run, approve the version on npmjs.com (package → staged versions).
 5. In the private repo, set `deploy/client-release` to the new tag and
    redeploy, so the site's `skill.md` and `allowed_signers` match the
    release. The deploy also announces the release: the hub's `/config.json`
@@ -75,8 +76,10 @@ publishes.
   `release`.
 - **npm** (package `myous`): package settings → Trusted publisher →
   GitHub Actions: organization `myoushq`, repository `myoushq-client`,
-  workflow filename `release.yml`, environment `release`. Provenance is
-  attached automatically.
+  workflow filename `release.yml`, environment `release`. Allowed
+  actions: **`npm stage publish` only**, not `npm publish`: the workflow
+  stages the version, and you promote it live on npmjs.com with 2FA
+  (staged publishing). Provenance is attached automatically.
 - **crates.io:** trusted publishing can only be configured for a crate
   that exists, and `myous-pake` has never been published. Once, from a
   real terminal (`cargo login` is interactive):
