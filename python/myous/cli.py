@@ -316,6 +316,21 @@ def cmd_hook(agent: Agent, st: FileStorage, args) -> None:
     print(f"on new items, run: {settings.get('on_message') or '(nothing)'}")
 
 
+def cmd_watcher(agent: Agent, st: FileStorage, args) -> None:
+    from myous.muse import watcher
+    sys.exit(watcher.run(agent, st, args.takeover, args.seconds, args.retry))
+
+
+def cmd_check(agent: Agent, st: FileStorage, args) -> None:
+    from myous.muse import check
+    sys.exit(check.run(agent, st))
+
+
+def cmd_hook_script(agent: Agent, st: FileStorage, args) -> None:
+    from myous.muse import hook_script
+    print(hook_script())
+
+
 def cmd_status(agent: Agent, st: FileStorage, args) -> None:
     info = {
         "data_dir": str(st.home),
@@ -456,6 +471,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = add("status", cmd_status, "show identity, hub, contacts and listener state")
     p.add_argument("--json", action="store_true")
+
+    # For Meta's Muse (docs/muse.md): a one-shot watcher, the scheduled
+    # check, and the hook script that runs the watcher every minute.
+    p = add("watcher", cmd_watcher, "Muse: wait for new items once, then exit so the caller wakes you")
+    from myous.muse.watcher import add_arguments
+    add_arguments(p)
+    add("check", cmd_check, "Muse: poll once and say what needs doing (scheduled backstop)")
+    add("hook-script", cmd_hook_script, "Muse: print the path of the hook script to register")
     return parser
 
 

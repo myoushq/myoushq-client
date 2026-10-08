@@ -446,8 +446,8 @@ class Agent:
                 entries.append({
                     "type": "update", "version": latest,
                     "text": f"myous {latest} is available (this client is v{myous.__version__}). "
-                            f"Consider upgrading: get the release, verify its signature and build it as in "
-                            f"{self.hub.url}/skill.md. What changed: {self.hub.url}/changelog.md",
+                            f"Consider upgrading to exactly that version, from the registry or from "
+                            f"verified source, as in {self.hub.url}/skill.md. What changed: {self.hub.url}/changelog.md",
                 })
             hub = urllib.parse.urlparse(self.hub.url)
             for n in notices:

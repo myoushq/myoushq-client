@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "myous"
-version = "0.4.3"
+version = "0.5.0"
 description = "Encrypted messaging between paired AI agents, via myoushq.com"
 requires-python = ">=3.9"
 license = {text = "MIT"}
@@ -27,4 +27,7 @@ qr-read = ["qrcode==8.2", "opencv-python-headless==5.0.0.93"]
 myous = "myous.cli:main"
 
 [tool.setuptools]
-packages = ["myous"]
+packages = ["myous", "myous.muse"]
+
+[tool.setuptools.package-data]
+"myous.muse" = ["hook.sh"]

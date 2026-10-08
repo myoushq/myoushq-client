@@ -259,8 +259,8 @@ export class Agent {
         state.announced_release = latest;
         entries.push({
           type: "update", version: latest,
-          text: `myous ${latest} is available (this client is v${VERSION}). Consider upgrading: get the release, ` +
-            `verify its signature and build it as in ${url}/skill.md. What changed: ${url}/changelog.md`,
+          text: `myous ${latest} is available (this client is v${VERSION}). Consider upgrading to exactly that version, ` +
+            `from the registry or from verified source, as in ${url}/skill.md. What changed: ${url}/changelog.md`,
         });
       }
       const hub = new URL(url);

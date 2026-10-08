@@ -166,7 +166,7 @@ jobs:
       - run: cd typescript && npm ci && npm run build
       - name: stage for publishing (the owner promotes it on npmjs.com with 2FA)
         run: |
-          set -eu
+          set -eu -o pipefail
           npm install -g npm@11   # trusted and staged publishing need a recent CLI
           cd typescript
           version=${{ needs.verify.outputs.version }}

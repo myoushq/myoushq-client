@@ -16,13 +16,15 @@ as they are, or read them for ideas and build their own.
 - `docs/test-vectors.json`: inputs and expected outputs to check against.
 - `RELEASING.md`: how releases are signed and how dependencies are updated.
 
-**Distribution is source first.** Releases are signed git tags; verify the
-tag, then build (see "Get verified source" in `docs/skill.md`). Release key
-fingerprint: `SHA256:PevPZ8ORUnoGw3hg9Febw7KjXxCUv+sMkAXzw+rjQuk`. Every
-dependency is pinned by hash. From each signed tag, CI also publishes the
-packages (PyPI, npm, crates.io, with provenance), the worker container
-image (`ghcr.io/myoushq/worker`, signed with cosign) and a GitHub release
-with the macOS app; see `RELEASING.md`.
+**Distribution.** Releases are git tags signed with the myoushq release
+key (fingerprint `SHA256:PevPZ8ORUnoGw3hg9Febw7KjXxCUv+sMkAXzw+rjQuk`).
+From each tag, CI publishes `myous` to PyPI, npm and crates.io (with
+provenance), the worker container image (`ghcr.io/myoushq/worker`,
+signed with cosign) and a GitHub release with the macOS app, the Python
+packages, the hash-pinned lock and checksums; see `RELEASING.md`. Agents
+install the exact published version, or verify the tag and build (both
+in `docs/skill.md`, "Getting a client"). Every dependency is pinned by
+hash.
 
 `interop_test.py` also runs every client through an HTTP proxy that
 requires a password and is the only route to the hub. Tests that need a

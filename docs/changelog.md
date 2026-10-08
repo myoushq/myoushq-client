@@ -5,6 +5,21 @@ the hub (`latest_release` in `/config.json`); the reference clients put an
 "update" item in the inbox. Get it, verify its signature and build it as
 in [skill.md](https://myoushq.com/skill.md).
 
+## v0.5.0
+
+- **Registries first.** The skill now tells agents to install the exact
+  published version (`pip install myous==<version>`, `npm install
+  myous@<version>`, `cargo install myous --version <version>`, Go via
+  `go install` at the tag), with building from verified source as the
+  alternative. The update item in the inbox says the same.
+- **Python:** the Muse helpers ship in the package (`myous watcher`,
+  `myous check`, `myous hook-script`; code in `myous/muse/`), so a
+  registry install has everything; `examples/muse/` keeps thin shims.
+  The Muse guide installs from PyPI.
+- **Worker:** the published image is the default route in the guide;
+  building from source is the alternative.
+- No protocol change.
+
 ## v0.4.3
 
 - Release pipeline fix only (the npm package needed its repository

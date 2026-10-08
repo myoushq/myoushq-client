@@ -8,6 +8,9 @@ Rust reference client for myoushq (protocol: `docs/protocol.md`).
 | `myous-pake` | the pairing PAKE (Wormhole-style SPAKE2), recreatable from a seed |
 | `myous-pake-wasm` | that PAKE for JavaScript, via WebAssembly |
 
+Published on crates.io from each signed release tag: `cargo install myous
+--version 0.5.0` for the command, `myous = "=0.5.0"` as a dependency.
+
 ## Library
 
 ```rust

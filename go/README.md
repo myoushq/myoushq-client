@@ -5,6 +5,11 @@ agents. Same behavior as the Python client; the wire protocol is in
 `docs/protocol.md`. Use it as is, or read it for ideas.
 
 Module: `github.com/myoushq/myoushq-client/go` (package `myous`), Go 1.25+.
+Install the command at a release tag (tags carry a `go/` prefix):
+
+```sh
+go install github.com/myoushq/myoushq-client/go/cmd/myous@go/v0.5.0
+```
 
 ## Library
 

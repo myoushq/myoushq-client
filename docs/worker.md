@@ -15,22 +15,25 @@ encrypted through myoushq.com, with no ports opened to the internet. It
 has its own browser that you log into once, so your Muse can look things
 up as you. You can see everything it runs, and pause it any time."
 
-## 0. The short way: download
+Two ways to run it. **The published image** (default): the worker
+container is published for every release at
+`ghcr.io/myoushq/worker:<version>` (amd64 and arm64, signed with cosign;
+`<version>` is `latest_release` from https://myoushq.com/config.json
+without the `v`), so nothing needs building, and only Docker is needed.
+On a Mac, the GitHub release also has "Myous Worker.app" as a disk image
+(`Myous-Worker-v<version>.dmg`, from
+https://github.com/myoushq/myoushq-client/releases): open it, drag the
+app to Applications, launch it, press Start; it pulls that image, shows
+the pairing code in its window, and keeps its data in `~/.myous-worker`.
+With the app, continue at step 5. **From source** (the alternative, and
+the way to change anything): steps 1 and 3 below build the image from
+the verified checkout.
 
-If the user is on a Mac and has Docker Desktop, nothing needs building:
-the GitHub release for the current version has "Myous Worker.app" as a
-disk image (`Myous-Worker-vX.Y.Z.dmg`, signed and notarized), and the app
-pulls the published worker image (`ghcr.io/myoushq/worker:X.Y.Z`) and
-runs it. Download it from https://github.com/myoushq/myoushq-client/releases,
-open the disk image, drag the app to Applications, launch it, press
-Start. The pairing code appears in its window; continue at step 5. The
-app keeps its data in `~/.myous-worker`. The steps below are the source
-route, for everything else.
+## 1. Get the verified source (source route only)
 
-## 1. Get the verified source
-
-Exactly as in skill.md, "Get verified source". Stop and tell your user if
-the signature doesn't verify.
+Skip this if you use the published image (next section). Exactly as in
+skill.md, "Or build from verified source". Stop and tell your user if the
+signature doesn't verify.
 
 ```sh
 git clone https://github.com/myoushq/myoushq-client.git ~/myoushq-client && cd ~/myoushq-client
@@ -54,14 +57,26 @@ of minutes). If Docker isn't installed, ask your user to install Docker
 Desktop or OrbStack, or offer direct mode (section 8). Docker Compose v2
 (`docker compose`) is part of both.
 
-## 3. Build and start
+## 3. Start
+
+With the published image (no checkout needed; the compose file is a few
+lines, the same one the Mac app bundles):
+
+```sh
+mkdir -p ~/.myous-worker && cd ~/.myous-worker
+V=$(curl -fsS https://myoushq.com/config.json | python3 -c 'import json,sys; print(json.load(sys.stdin)["latest_release"].lstrip("v"))')
+curl -fsS "https://raw.githubusercontent.com/myoushq/myoushq-client/v$V/worker/mac/compose-image.yml" | sed "s/@VERSION@/$V/" > compose.yml
+MYOUS_ALIAS="Sam's Mac" docker compose -p myous-worker up -d
+```
+
+From source instead (after step 1):
 
 ```sh
 cd ~/myoushq-client/worker && MYOUS_ALIAS="Sam's Mac" docker compose up -d --build
 ```
 
 The alias is the name the user's other agents will see; ask the user.
-The first build downloads Playwright's image (about 2 GB) and takes a few
+The first start downloads the image (about 2 GB) and takes a few
 minutes. Then:
 
 ```sh

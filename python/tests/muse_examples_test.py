@@ -1,5 +1,7 @@
-"""Tests for the Muse examples (examples/muse): the one-shot watcher with
-pidfile handoff, the hook, and the scheduled check. A local hub, two agents.
+"""Tests for the Muse helpers (myous.muse, with the shims in examples/muse):
+the one-shot watcher with pidfile handoff, the hook, and the scheduled
+check, run as `python -m myous.muse.*` and as `myous watcher` / `myous
+check`. A local hub, two agents.
 
 Needs Go (to build the hub) and the client installed in the current Python.
 Tests run in order (test_1..., test_2...): they share the two agents.
@@ -68,9 +70,17 @@ class MuseExamples(unittest.TestCase):
             raise AssertionError(f"myous {' '.join(args)} failed for {agent}:\n{r.stdout}\n{r.stderr}")
         return r.stdout
 
-    def example(self, agent: str, script: str, *args: str) -> subprocess.Popen:
-        p = subprocess.Popen([sys.executable, str(EXAMPLES / script), *args], env=self.env(agent),
-                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    def example(self, agent: str, script: str, *args: str, how: str = "module") -> subprocess.Popen:
+        """Run a helper: as its module (`python -m myous.muse.watcher`), through
+        the CLI (`myous watcher`), or through the shim left in examples/muse."""
+        name = script.removesuffix(".py")
+        if how == "module":
+            cmd = [sys.executable, "-m", f"myous.muse.{name}", *args]
+        elif how == "cli":
+            cmd = [sys.executable, "-m", "myous", name, *args]
+        else:
+            cmd = [sys.executable, str(EXAMPLES / script), *args]
+        p = subprocess.Popen(cmd, env=self.env(agent), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         self.procs.append(p)
         return p
 
@@ -78,8 +88,8 @@ class MuseExamples(unittest.TestCase):
         out, err = p.communicate(timeout=timeout)
         return p.returncode, out + err
 
-    def start_watcher(self, agent: str, *args: str) -> subprocess.Popen:
-        p = self.example(agent, "watcher.py", *args)
+    def start_watcher(self, agent: str, *args: str, how: str = "module") -> subprocess.Popen:
+        p = self.example(agent, "watcher.py", *args, how=how)
         pidfile = self.tmp / agent / "watcher.pid"
         for _ in range(100):
             if pidfile.exists() and pidfile.read_text().strip() == str(p.pid):
@@ -102,7 +112,7 @@ class MuseExamples(unittest.TestCase):
 
     def test_2_one_watcher_at_a_time_then_wakes_on_message(self):
         watcher = self.start_watcher("bob")
-        code, out = self.finish(self.example("bob", "watcher.py"))
+        code, out = self.finish(self.example("bob", "watcher.py", how="cli"))
         self.assertEqual(code, 3, out)
         self.assertIn("another myoushq watcher is running", out)
 
@@ -130,13 +140,13 @@ class MuseExamples(unittest.TestCase):
     def test_4_unread_items_wake_a_new_watcher_at_once(self):
         self.myous("alice", "send", "bob", "sent while nobody watched")
         self.myous("bob", "poll")
-        code, out = self.finish(self.example("bob", "watcher.py"), timeout=20)
+        code, out = self.finish(self.example("bob", "watcher.py", how="cli"), timeout=20)
         self.assertEqual(code, 0, out)
         self.assertIn("sent while nobody watched", out)
         self.myous("bob", "inbox")
 
     def test_5_scheduled_check(self):
-        code, out = self.finish(self.example("bob", "check.py"))
+        code, out = self.finish(self.example("bob", "check.py", how="cli"))
         self.assertEqual(code, 0, out)
         self.assertIn("no watcher is running", out)
         self.assertNotIn("new item", out)
@@ -156,12 +166,17 @@ class MuseExamples(unittest.TestCase):
         self.finish(watcher)
 
     def test_6_bounded_watcher_exits_quietly(self):
-        started = time.time()
-        code, out = self.finish(self.example("bob", "watcher.py", "--for", "3"))
-        self.assertEqual(code, 2, out)
-        self.assertIn("nothing new", out)
-        self.assertLess(time.time() - started, 15)
-        self.assertFalse((self.tmp / "bob" / "watcher.pid").exists())
+        for how in ("module", "cli", "shim"):
+            started = time.time()
+            code, out = self.finish(self.example("bob", "watcher.py", "--for", "3", how=how))
+            self.assertEqual(code, 2, (how, out))
+            self.assertIn("nothing new", out)
+            self.assertLess(time.time() - started, 15)
+            self.assertFalse((self.tmp / "bob" / "watcher.pid").exists())
+        # The check's shim still runs too.
+        code, out = self.finish(self.example("bob", "check.py", how="shim"))
+        self.assertEqual(code, 0, out)
+        self.assertIn("no watcher is running", out)
 
     def test_7_stopped_watcher_cleans_up(self):
         watcher = self.start_watcher("bob")
@@ -171,16 +186,24 @@ class MuseExamples(unittest.TestCase):
         self.assertIn("was stopped", out)
         self.assertFalse((self.tmp / "bob" / "watcher.pid").exists())
 
-    def hook(self, agent: str) -> tuple[int, str]:
+    def hook(self, agent: str, script: str | None = None) -> tuple[int, str]:
+        """Run the packaged hook (the path `myous hook-script` prints), or the
+        script given (the shim)."""
         runtime = self.tmp / "hook-runtime.sh"
         runtime.write_text('wake() { echo "WAKE $1"; }\nsilent() { echo "SILENT $1"; }\n')
         env = dict(self.env(agent), HATCH_HOOK_RUNTIME=str(runtime), MYOUS_PYTHON=sys.executable,
                    MYOUS_HOOK_WINDOW="4")
-        r = subprocess.run(["bash", str(EXAMPLES / "hook.sh")], env=env, capture_output=True, text=True, timeout=60)
+        script = script or self.myous(agent, "hook-script").strip()
+        r = subprocess.run(["bash", script], env=env, capture_output=True, text=True, timeout=60)
         return r.returncode, r.stdout + r.stderr
 
     def test_8_hook_wakes_only_on_news(self):
+        script = self.myous("bob", "hook-script").strip()
+        self.assertTrue(script.endswith("myous/muse/hook.sh") and os.path.isabs(script), script)
         code, out = self.hook("bob")
+        self.assertEqual(code, 0, out)
+        self.assertIn("SILENT myoushq: watcher exit 2", out)
+        code, out = self.hook("bob", str(EXAMPLES / "hook.sh"))  # the shim at the old path
         self.assertEqual(code, 0, out)
         self.assertIn("SILENT myoushq: watcher exit 2", out)
 

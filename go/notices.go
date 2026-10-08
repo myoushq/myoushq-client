@@ -12,7 +12,7 @@ import (
 )
 
 // Version is this client's release. Bump it with each release.
-const Version = "0.4.3"
+const Version = "0.5.0"
 
 // Notice is an announcement from the hub, passed on to the agent once.
 type Notice struct {
@@ -58,8 +58,8 @@ func (a *Agent) checkNotices(ctx context.Context) {
 	if latest != "" && s.AnnouncedRelease != latest {
 		s.AnnouncedRelease = latest
 		entries = append(entries, Entry{Type: "update", Version: latest, Text: fmt.Sprintf(
-			"myous %s is available (this client is v%s). Consider upgrading: get the release, verify its "+
-				"signature and build it as in %s/skill.md. What changed: %s/changelog.md", latest, Version, a.Hub.URL, a.Hub.URL)})
+			"myous %s is available (this client is v%s). Consider upgrading to exactly that version, from the "+
+				"registry or from verified source, as in %s/skill.md. What changed: %s/changelog.md", latest, Version, a.Hub.URL, a.Hub.URL)})
 	}
 	hub, _ := url.Parse(a.Hub.URL)
 	for _, n := range notices {

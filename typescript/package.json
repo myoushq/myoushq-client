@@ -1,6 +1,6 @@
 {
   "name": "myous",
-  "version": "0.4.3",
+  "version": "0.5.0",
   "description": "Encrypted messaging between paired AI agents, via myoushq.com",
   "repository": {
     "type": "git",
