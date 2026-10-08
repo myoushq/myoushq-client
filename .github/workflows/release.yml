@@ -173,7 +173,12 @@ jobs:
           if npm view "myous@$version" version >/dev/null 2>&1; then
             echo "myous@$version is already on npm"; exit 0
           fi
-          npm stage publish --access public --provenance
+          # A version that is staged but not yet promoted can't be staged
+          # again; that's done, not a failure.
+          if ! npm stage publish --access public --provenance 2>&1 | tee /tmp/npm.log; then
+            grep -q "previously published version" /tmp/npm.log && { echo "myous@$version is already staged"; exit 0; }
+            exit 1
+          fi
 
   crates:
     name: publish to crates.io
@@ -287,7 +292,11 @@ jobs:
           security unlock-keychain -p "" build.keychain
           security import /tmp/cert.p12 -k build.keychain -P "$MAC_CERT_PASSWORD" -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple: -s -k "" build.keychain
+          # codesign only searches keychains on the search list; being the
+          # default keychain isn't enough.
+          security list-keychains -d user -s build.keychain $(security list-keychains -d user | tr -d '"')
           rm /tmp/cert.p12
+          security find-identity -v -p codesigning build.keychain
       - name: build and sign
         env:
           MAC_SIGN_IDENTITY: ${{ secrets.MAC_SIGN_IDENTITY }}
@@ -295,7 +304,13 @@ jobs:
           set -eu
           cd worker/mac
           if [ "$HAVE_CERT" = true ]; then
-            ./make-app.sh --no-config --version "${{ needs.verify.outputs.version }}" --sign "$MAC_SIGN_IDENTITY"
+            # The identity as the keychain names it; the secret is a fallback.
+            identity=$(security find-identity -v -p codesigning build.keychain | grep -o '"Developer ID Application: [^"]*"' | head -1 | tr -d '"')
+            identity=${identity:-$MAC_SIGN_IDENTITY}
+            [ -n "$identity" ] || { echo "no Developer ID Application identity in the keychain" >&2; exit 1; }
+            echo "signing as $identity"
+            echo "SIGN_IDENTITY=$identity" >> "$GITHUB_ENV"
+            ./make-app.sh --no-config --version "${{ needs.verify.outputs.version }}" --sign "$identity"
           else
             ./make-app.sh --no-config --version "${{ needs.verify.outputs.version }}"
           fi
@@ -311,13 +326,11 @@ jobs:
           worker/mac/notarize.sh "worker/mac/build/Myous Worker.app" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" --key /tmp/notary.p8
           rm /tmp/notary.p8
       - name: disk image and checksum
-        env:
-          MAC_SIGN_IDENTITY: ${{ secrets.MAC_SIGN_IDENTITY }}
         run: |
           set -eu
           mkdir -p out
           if [ "$HAVE_CERT" = true ]; then
-            worker/mac/make-dmg.sh "worker/mac/build/Myous Worker.app" "out/Myous-Worker-$TAG.dmg" --sign "$MAC_SIGN_IDENTITY"
+            worker/mac/make-dmg.sh "worker/mac/build/Myous Worker.app" "out/Myous-Worker-$TAG.dmg" --sign "$SIGN_IDENTITY"
           else
             worker/mac/make-dmg.sh "worker/mac/build/Myous Worker.app" "out/Myous-Worker-$TAG.dmg"
           fi
