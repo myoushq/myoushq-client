@@ -25,7 +25,23 @@ trap 'rm -rf "$STAGE"' EXIT
 ditto "$APP" "$STAGE/$(basename "$APP")"
 ln -s /Applications "$STAGE/Applications"
 rm -f "$OUT"
-hdiutil create -volname "Myous Worker" -srcfolder "$STAGE" -ov -format UDZO -quiet "$OUT"
+# hdiutil is known to hang or report "Resource busy" on CI runners, so each
+# attempt runs under a watchdog and is retried a few times.
+with_timeout() {
+	secs=$1; shift
+	"$@" & cmd=$!
+	( sleep "$secs"; kill "$cmd" 2>/dev/null ) & dog=$!
+	wait "$cmd"; rc=$?
+	kill "$dog" 2>/dev/null; wait "$dog" 2>/dev/null
+	return $rc
+}
+attempt=1
+until with_timeout 300 hdiutil create -volname "Myous Worker" -srcfolder "$STAGE" -ov -format UDZO -quiet "$OUT"; do
+	[ $attempt -lt 5 ] || { echo "hdiutil failed $attempt times" >&2; exit 1; }
+	echo "hdiutil attempt $attempt failed; retrying" >&2
+	attempt=$((attempt + 1))
+	sleep $((attempt * 5))
+done
 if [ -n "$SIGN" ]; then
 	codesign --force --timestamp --sign "$SIGN" "$OUT"
 fi

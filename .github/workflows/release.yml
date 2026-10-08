@@ -37,6 +37,7 @@ jobs:
   verify:
     name: verify the tag's signature
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     outputs:
       version: ${{ steps.v.outputs.version }}
     steps:
@@ -63,6 +64,7 @@ jobs:
   test-python:
     needs: verify
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with: { ref: "refs/tags/${{ env.TAG }}" }
@@ -77,6 +79,7 @@ jobs:
   test-go:
     needs: verify
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with: { ref: "refs/tags/${{ env.TAG }}" }
@@ -87,6 +90,7 @@ jobs:
   test-rust:
     needs: verify
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with: { ref: "refs/tags/${{ env.TAG }}" }
@@ -96,6 +100,7 @@ jobs:
   test-typescript:
     needs: verify
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with: { ref: "refs/tags/${{ env.TAG }}" }
@@ -112,6 +117,7 @@ jobs:
   audit:
     needs: verify
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with: { ref: "refs/tags/${{ env.TAG }}" }
@@ -129,6 +135,7 @@ jobs:
     name: publish to PyPI
     needs: [verify, test-python, audit]
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     environment: release
     permissions:
       id-token: write
@@ -147,6 +154,7 @@ jobs:
     name: publish to npm
     needs: [verify, test-typescript, audit]
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     environment: release
     permissions:
       id-token: write
@@ -184,6 +192,7 @@ jobs:
     name: publish to crates.io
     needs: [verify, test-rust, audit]
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     environment: release
     permissions:
       id-token: write
@@ -216,6 +225,7 @@ jobs:
           - { arch: amd64, runner: ubuntu-24.04 }
           - { arch: arm64, runner: ubuntu-24.04-arm }
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
     permissions:
       contents: read
       packages: write
@@ -249,6 +259,7 @@ jobs:
     name: worker image tags and signature
     needs: [verify, image]
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     permissions:
       contents: read
       packages: write
@@ -273,7 +284,8 @@ jobs:
   mac-app:
     name: macOS app (signed and notarized when the secrets exist)
     needs: [verify, test-python]
-    runs-on: macos-14
+    runs-on: macos-15
+    timeout-minutes: 90
     env:
       HAVE_CERT: ${{ secrets.MAC_CERT_P12 != '' }}
     steps:
@@ -345,6 +357,7 @@ jobs:
     name: GitHub release
     needs: [verify, test-python, test-go, test-rust, test-typescript, audit, mac-app]
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     permissions:
       contents: write
     steps:

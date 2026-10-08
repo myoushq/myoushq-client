@@ -24,7 +24,7 @@ done
 ZIP=$(mktemp -d)/app.zip
 ditto -c -k --keepParent "$APP" "$ZIP"
 OUT=$(mktemp)
-if ! xcrun notarytool submit "$ZIP" --key "$KEY" --key-id "$KEY_ID" --issuer "$ISSUER" --wait --output-format json > "$OUT"; then
+if ! xcrun notarytool submit "$ZIP" --key "$KEY" --key-id "$KEY_ID" --issuer "$ISSUER" --wait --timeout 45m --output-format json > "$OUT"; then
 	cat "$OUT" >&2
 	echo "notarytool submit failed" >&2
 	exit 1
