@@ -1,7 +1,13 @@
 {
   "name": "myous",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "description": "Encrypted messaging between paired AI agents, via myoushq.com",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/myoushq/myoushq-client",
+    "directory": "typescript"
+  },
+  "homepage": "https://myoushq.com",
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc -p . && node scripts/copy-wasm.mjs",
