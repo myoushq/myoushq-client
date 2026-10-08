@@ -9,6 +9,7 @@ const NSTimeInterval kStaleAfter = 15;
 + (NSString *)paused { return [[self home] stringByAppendingPathComponent:@"worker.paused"]; }
 + (NSString *)log { return [[self home] stringByAppendingPathComponent:@"worker.log"]; }
 + (NSString *)work { return [[self home] stringByAppendingPathComponent:@"work"]; }
++ (NSString *)bundledCompose { return [[NSBundle mainBundle] pathForResource:@"compose" ofType:@"yml"]; }
 @end
 
 @implementation StatusFile
@@ -49,7 +50,18 @@ const NSTimeInterval kStaleAfter = 15;
     [data writeToFile:[Paths config] atomically:YES];
 }
 - (BOOL)isDirect { return [self.mode isEqualToString:@"direct"]; }
+- (BOOL)isImage {
+    if ([self.mode isEqualToString:@"image"]) return YES;
+    // Nothing configured, or a checkout mode without a checkout: the image.
+    return !self.isDirect && self.repo == nil;
+}
+- (BOOL)usesDocker { return !self.isDirect; }
 @end
+
+NSString *appVersion(void) {
+    NSString *v = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleShortVersionString"];
+    return [v isKindOfClass:[NSString class]] && v.length ? v : @"dev";
+}
 
 NSString *timeAgo(double unixSeconds) {
     double d = [[NSDate date] timeIntervalSince1970] - unixSeconds;

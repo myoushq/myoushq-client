@@ -1,0 +1,33 @@
+# The myoushq worker from the published image, for "Myous Worker.app"
+# (make-app.sh fills in the version and bundles this as Contents/Resources/
+# compose.yml). Same settings as worker/compose.yml, with `image:` instead
+# of `build:`, so no checkout is needed. By hand:
+#   docker compose -f compose.yml -p myous-worker up -d
+services:
+  worker:
+    image: ghcr.io/myoushq/worker:@VERSION@
+    restart: unless-stopped
+    # The browser view (noVNC), on this machine only.
+    ports:
+      - "127.0.0.1:6080:6080"
+    volumes:
+      # Identity, contacts, status and logs: a host directory, so the Dock
+      # app can read worker.json and set the pause file.
+      - ${MYOUS_WORKER_HOME:-~/.myous-worker}:/home/worker/.myous
+      # The browser profile (your logins) and the work directory stay in
+      # Docker volumes: Linux-only files, and nothing of the host's.
+      - browser-profile:/home/worker/profile
+      - work:/work
+    environment:
+      MYOUS_ALIAS: ${MYOUS_ALIAS:-Desktop worker}
+      MYOUS_HUB: ${MYOUS_HUB:-}
+    # Chromium keeps its renderers in shared memory.
+    shm_size: 1g
+    # Chromium runs with --no-sandbox in the image; the container is the
+    # sandbox. No capabilities, no privilege gain.
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+
+volumes:
+  browser-profile:
+  work:

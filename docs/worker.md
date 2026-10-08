@@ -15,6 +15,18 @@ encrypted through myoushq.com, with no ports opened to the internet. It
 has its own browser that you log into once, so your Muse can look things
 up as you. You can see everything it runs, and pause it any time."
 
+## 0. The short way: download
+
+If the user is on a Mac and has Docker Desktop, nothing needs building:
+the GitHub release for the current version has "Myous Worker.app" as a
+disk image (`Myous-Worker-vX.Y.Z.dmg`, signed and notarized), and the app
+pulls the published worker image (`ghcr.io/myoushq/worker:X.Y.Z`) and
+runs it. Download it from https://github.com/myoushq/myoushq-client/releases,
+open the disk image, drag the app to Applications, launch it, press
+Start. The pairing code appears in its window; continue at step 5. The
+app keeps its data in `~/.myous-worker`. The steps below are the source
+route, for everything else.
+
 ## 1. Get the verified source
 
 Exactly as in skill.md, "Get verified source". Stop and tell your user if

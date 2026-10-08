@@ -14,6 +14,7 @@ extern const NSTimeInterval kStaleAfter;
 + (NSString *)paused;    // worker.paused
 + (NSString *)log;       // worker.log
 + (NSString *)work;      // work/
++ (NSString *)bundledCompose;   // Contents/Resources/compose.yml: the published image
 @end
 
 /// worker.json, parsed leniently: every field is optional.
@@ -24,12 +25,21 @@ extern const NSTimeInterval kStaleAfter;
 - (BOOL)fresh;
 @end
 
+/// Modes: "image" runs the published container image from the bundled
+/// compose file (the default when nothing is configured: a downloaded app
+/// needs no checkout); "docker" runs `docker compose` in a checkout's
+/// worker/; "direct" runs `myous worker` on this Mac.
 @interface AppConfig : NSObject
 @property (nonatomic, copy) NSString *repo;   // path to the myoushq-client checkout
-@property (nonatomic, copy) NSString *mode;   // "docker" (default) or "direct"
+@property (nonatomic, copy) NSString *mode;   // "image", "docker" or "direct"
 + (instancetype)read;
 - (void)write;
 - (BOOL)isDirect;
+- (BOOL)isImage;
+- (BOOL)usesDocker;
 @end
+
+/// The app's own version (CFBundleShortVersionString), which names the image tag.
+NSString *appVersion(void);
 
 NSString *timeAgo(double unixSeconds);

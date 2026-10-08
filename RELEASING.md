@@ -41,11 +41,61 @@ Current release key: `SHA256:PevPZ8ORUnoGw3hg9Febw7KjXxCUv+sMkAXzw+rjQuk` (ED255
    git push origin v0.1.0 go/v0.1.0
    ```
 
-4. In the private repo, set `deploy/client-release` to the new tag and
+4. Pushing the tag starts the `release` workflow (`.github/workflows/
+   release.yml`). It verifies the tag against the release key (pinned by
+   fingerprint in the workflow, so a changed `allowed_signers` can't help
+   an attacker), runs the tests and the audit, and publishes: the Python
+   package to PyPI, the npm package, the `myous-pake` and `myous` crates,
+   the worker image to `ghcr.io/myoushq/worker` (amd64 and arm64, signed
+   with cosign), and a GitHub release with the macOS app (signed and
+   notarized when the Apple secrets exist), the Python wheel and sdist,
+   the hash-pinned lock and `SHA256SUMS`. Registries are reached with
+   their trusted publishing (OpenID Connect): no tokens are stored. Every
+   step skips what is already published, so the workflow can be re-run
+   for a tag from the Actions tab ("Run workflow", give the tag) after a
+   registry or secret is set up.
+5. In the private repo, set `deploy/client-release` to the new tag and
    redeploy, so the site's `skill.md` and `allowed_signers` match the
    release. The deploy also announces the release: the hub's `/config.json`
    names it as `latest_release`, and every client on an older version puts
    an "update" item in its agent's inbox.
+
+## One-time setup for publishing (owner)
+
+The workflow publishes only what the registries and secrets allow. Set
+up each once; until then the matching job fails and the rest still
+publishes.
+
+- **GitHub:** the workflow uses an environment named `release` (GitHub
+  creates it on first use). Optionally add yourself as a required
+  reviewer there, so every publish waits for a click.
+- **PyPI** (project `myous`, the 0.0.1 placeholder is already ours):
+  Manage → Publishing → add a GitHub publisher: owner `myoushq`,
+  repository `myoushq-client`, workflow `release.yml`, environment
+  `release`.
+- **npm** (package `myous`): package settings → Trusted publisher →
+  GitHub Actions: organization `myoushq`, repository `myoushq-client`,
+  workflow filename `release.yml`, environment `release`. Provenance is
+  attached automatically.
+- **crates.io:** trusted publishing can only be configured for a crate
+  that exists, and `myous-pake` has never been published. Once, from a
+  real terminal (`cargo login` is interactive):
+  `cd rust && cargo publish -p myous-pake`. Then, for both `myous-pake`
+  and `myous` (the latter is our 0.0.1 placeholder): crate settings →
+  Trusted Publishing → GitHub: repository owner `myoushq`, name
+  `myoushq-client`, workflow `release.yml`, environment `release`.
+- **GHCR:** after the first push, set the `worker` package's visibility
+  to public (organization → Packages → worker → settings). The
+  `GITHUB_TOKEN` can push; no secret needed.
+- **macOS signing and notarization** (Apple Developer Program): in
+  Keychain Access export the "Developer ID Application" certificate with
+  its private key as a .p12, and in App Store Connect create a team API
+  key with the Developer role. Repository secrets: `MAC_CERT_P12` (the
+  .p12, base64), `MAC_CERT_PASSWORD`, `MAC_SIGN_IDENTITY` (the
+  certificate's name, "Developer ID Application: Name (TEAMID)"),
+  `NOTARY_KEY_ID`, `NOTARY_ISSUER_ID`, `NOTARY_KEY` (the .p8, base64).
+  Without them the app is built and ad-hoc signed, and users must
+  right-click → Open the first time.
 
 ## Dependency updates
 

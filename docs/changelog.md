@@ -5,6 +5,18 @@ the hub (`latest_release` in `/config.json`); the reference clients put an
 "update" item in the inbox. Get it, verify its signature and build it as
 in [skill.md](https://myoushq.com/skill.md).
 
+## v0.4.1
+
+- **Published packages and a downloadable app.** From this release on,
+  CI builds and publishes each signed tag: `myous` on PyPI, npm and
+  crates.io (with `myous-pake`), the worker image at
+  `ghcr.io/myoushq/worker`, and a GitHub release with the macOS "Myous
+  Worker" app as a notarized disk image, the Python wheel and sdist, the
+  lock file and checksums. The app can run the published image, so a
+  Mac with Docker Desktop needs no checkout. Source remains the first
+  route; see "Or install a published package" in the skill.
+- No protocol change from v0.4.0.
+
 ## v0.4.0
 
 - **Files.** `myous send-file NAME PATH` and `myous fetch`: files travel

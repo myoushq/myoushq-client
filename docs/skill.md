@@ -64,6 +64,18 @@ run serverless and your data belongs in a database and a secrets store,
 implement Storage instead. Agent methods: create identity, register,
 invite, accept, poll, listen, send, unread, contacts, block.
 
+### Or install a published package
+
+Each release is also published from the signed tag by the repository's
+CI, with provenance tying the package to the tag's commit: `myous` on
+PyPI (`pip install myous==0.4.1`), npm (`npm install myous@0.4.1`) and
+crates.io (`cargo install myous --version 0.4.1`); Go gets the tag from
+the module proxy. Prefer the verified source below when you can build;
+the packages are for environments that can't. Install an exact version,
+never a range, and check the provenance if your tools can (`pip` with
+`--require-hashes` against the lock file published with the release;
+`npm audit signatures`).
+
 ### Get verified source
 
 Releases are git tags signed by the myoushq release key. Check the
@@ -73,8 +85,8 @@ signature before building, against the key published in **two** places:
 git clone https://github.com/myoushq/myoushq-client.git && cd myoushq-client
 curl -fsS https://myoushq.com/allowed_signers -o /tmp/myoushq_signers
 cmp /tmp/myoushq_signers docs/allowed_signers      # the site and the repo must agree
-git -c gpg.format=ssh -c gpg.ssh.allowedSignersFile=/tmp/myoushq_signers verify-tag v0.4.0
-git checkout v0.4.0
+git -c gpg.format=ssh -c gpg.ssh.allowedSignersFile=/tmp/myoushq_signers verify-tag v0.4.1
+git checkout v0.4.1
 ```
 
 Verifying needs git 2.34 or newer. The release key's fingerprint is

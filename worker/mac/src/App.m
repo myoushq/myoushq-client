@@ -6,7 +6,9 @@
 @property (nonatomic, strong) NSWindow *window;
 @property (nonatomic, strong) NSTextField *statusLabel, *detailLabel, *inviteTitle, *codeLabel;
 @property (nonatomic, strong) NSImageView *qrView;
-@property (nonatomic, strong) NSButton *clipButton, *startStop, *pauseResume, *browserButton, *logButton, *repoButton;
+@property (nonatomic, strong) NSButton *clipButton, *startStop, *pauseResume, *browserButton, *logButton, *repoButton, *imageButton, *dockerButton;
+@property (nonatomic, copy) NSString *dockerState;   // nil (unknown), "ok", "missing", "stopped"
+@property (nonatomic) NSUInteger ticks;
 @property (nonatomic, strong) NSTextView *output;
 @property (nonatomic, strong) AppConfig *config;
 @property (nonatomic, strong) NSTimer *timer;
@@ -21,7 +23,9 @@
     self.config = [AppConfig read];
     [self buildMenu];
     [self buildWindow];
+    if (self.snapshotPath) self.dockerState = [self probeDocker];   // synchronous, so the snapshot shows it
     [self refresh];
+    [self checkDocker];
     self.timer = [NSTimer scheduledTimerWithTimeInterval:2 target:self selector:@selector(refresh) userInfo:nil repeats:YES];
     [NSApp activateIgnoringOtherApps:YES];
     if (self.snapshotPath) {
@@ -97,6 +101,8 @@
     self.browserButton = [self button:@"Open browser view" action:@selector(openBrowserView)];
     self.logButton = [self button:@"Show log" action:@selector(openLog)];
     self.repoButton = [self button:@"Choose repo…" action:@selector(chooseRepo)];
+    self.imageButton = [self button:@"Use the built-in image" action:@selector(useImage)];
+    self.dockerButton = [self button:@"Get Docker Desktop" action:@selector(getDocker)];
 
     self.output = [NSTextView new];
     self.output.editable = NO;
@@ -124,7 +130,8 @@
 
     NSStackView *buttons = [NSStackView stackViewWithViews:@[self.startStop, self.pauseResume, self.browserButton, self.logButton]];
     buttons.spacing = 8;
-    NSStackView *buttons2 = [NSStackView stackViewWithViews:@[self.repoButton]];
+    NSStackView *buttons2 = [NSStackView stackViewWithViews:@[self.dockerButton, self.imageButton, self.repoButton]];
+    buttons2.spacing = 8;
 
     NSStackView *column = [NSStackView stackViewWithViews:@[self.statusLabel, self.detailLabel, inviteBox, buttons, buttons2, scroll]];
     column.orientation = NSUserInterfaceLayoutOrientationVertical;
@@ -151,6 +158,7 @@ static NSDictionary *dict(id v) { return [v isKindOfClass:[NSDictionary class]] 
 
 - (void)refresh {
     self.config = [AppConfig read];
+    if (++self.ticks % 5 == 0) [self checkDocker];
     StatusFile *file = [StatusFile read];
     NSDictionary *s = file.status;
     BOOL running = [file fresh];
@@ -163,9 +171,22 @@ static NSDictionary *dict(id v) { return [v isKindOfClass:[NSDictionary class]] 
     self.statusLabel.textColor = running ? (paused ? [NSColor systemOrangeColor] : [NSColor systemGreenColor])
                                          : [NSColor secondaryLabelColor];
 
+    // Docker missing or stopped matters more than the worker's state.
+    BOOL dockerProblem = [self.config usesDocker] && self.dockerState && ![self.dockerState isEqualToString:@"ok"];
+    if (dockerProblem) {
+        self.statusLabel.stringValue = [self.dockerState isEqualToString:@"missing"] ? @"Docker Desktop is not installed"
+                                                                                      : @"Docker Desktop is not running";
+        self.statusLabel.textColor = [NSColor systemOrangeColor];
+    }
+
     NSMutableArray *lines = [NSMutableArray new];
-    [lines addObject:[NSString stringWithFormat:@"Mode: %@", [self.config isDirect] ? @"direct (on this Mac)" : @"Docker"]];
-    [lines addObject:self.config.repo ? [NSString stringWithFormat:@"Repo: %@", self.config.repo] : @"Repo: not set (Choose repo… below)"];
+    if ([self.config isDirect]) {
+        [lines addObject:@"Mode: direct (myous worker on this Mac)"];
+    } else if ([self.config isImage]) {
+        [lines addObject:[NSString stringWithFormat:@"Mode: built-in image ghcr.io/myoushq/worker:%@", appVersion()]];
+    } else {
+        [lines addObject:[NSString stringWithFormat:@"Mode: Docker in checkout %@", self.config.repo]];
+    }
     if (s) {
         [lines addObject:[NSString stringWithFormat:@"Contacts: %@   Requests: %@", num(s[@"contacts"]) ?: @0, num(s[@"requests"]) ?: @0]];
         NSDictionary *last = dict(s[@"last"]);
@@ -201,6 +222,8 @@ static NSDictionary *dict(id v) { return [v isKindOfClass:[NSDictionary class]] 
     self.startStop.title = running ? @"Stop" : @"Start";
     self.pauseResume.title = paused ? @"Resume" : @"Pause";
     self.browserButton.hidden = [self.config isDirect];
+    self.dockerButton.hidden = !dockerProblem;
+    self.imageButton.hidden = [self.config isImage];
 
     // Dock badge: requests handled since the app started.
     NSNumber *n = num(s[@"requests"]);
@@ -225,6 +248,46 @@ static NSDictionary *dict(id v) { return [v isKindOfClass:[NSDictionary class]] 
     NSImage *image = [[NSImage alloc] initWithSize:rep.size];
     [image addRepresentation:rep];
     return image;
+}
+
+#pragma mark - docker
+
+/// "ok", "stopped" (installed, daemon not running) or "missing". Runs the
+/// user's login shell so their PATH applies; MYOUS_DOCKER_BIN overrides the
+/// command (tests use it to simulate a Mac without Docker).
+- (NSString *)probeDocker {
+    NSString *bin = [[NSProcessInfo processInfo] environment][@"MYOUS_DOCKER_BIN"] ?: @"docker";
+    NSTask *t = [NSTask new];
+    t.launchPath = @"/bin/sh";
+    t.arguments = @[@"-lc", [NSString stringWithFormat:
+        @"command -v %@ >/dev/null 2>&1 || exit 3; %@ version >/dev/null 2>&1 && exit 0; exit 2", bin, bin]];
+    t.standardOutput = t.standardError = [NSFileHandle fileHandleWithNullDevice];
+    if (![t launchAndReturnError:nil]) return @"missing";
+    [t waitUntilExit];
+    switch (t.terminationStatus) {
+        case 0: return @"ok";
+        case 3: return @"missing";
+        default: return @"stopped";
+    }
+}
+
+/// Probe in the background, now and every 10 seconds, when Docker is in use.
+- (void)checkDocker {
+    if (![self.config usesDocker]) { self.dockerState = nil; return; }
+    __weak typeof(self) weak = self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        NSString *state = [weak probeDocker];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (![state isEqualToString:weak.dockerState]) {
+                weak.dockerState = state;
+                [weak refresh];
+            }
+        });
+    });
+}
+
+- (void)getDocker {
+    [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:@"https://www.docker.com/products/docker-desktop/"]];
 }
 
 #pragma mark - actions
@@ -269,20 +332,41 @@ static NSDictionary *dict(id v) { return [v isKindOfClass:[NSDictionary class]] 
     panel.allowsMultipleSelection = NO;
     if ([panel runModal] == NSModalResponseOK && panel.URL) {
         self.config.repo = panel.URL.path;
+        self.config.mode = @"docker";
         [self.config write];
         [self append:[NSString stringWithFormat:@"repo set to %@", panel.URL.path]];
         [self refresh];
     }
 }
 
+- (void)useImage {
+    self.config.mode = @"image";
+    [self.config write];
+    [self append:[NSString stringWithFormat:@"using the built-in image ghcr.io/myoushq/worker:%@", appVersion()]];
+    [self refresh];
+    [self checkDocker];
+}
+
 - (void)toggleRunning {
     BOOL running = [[StatusFile read] fresh];
+    NSString *docker = [[NSProcessInfo processInfo] environment][@"MYOUS_DOCKER_BIN"] ?: @"docker";
     if ([self.config isDirect]) {
         if (running || self.direct) [self stopDirect]; else [self startDirect];
+    } else if ([self.config isImage]) {
+        // The compose file travels in the bundle; a fixed project name
+        // means Stop still finds the containers after an app update.
+        NSString *compose = [Paths bundledCompose];
+        if (!compose) { [self append:@"this build has no compose.yml in its Resources"]; return; }
+        [[NSFileManager defaultManager] createDirectoryAtPath:[Paths home] withIntermediateDirectories:YES
+                                                   attributes:@{NSFilePosixPermissions: @0700} error:nil];
+        NSString *cmd = [NSString stringWithFormat:@"%@ compose -f '%@' -p myous-worker %@", docker,
+                         [compose stringByReplacingOccurrencesOfString:@"'" withString:@"'\\''"],
+                         running ? @"down" : @"up -d"];
+        [self run:cmd in:[Paths home]];
     } else {
         NSString *dir = [self workerDir];
         if (!dir) return;
-        [self run:running ? @"docker compose down" : @"docker compose up -d" in:dir];
+        [self run:running ? [docker stringByAppendingString:@" compose down"] : [docker stringByAppendingString:@" compose up -d"] in:dir];
     }
 }
 
