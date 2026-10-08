@@ -219,6 +219,69 @@ class EndToEnd(unittest.TestCase):
         self.run_ok("bob", "send", "dana", "back at you")
         self.assertEqual([e["text"] for e in asyncio.run(agent.poll())], ["back at you"])
 
+    def start_worker(self, agent: str, work: Path) -> subprocess.Popen:
+        env = dict(os.environ, MYOUS_HOME=str(self.tmp / agent), PYTHONUNBUFFERED="1")
+        with open(self.tmp / f"{agent}-worker.log", "w") as log:
+            p = subprocess.Popen([sys.executable, "-m", "myous", "worker", "--work", str(work), "--alias", agent],
+                                 env=env, stdout=log, stderr=subprocess.STDOUT)
+        status = self.tmp / agent / "worker.json"
+        for _ in range(100):
+            if status.exists() and json.loads(status.read_text()).get("pid") == p.pid:
+                time.sleep(1.5)  # let it connect
+                return p
+            time.sleep(0.1)
+        p.kill()
+        self.fail("worker didn't start: " + (self.tmp / f"{agent}-worker.log").read_text())
+
+    def test_9_files_and_worker(self):
+        """send-file + fetch between agents, then bob drives alice as a
+        worker: exec, cp in both directions, ordering by construction."""
+        doc = self.tmp / "doc.txt"
+        doc.write_text("a document\n")
+        self.run_ok("alice", "send-file", "bob", str(doc), "--mime", "text/plain")
+        entries = self.inbox("bob")
+        self.assertEqual([(e["type"], e["name"], e["mime"]) for e in entries], [("file", "doc.txt", "text/plain")])
+        self.assertNotIn("key", entries[0])  # inbox --json never shows the key
+        fetched = self.run_ok("bob", "fetch", "--latest").strip()
+        self.assertEqual(Path(fetched).read_text(), "a document\n")
+        self.assertEqual(Path(fetched).parent, self.tmp / "bob" / "files")
+        fetched2 = self.run_ok("bob", "fetch", str(entries[0]["seq"])).strip()
+        self.assertEqual(Path(fetched2).name, "doc (2).txt")  # never overwritten
+
+        work = self.tmp / "alice-work"
+        w = self.start_worker("alice", work)
+        try:
+            self.assertEqual(self.run_ok("bob", "exec", "alice", "--", "echo", "hi").strip(), "hi")
+            r = self.run_cli("bob", "exec", "alice", "--", "exit 7")
+            self.assertEqual(r.returncode, 7)
+
+            src = self.tmp / "in.txt"
+            src.write_text("in via cp\n")
+            self.assertIn("written on alice", self.run_ok("bob", "cp", str(src), "alice:in.txt"))
+            self.assertEqual((work / "in.txt").read_text(), "in via cp\n")
+            self.assertEqual(self.run_ok("bob", "exec", "alice", "--", "cat in.txt"), "in via cp\n")
+
+            out = self.tmp / "out.txt"
+            self.assertEqual(self.run_ok("bob", "cp", "alice:in.txt", str(out)).strip(), str(out))
+            self.assertEqual(out.read_text(), "in via cp\n")
+            r = self.run_cli("bob", "cp", "alice:../escape", str(out))
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn("leaves the worker", r.stderr)
+
+            # Only carol's help request gets an answer; the worker's replies never reach bob's inbox as items.
+            self.assertEqual(self.inbox("bob"), [])
+            self.run_ok("bob", "send", "alice", "help")
+            time.sleep(3)
+            entries = self.inbox("bob")
+            self.assertEqual(len(entries), 1)
+            self.assertIn("myoushq worker", entries[0]["text"])
+            status = json.loads((self.tmp / "alice" / "worker.json").read_text())
+            self.assertGreaterEqual(status["requests"], 4)
+        finally:
+            w.terminate()
+            w.wait(timeout=10)
+        self.run_ok("alice", "inbox")
+
     def test_6_identity_is_never_replaced(self):
         r = self.run_cli("alice", "init", "--alias", "alice")
         self.assertEqual(r.returncode, 0)

@@ -32,7 +32,7 @@ import signal
 import sys
 import time
 
-from myous import Agent, FileStorage
+from myous import Agent, FileStorage, inbox
 from myous.cli import context_line
 
 EXIT_NEWS, EXIT_QUIET, EXIT_BUSY, EXIT_REPLACED, EXIT_STOPPED = 0, 2, 3, 4, 5
@@ -82,6 +82,8 @@ def release(pidfile) -> None:
 
 def describe(e: dict) -> str:
     when = time.strftime("%Y-%m-%d %H:%M", time.localtime(e.get("sent_at", e["at"])))
+    if e["type"] == "file":
+        return f"[{when}] file from {e['alias']}: {e['name']} ({e.get('size')} bytes; `myous fetch {e['seq']}`)"
     if e["type"] != "message":
         return f"[{when}] ({e['type']}) {e['text']}"
     line = context_line(e)
@@ -109,7 +111,13 @@ async def wait_for_news(agent: Agent, retry: float, deadline: float | None) -> l
             if agent.unread(mark_read=False):
                 news.set()
 
-        listener = asyncio.ensure_future(agent.listen(on_new=lambda entries: news.set(), on_tick=check_unread))
+        def on_new(entries: list[dict]) -> None:
+            # Replies to a blocking `myous exec` or `myous cp` are that
+            # command's business, not a reason to wake Muse.
+            if any(not inbox.consumed(e) for e in entries):
+                news.set()
+
+        listener = asyncio.ensure_future(agent.listen(on_new=on_new, on_tick=check_unread))
         waiter = asyncio.ensure_future(news.wait())
         done, _ = await asyncio.wait({listener, waiter}, timeout=left, return_when=asyncio.FIRST_COMPLETED)
         listener.cancel()

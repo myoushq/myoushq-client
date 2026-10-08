@@ -1,0 +1,39 @@
+# The myoushq worker: a container your own agents can run commands in,
+# with a browser you log into once. See README.md here and docs/worker.md.
+#
+#   docker compose up -d --build        # build and start
+#   docker compose logs -f              # what it's doing
+#   cat ~/.myous-worker/worker.json     # status and pairing code
+#   touch ~/.myous-worker/worker.paused # refuse requests until removed
+services:
+  worker:
+    build:
+      context: ..
+      dockerfile: worker/Dockerfile
+    restart: unless-stopped
+    # The browser view (noVNC), on this machine only.
+    ports:
+      - "127.0.0.1:6080:6080"
+    volumes:
+      # Identity, contacts, status and logs: a host directory, so the Dock
+      # app (worker/mac) can read worker.json and set the pause file.
+      - ${MYOUS_WORKER_HOME:-~/.myous-worker}:/home/worker/.myous
+      # The browser profile (your logins) and the work directory stay in
+      # Docker volumes: Linux-only files, and nothing of the host's.
+      - browser-profile:/home/worker/profile
+      - work:/work
+    environment:
+      MYOUS_ALIAS: ${MYOUS_ALIAS:-Desktop worker}
+      # Another hub, for tests; empty means myoushq.com.
+      MYOUS_HUB: ${MYOUS_HUB:-}
+    # Chromium keeps its renderers in shared memory.
+    shm_size: 1g
+    # Chromium runs with --no-sandbox here (its own sandbox needs
+    # unprivileged user namespaces or CAP_SYS_ADMIN, which we don't grant);
+    # the container is the sandbox. No capabilities, no privilege gain.
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+
+volumes:
+  browser-profile:
+  work:

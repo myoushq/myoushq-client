@@ -93,8 +93,14 @@ export async function proxiedWebSocket(proxy: URL, secure: boolean): Promise<typ
   } as any;
 }
 
-/** A plain HTTP(S) request through the proxy; returns status and body. */
-export function requestVia(proxy: URL, url: string, init: { method: string; headers: Record<string, string>; body?: string; timeoutMs: number }): Promise<{ status: number; statusText: string; text: string }> {
+/** A plain HTTP(S) request through the proxy; returns status and body as text. */
+export async function requestVia(proxy: URL, url: string, init: { method: string; headers: Record<string, string>; body?: string; timeoutMs: number }): Promise<{ status: number; statusText: string; text: string }> {
+  const { status, statusText, body } = await requestRawVia(proxy, url, init);
+  return { status, statusText, text: body.toString() };
+}
+
+/** The same, with the body as bytes (blobs aren't text). */
+export function requestRawVia(proxy: URL, url: string, init: { method: string; headers: Record<string, string>; body?: string | Buffer; timeoutMs: number }): Promise<{ status: number; statusText: string; body: Buffer }> {
   const u = new URL(url);
   const secure = u.protocol === "https:";
   return new Promise((resolve, reject) => {
@@ -105,7 +111,7 @@ export function requestVia(proxy: URL, url: string, init: { method: string; head
     const req = (secure ? https : http).request({ ...opts, method: init.method, headers: { ...opts.headers, ...init.headers } }, (res) => {
       const chunks: Buffer[] = [];
       res.on("data", (c) => chunks.push(c));
-      res.on("end", () => resolve({ status: res.statusCode ?? 0, statusText: res.statusMessage ?? "", text: Buffer.concat(chunks).toString() }));
+      res.on("end", () => resolve({ status: res.statusCode ?? 0, statusText: res.statusMessage ?? "", body: Buffer.concat(chunks) }));
       res.on("error", reject);
     });
     req.on("error", reject);

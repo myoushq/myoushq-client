@@ -1,5 +1,5 @@
 {
-  "description": "myoushq protocol v1 test vectors; see protocol.md section 5",
+  "description": "myoushq protocol v1 test vectors; see protocol.md sections 5 (pairing) and 6 (files)",
   "code_parsing": [
     {
       "input": "4821-K7F3QX",
@@ -51,5 +51,23 @@
       "n": "AAECAwQFBgcICQoL",
       "c": "q+Xl8rp68WuirjaSsBR7NiJod4Zn8efDQ5I7azy2AGx8D8uCUrqka9g6D094uYoKBR822YdNJundvvjecxSmJ4cdwibrcyzOBEQ2eOr4MmAFo/2fT5o41t3WD33eVU9vyAnhNq0mx94Nhpwa4e4zNG7bwrke6fx5v4liw+Y="
     }
-  }
+  },
+  "files": [
+    {
+      "key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "nonce": "000102030405060708090a0b",
+      "plaintext_hex": "",
+      "ciphertext_hex": "f4c2db1dc38805a37b92171c5d0a81cc",
+      "x": "9e19ab48b590c46c50de27f3d6008e2f7cbf4579163d29ea6f456d43b9b08037",
+      "ox": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "key": "f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0",
+      "nonce": "0102030405060708090a0b0c",
+      "plaintext_hex": "68656c6c6f2c20776f726b65720a",
+      "ciphertext_hex": "612856a65168e6a38f15aacabeb25374654341528244506c26943c7e9d97",
+      "x": "4cba673262963fe0fb06f4ec8acb27f570e82b52e6228e496978877552a7ee38",
+      "ox": "08c8d3da893775843b96168a9d117324cee0351fe4d642b36c6d422e45fdbe35"
+    }
+  ]
 }

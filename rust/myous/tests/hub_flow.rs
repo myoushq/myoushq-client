@@ -118,6 +118,28 @@ async fn pair_and_message() {
     let _ = bob.accept(&wrong, Duration::from_secs(1), Default::default()).await.unwrap();
     assert_eq!(alice.poll().await.unwrap().last().unwrap()["type"], "pairing_failed");
 
+    // A file: encrypted blob on the hub, key in the message, fetched and verified.
+    let doc = tmp.path().join("report.txt");
+    std::fs::write(&doc, b"quarterly numbers\n").unwrap();
+    let sent = alice.send_file("bob", &doc, vec![]).await.unwrap();
+    assert_eq!(sent["type"], "file");
+    let got = bob.poll().await.unwrap();
+    let entry = got.iter().find(|e| e["type"] == "file").expect("file entry");
+    assert_eq!(entry["name"], "report.txt");
+    assert_eq!(entry["mime"], "text/plain");
+    assert_eq!(entry["x"], sent["x"]);
+    assert_eq!(bob.unread(false).unwrap().iter().filter(|e| e["type"] == "file").count(), 1, "files show in unread");
+    let out_dir = tmp.path().join("bob-files");
+    let path = bob.fetch(entry, &out_dir).await.unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), b"quarterly numbers\n");
+    let again = bob.fetch(entry, &out_dir).await.unwrap();
+    assert_eq!(again.file_name().unwrap(), "report-2.txt", "never overwrites");
+    // A worker-style file reply (w=file) is a reply, not new mail.
+    alice.send_file("bob", &doc, vec![vec!["w".into(), "file".into(), "abc".into()]]).await.unwrap();
+    let got = bob.poll().await.unwrap();
+    assert_eq!(got.iter().find(|e| e["type"] == "file").unwrap()["w"], serde_json::json!(["file", "abc"]));
+    assert_eq!(bob.unread(true).unwrap().iter().filter(|e| e["type"] == "file").count(), 1);
+
     // Blocked contacts are dropped.
     bob.block("alice").unwrap();
     alice.send("bob", "while blocked").await.unwrap();

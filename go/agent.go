@@ -17,8 +17,13 @@ package myous
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"mime"
+	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -331,6 +336,146 @@ func (a *Agent) Send(ctx context.Context, name, text string) (Entry, error) {
 	}
 	defer unlock()
 	return record(a.st, Entry{Type: "message", Direction: "out", Peer: c.Npub, Alias: c.Alias, Text: text})
+}
+
+// SendFile encrypts a file, uploads the ciphertext to the hub and sends the
+// key to an approved contact in a file message. extraTags go on the
+// message (workers use ["w", ...]).
+func (a *Agent) SendFile(ctx context.Context, name, path string, extraTags nostr.Tags) (Entry, error) {
+	pk, c, err := findContact(a.st, name)
+	if err != nil {
+		return Entry{}, err
+	}
+	if c.Status != Approved {
+		return Entry{}, fmt.Errorf("%s is %s", c.Alias, c.Status)
+	}
+	plain, err := os.ReadFile(path)
+	if err != nil {
+		return Entry{}, err
+	}
+	fileName, ok := sanitizeName(filepath.Base(path))
+	if !ok {
+		return Entry{}, fmt.Errorf("%q is not a usable file name", path)
+	}
+	ef, err := EncryptFile(plain)
+	if err != nil {
+		return Entry{}, err
+	}
+	blobs, err := a.blobs(ctx)
+	if err != nil {
+		return Entry{}, err
+	}
+	desc, err := blobs.Upload(ctx, ef.Ciphertext)
+	if err != nil {
+		return Entry{}, err
+	}
+	mimeType := mime.TypeByExtension(filepath.Ext(path))
+	if mimeType == "" {
+		mimeType = http.DetectContentType(plain)
+	}
+	conn, err := a.connect(ctx, nil)
+	if err != nil {
+		return Entry{}, err
+	}
+	defer conn.close()
+	if _, err := conn.sendFileMessage(ctx, pk, desc.URL, fileTags(ef, fileName, mimeType, extraTags)); err != nil {
+		return Entry{}, err
+	}
+	unlock, _, err := lock(a.st, "state", true)
+	if err != nil {
+		return Entry{}, err
+	}
+	defer unlock()
+	var w []string
+	if t := extraTags.GetFirst([]string{"w"}); t != nil && len(*t) > 1 {
+		w = (*t)[1:]
+	}
+	return record(a.st, Entry{
+		Type: "file", Direction: "out", Peer: c.Npub, Alias: c.Alias, Text: "file: " + fileName,
+		Name: fileName, Mime: mimeType, Size: int64(len(ef.Ciphertext)), X: ef.X, Ox: ef.Ox, URL: desc.URL,
+		Key: hex.EncodeToString(ef.Key), Nonce: hex.EncodeToString(ef.Nonce), W: w,
+	})
+}
+
+// Fetch downloads a file entry's blob, checks and decrypts it, and writes
+// it under its name in dir (default: files/ in the data directory),
+// never overwriting: a second copy gets a numeric suffix. It returns the
+// path written.
+func (a *Agent) Fetch(ctx context.Context, e Entry, dir string) (string, error) {
+	if e.Type != "file" {
+		return "", fmt.Errorf("entry %d is not a file", e.Seq)
+	}
+	key, err := hex.DecodeString(e.Key)
+	if err != nil {
+		return "", err
+	}
+	nonce, err := hex.DecodeString(e.Nonce)
+	if err != nil {
+		return "", err
+	}
+	blobs, err := a.blobs(ctx)
+	if err != nil {
+		return "", err
+	}
+	ciphertext, err := blobs.Get(ctx, e.X)
+	if err != nil {
+		return "", err
+	}
+	plain, err := DecryptFile(ciphertext, key, nonce, e.X, e.Ox)
+	if err != nil {
+		return "", err
+	}
+	if dir == "" {
+		dir = a.filesDir()
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	name, ok := sanitizeName(e.Name)
+	if !ok {
+		name = e.Ox[:16]
+	}
+	for i := 0; ; i++ {
+		candidate := name
+		if i > 0 {
+			ext := filepath.Ext(name)
+			candidate = fmt.Sprintf("%s-%d%s", strings.TrimSuffix(name, ext), i, ext)
+		}
+		f, err := os.OpenFile(filepath.Join(dir, candidate), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if errors.Is(err, os.ErrExist) {
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		if _, err := f.Write(plain); err != nil {
+			f.Close()
+			return "", err
+		}
+		return f.Name(), f.Close()
+	}
+}
+
+func (a *Agent) filesDir() string {
+	if fs, ok := a.st.(*FileStorage); ok {
+		return fs.Path("files")
+	}
+	return "files"
+}
+
+func (a *Agent) blobs(ctx context.Context) (*BlobClient, error) {
+	sk, _, err := a.Keys()
+	if err != nil {
+		return nil, err
+	}
+	cfg, err := a.Hub.Config(ctx, false)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.BlobAPI == "" {
+		return nil, errors.New("this hub doesn't offer file storage (no blob_api in its config)")
+	}
+	return NewBlobClient(sk, cfg.BlobAPI), nil
 }
 
 // Poll advances pairings and fetches waiting messages, once. It returns

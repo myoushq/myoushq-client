@@ -2,6 +2,7 @@
 //! (default ~/.myous). Run `myous --help` for the commands.
 
 use std::io::Read;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -61,6 +62,19 @@ enum Command {
         to: String,
         #[arg(required = true)]
         text: Vec<String>,
+    },
+    /// Send a file to a paired contact (encrypted end to end; the hub stores a blob it can't read)
+    SendFile { to: String, path: PathBuf },
+    /// Download and decrypt a received file (the latest, or by history seq)
+    Fetch {
+        /// History seq of the file entry (see `myous inbox --json`)
+        seq: Option<u64>,
+        /// The most recent received file
+        #[arg(long)]
+        latest: bool,
+        /// Directory to write into (default $MYOUS_HOME/files)
+        #[arg(long)]
+        to: Option<PathBuf>,
     },
     /// Fetch, then show new messages and other items, and mark them read
     Inbox {
@@ -195,6 +209,23 @@ async fn run(cli: Cli) -> Result<()> {
             let entry = agent.send(&to, &text).await?;
             println!("sent to {}", entry["alias"].as_str().unwrap_or(&to));
         }
+        Command::SendFile { to, path } => {
+            let entry = agent.send_file(&to, &path, vec![]).await?;
+            println!("sent {} ({} bytes) to {}", entry["name"].as_str().unwrap_or(""), entry["size"], entry["alias"].as_str().unwrap_or(&to));
+        }
+        Command::Fetch { seq, latest, to } => {
+            let files: Vec<Value> = st.read_history_or_empty().into_iter()
+                .filter(|e| e["type"] == "file" && e["direction"] == "in").collect();
+            let entry = match (seq, latest) {
+                (Some(seq), _) => files.iter().find(|e| e["seq"] == seq).cloned(),
+                (None, true) => files.last().cloned(),
+                _ => bail!("say which file: `myous fetch SEQ` or `myous fetch --latest`"),
+            };
+            let Some(entry) = entry else { bail!("no such received file") };
+            let dir = to.unwrap_or_else(|| st.home.join("files"));
+            let path = agent.fetch(&entry, &dir).await?;
+            println!("{}", path.display());
+        }
         Command::Inbox { peek, local, json } => {
             if !local {
                 if let Err(e) = agent.poll().await {
@@ -203,7 +234,16 @@ async fn run(cli: Cli) -> Result<()> {
             }
             let entries = agent.unread(!peek)?;
             if json {
-                println!("{}", serde_json::to_string_pretty(&entries)?);
+                // The key and nonce stay in the history; they're not for display.
+                let shown: Vec<Value> = entries.iter().map(|e| {
+                    let mut e = e.clone();
+                    if let Some(o) = e.as_object_mut() {
+                        o.remove("key");
+                        o.remove("nonce");
+                    }
+                    e
+                }).collect();
+                println!("{}", serde_json::to_string_pretty(&shown)?);
             } else if entries.is_empty() {
                 println!("no new messages");
             } else {
@@ -315,6 +355,12 @@ fn print_entries(entries: &[Value]) {
                 println!("[{when}] {alias}: {text}");
                 println!("{}", context_line(e));
             }
+            (Some("file"), Some("out")) => println!("[{when}] me -> {alias}: file {} ({} bytes)", e["name"].as_str().unwrap_or(""), e["size"]),
+            (Some("file"), _) => {
+                println!("[{when}] file from {alias}: {} ({} bytes, {}); fetch it with `myous fetch {}`",
+                    e["name"].as_str().unwrap_or(""), e["size"], e["mime"].as_str().unwrap_or(""), e["seq"]);
+                println!("{}", context_line(e));
+            }
             (kind, _) => println!("[{when}] ({}) {text}", kind.unwrap_or("")),
         }
     }
@@ -342,12 +388,18 @@ fn now() -> u64 {
 
 trait GetOrEmpty {
     fn storage_get(&self, name: &str) -> Value;
+    fn read_history_or_empty(&self) -> Vec<Value>;
 }
 
 impl GetOrEmpty for FileStorage {
     fn storage_get(&self, name: &str) -> Value {
         use myous::Storage;
         self.get(name).ok().flatten().unwrap_or(json!({}))
+    }
+
+    fn read_history_or_empty(&self) -> Vec<Value> {
+        use myous::Storage;
+        self.read_history().unwrap_or_default()
     }
 }
 

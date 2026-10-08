@@ -5,6 +5,7 @@
 
 pub mod agent;
 pub mod contacts;
+pub mod files;
 pub mod hub;
 pub mod inbox;
 pub mod pairing;

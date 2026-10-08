@@ -14,6 +14,8 @@ const USAGE = `usage: myous <command> [options]
   invite [--json]                   start a pairing: link, code and QR image
   accept CODE_OR_LINK [--wait S]    join a pairing
   send NAME TEXT... | send NAME -   send a message to a contact (- reads it from stdin)
+  send-file NAME PATH               send a file, encrypted end to end
+  fetch [SEQ] [--to DIR]            download a received file (default: the latest) into DIR
   poll [--json]                     advance pairings and fetch messages once
   listen                            stay connected and receive live
   inbox [--json] [--peek] [--local] fetch, then new messages and other items
@@ -35,6 +37,7 @@ async function main(): Promise<void> {
       alias: { type: "string" }, hub: { type: "string" }, json: { type: "boolean" },
       wait: { type: "string" }, peek: { type: "boolean" }, local: { type: "boolean" }, with: { type: "string" },
       "qr-out": { type: "string" }, relationship: { type: "string" }, sharing: { type: "string" },
+      to: { type: "string" }, latest: { type: "boolean" },
     },
   });
   if (!command || command === "--help" || command === "-h") {
@@ -88,6 +91,20 @@ async function main(): Promise<void> {
       console.log(`sent to ${entry.alias}`);
       break;
     }
+    case "send-file": {
+      if (args.length !== 2) fail("usage: myous send-file NAME PATH");
+      const entry = await agent.sendFile(args[0], args[1]);
+      console.log(`sent ${entry.name} to ${entry.alias} (${entry.size} bytes, encrypted)`);
+      break;
+    }
+    case "fetch": {
+      const files = (await agent.history(undefined, 100_000)).filter((e) => e.type === "file" && e.direction === "in");
+      const entry = args[0] ? files.find((e) => e.seq === Number(args[0])) : files[files.length - 1];
+      if (!entry) fail(args[0] ? `no received file with seq ${args[0]}` : "no received files");
+      const path = await agent.fetch(entry, opts.to);
+      console.log(`${entry.name} from ${entry.alias}: ${path}`);
+      break;
+    }
     case "poll": {
       const entries = await agent.poll();
       console.log(opts.json ? JSON.stringify(entries, null, 2) : `${entries.length} new item(s); read them with \`myous inbox\``);
@@ -109,14 +126,14 @@ async function main(): Promise<void> {
         }
       }
       const entries = await agent.unread(!opts.peek);
-      if (opts.json) console.log(JSON.stringify(entries, null, 2));
+      if (opts.json) console.log(JSON.stringify(entries.map(withoutKeys), null, 2));
       else if (!entries.length) console.log("no new messages");
       else printEntries(entries);
       break;
     }
     case "history": {
       const entries = await agent.history(opts.with);
-      if (opts.json) console.log(JSON.stringify(entries, null, 2));
+      if (opts.json) console.log(JSON.stringify(entries.map(withoutKeys), null, 2));
       else printEntries(entries);
       break;
     }
@@ -176,10 +193,21 @@ function report(r: Pending): void {
   }
 }
 
+/** JSON output leaves the file keys in the private history. */
+function withoutKeys(e: HistoryEntry): Omit<HistoryEntry, "key" | "nonce"> {
+  const { key, nonce, ...rest } = e;
+  void key, nonce;
+  return rest;
+}
+
 function printEntries(entries: HistoryEntry[]): void {
   for (const e of entries) {
     const when = new Date((e.sent_at ?? e.at) * 1000).toISOString().slice(0, 16).replace("T", " ");
-    if (e.type !== "message") console.log(`[${when}] (${e.type}) ${e.text}`);
+    if (e.type === "file") {
+      const who = e.direction === "out" ? `me -> ${e.alias}` : `from ${e.alias}`;
+      console.log(`[${when}] file ${who}: ${e.name} (${e.size} bytes${e.w ? `, ${e.w.join(" ")}` : ""}); fetch with \`myous fetch ${e.seq}\``);
+    }
+    else if (e.type !== "message") console.log(`[${when}] (${e.type}) ${e.text}`);
     else if (e.direction === "out") console.log(`[${when}] me -> ${e.alias}: ${e.text}`);
     else {
       console.log(`[${when}] ${e.alias}: ${e.text}`);

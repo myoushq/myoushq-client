@@ -104,6 +104,18 @@ impl Connection {
 
     pub async fn send_message(&self, recipient: PublicKey, text: &str, extra_tags: Vec<Tag>,
                               targets: Option<Vec<RelayUrl>>) -> Result<EventId> {
+        self.send_rumor(recipient, Kind::PrivateDirectMessage, text, extra_tags, targets).await
+    }
+
+    /// Send a NIP-17 file message (kind 15): `tags` are the file tags of
+    /// protocol section 6.3 and `url` the blob's URL.
+    pub async fn send_file_message(&self, recipient: PublicKey, url: &str, tags: Vec<Tag>,
+                                   targets: Option<Vec<RelayUrl>>) -> Result<EventId> {
+        self.send_rumor(recipient, Kind::Custom(crate::files::KIND_FILE), url, tags, targets).await
+    }
+
+    async fn send_rumor(&self, recipient: PublicKey, kind: Kind, content: &str, extra_tags: Vec<Tag>,
+                        targets: Option<Vec<RelayUrl>>) -> Result<EventId> {
         let targets = match targets {
             Some(t) => t,
             None => self.delivery_targets(recipient).await?,
@@ -112,7 +124,7 @@ impl Connection {
         // messages sent within the same second in order.
         let mut tags = vec![Tag::public_key(recipient), Tag::parse(["ms".to_string(), now_ms().to_string()])?];
         tags.extend(extra_tags);
-        let rumor = EventBuilder::new(Kind::PrivateDirectMessage, text)
+        let rumor = EventBuilder::new(kind, content)
             .tags(tags)
             .finalize_unsigned(self.keys.public_key());
         // Expiration from the real time: the wrap's created_at is randomized
@@ -159,10 +171,14 @@ impl Connection {
     }
 }
 
-/// A valid chat message from a gift wrap.
+/// A valid chat (kind 14) or file (kind 15) message from a gift wrap.
 pub struct Unwrapped {
     pub sender: PublicKey,
+    pub kind: u16,
+    /// The text, or for a file message the blob URL.
     pub text: String,
+    /// The rumor's tags, for file messages.
+    pub tags: Vec<Vec<String>>,
     pub sent_at: u64,
     pub ms: u64,
     /// One part of a long message (see parts.rs).
@@ -174,7 +190,8 @@ pub fn unwrap(keys: &Keys, wrap: &Event) -> Option<Unwrapped> {
     // claims the seal's author.
     let gift = UnwrappedGift::from_gift_wrap(keys, wrap).ok()?;
     let rumor = gift.rumor;
-    if rumor.kind != Kind::PrivateDirectMessage || rumor.pubkey != gift.sender {
+    let kind = rumor.kind.as_u16();
+    if (kind != Kind::PrivateDirectMessage.as_u16() && kind != crate::files::KIND_FILE) || rumor.pubkey != gift.sender {
         return None;
     }
     let sent_at = rumor.created_at.as_secs();
@@ -189,7 +206,8 @@ pub fn unwrap(keys: &Keys, wrap: &Event) -> Option<Unwrapped> {
         Some(t) => Some(crate::parts::parse_tag(t.as_slice())?),
         None => None,
     };
-    Some(Unwrapped { sender: gift.sender, text: rumor.content, sent_at, ms, part })
+    let tags = rumor.tags.iter().map(|t| t.as_slice().to_vec()).collect();
+    Some(Unwrapped { sender: gift.sender, kind, text: rumor.content, tags, sent_at, ms, part })
 }
 
 fn now_ms() -> u128 {

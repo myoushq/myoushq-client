@@ -11,6 +11,7 @@ import { proxiedWebSocket, proxyFor } from "./proxy.js";
 
 export const KIND_PROFILE = 0;
 export const KIND_CHAT = 14;
+export const KIND_FILE = 15;
 export const KIND_GIFT_WRAP = 1059;
 export const KIND_INBOX_RELAYS = 10050;
 export const MESSAGE_TTL = 86400;
@@ -79,11 +80,20 @@ export class Connection {
   }
 
   async sendMessage(recipient: string, text: string, extraTags: string[][] = [], targets?: Relay[]): Promise<string> {
+    return this.sendRumor(recipient, KIND_CHAT, text, extraTags, targets);
+  }
+
+  /** Send a NIP-17 file message (kind 15): the blob URL plus the tags that carry the key. */
+  async sendFileMessage(recipient: string, url: string, tags: string[][], targets?: Relay[]): Promise<string> {
+    return this.sendRumor(recipient, KIND_FILE, url, tags, targets);
+  }
+
+  private async sendRumor(recipient: string, kind: number, content: string, extraTags: string[][], targets?: Relay[]): Promise<string> {
     targets ??= await this.deliveryTargets(recipient);
     // Nostr timestamps are whole seconds; the encrypted "ms" tag keeps
     // messages sent within the same second in order.
     const rumor = createRumor({
-      kind: KIND_CHAT, content: text, tags: [["p", recipient], ["ms", String(Date.now())], ...extraTags],
+      kind, content, tags: [["p", recipient], ["ms", String(Date.now())], ...extraTags],
     }, this.secretKey);
     const wrap = giftWrap(createSeal(rumor, this.secretKey, recipient), recipient);
     await this.publish(wrap, targets);
@@ -132,9 +142,12 @@ function giftWrap(seal: Event, recipient: string): Event {
   return finalizeEvent(template, ephemeral);
 }
 
-/** Returns [sender, text, sent_at, ms] for a valid chat message, else null. */
-/** [sender, text, sentAt, ms, part]; `part` is set for one part of a long message (see parts.ts). */
-export type Unwrapped = [string, string, number, number, Part | null];
+/**
+ * [sender, content, sentAt, ms, part, kind, tags] for a valid chat (14) or
+ * file (15) message; `part` is set for one part of a long message (see
+ * parts.ts), and only for kind 14.
+ */
+export type Unwrapped = [string, string, number, number, Part | null, number, string[][]];
 
 export function unwrap(secretKey: Uint8Array, wrap: Event): Unwrapped | null {
   let rumor;
@@ -144,12 +157,12 @@ export function unwrap(secretKey: Uint8Array, wrap: Event): Unwrapped | null {
   } catch {
     return null;
   }
-  if (rumor.kind !== KIND_CHAT) return null;
+  if (rumor.kind !== KIND_CHAT && rumor.kind !== KIND_FILE) return null;
   const msTag = rumor.tags.find((t) => t[0] === "ms" && /^\d+$/.test(t[1] ?? ""));
-  const partTag = rumor.tags.find((t) => t[0] === "part");
+  const partTag = rumor.kind === KIND_CHAT ? rumor.tags.find((t) => t[0] === "part") : undefined;
   const part = partTag ? parseTag(partTag) : null;
   if (partTag && !part) return null; // malformed part tag: drop it
-  return [rumor.pubkey, rumor.content, rumor.created_at, msTag ? Number(msTag[1]) : rumor.created_at * 1000, part];
+  return [rumor.pubkey, rumor.content, rumor.created_at, msTag ? Number(msTag[1]) : rumor.created_at * 1000, part, rumor.kind, rumor.tags];
 }
 
 async function connectAuthed(secretKey: Uint8Array, url: string): Promise<Relay> {

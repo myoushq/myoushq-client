@@ -10,14 +10,17 @@
 //   await agent.unread();
 
 import { readFileSync } from "node:fs";
+import { promises as fs } from "node:fs";
+import { basename, join } from "node:path";
 import { generateSecretKey, getPublicKey, nip19, type Event } from "nostr-tools";
 import * as contacts from "./contacts.js";
 import type { Contact, Contacts } from "./contacts.js";
+import { Blobs, decryptFile, encryptFile, fileTags, parseFileTags, sanitizeName, type FileInfo } from "./files.js";
 import { record, type State } from "./history.js";
 import { Hub, type HubConfig, type Notice } from "./hub.js";
 import { Pairing, type Invite, type Pending } from "./pairing.js";
 import * as parts from "./parts.js";
-import { Connection, unwrap, type Unwrapped } from "./relay.js";
+import { Connection, KIND_FILE, unwrap, type Unwrapped } from "./relay.js";
 import { locked, type HistoryEntry, type Storage } from "./storage.js";
 
 /** This client's release, from package.json. */
@@ -176,6 +179,64 @@ export class Agent {
       record(this.st, { type: "message", direction: "out", peer: contact.npub, alias: contact.alias, text })))!;
   }
 
+  /**
+   * Send a file (protocol section 6): encrypt it with a fresh key, upload the
+   * ciphertext to the hub, and send the key in a kind-15 file message.
+   * `extraTags` adds worker semantics, e.g. [["w", "put", id, path]].
+   */
+  async sendFile(name: string, path: string, extraTags: string[][] = [], mime = "application/octet-stream"): Promise<HistoryEntry> {
+    const [pubkey, contact] = await contacts.find(this.st, name);
+    if (contact.status !== "approved") throw new Error(`${contact.alias} is ${contact.status}`);
+    const fileName = sanitizeName(basename(path));
+    if (!fileName) throw new Error(`not a usable file name: ${path}`);
+    const enc = await encryptFile(new Uint8Array(await fs.readFile(path)));
+    const info: Omit<FileInfo, "url" | "w"> = {
+      name: fileName, mime, size: enc.ciphertext.length, x: enc.x, ox: enc.ox,
+      key: Buffer.from(enc.key).toString("hex"), nonce: Buffer.from(enc.nonce).toString("hex"),
+    };
+    const desc = await (await this.blobs()).upload(enc.ciphertext, enc.x);
+    const conn = await this.connect();
+    try {
+      await conn.sendFileMessage(pubkey, desc.url, [...fileTags(info), ...extraTags]);
+    } finally {
+      conn.close();
+    }
+    const w = extraTags.find((t) => t[0] === "w");
+    return (await locked(this.st, "state", () => record(this.st, {
+      type: "file", direction: "out", peer: contact.npub, alias: contact.alias, text: `file: ${fileName} (${enc.ciphertext.length} bytes)`,
+      ...info, url: desc.url, ...(w ? { w: w.slice(1) } : {}),
+    })))!;
+  }
+
+  /**
+   * Download and decrypt a received file into `dir` (default: files/ in the
+   * data directory). Verifies the blob against the message before writing.
+   * Never overwrites: an existing name gets a numeric suffix.
+   */
+  async fetch(entry: HistoryEntry, dir?: string): Promise<string> {
+    if (entry.type !== "file" || !entry.x || !entry.ox || !entry.key || !entry.nonce || !entry.name) {
+      throw new Error("not a file entry");
+    }
+    const ciphertext = await (await this.blobs()).get(entry.x);
+    const plaintext = await decryptFile(ciphertext, Buffer.from(entry.key, "hex"), Buffer.from(entry.nonce, "hex"), entry.x, entry.ox);
+    const target = dir ?? this.filesDir();
+    await fs.mkdir(target, { recursive: true, mode: 0o700 });
+    const path = await freeName(target, sanitizeName(entry.name)!);
+    await fs.writeFile(path, plaintext, { mode: 0o600 });
+    return path;
+  }
+
+  /** Where fetched files go unless the caller says otherwise. */
+  filesDir(): string {
+    const home = (this.st as { home?: string }).home;
+    return join(home ?? process.env.MYOUS_HOME ?? join(process.env.HOME ?? ".", ".myous"), "files");
+  }
+
+  private async blobs(): Promise<Blobs> {
+    const cfg = await this.hub.config();
+    return new Blobs(await this.key(), cfg.blob_api ?? this.hub.url + "/blob");
+  }
+
   /** Pass on what the hub announces, once each: a newer client release (an
    * "update" entry) and notices (a "notice" entry each). Both are
    * information only; what to do about them is up to the agent. */
@@ -287,7 +348,10 @@ export class Agent {
     return (await locked(this.st, "state", async () => {
       const state = await this.st.get<State>("state", {});
       const last = state.read_seq ?? 0;
-      const entries = (await this.st.readHistory()).filter((e) => e.seq > last && e.direction !== "out");
+      // Worker replies (protocol section 7) are consumed by the command that
+      // waits for them, by id, so they don't show up as new items.
+      const entries = (await this.st.readHistory()).filter((e) =>
+        e.seq > last && e.direction !== "out" && e.type !== "result" && e.type !== "ack" && !(e.type === "file" && e.w?.[0] === "file"));
       // The contact's current relationship context, so the agent has it when it answers.
       for (const e of entries) if (e.peer) Object.assign(e, await contacts.contextOf(this.st, e.peer));
       if (markRead && entries.length) await this.st.put("state", { ...state, read_seq: entries[entries.length - 1].seq });
@@ -346,9 +410,20 @@ export class Agent {
     const buf = await this.st.get<parts.Buffer>("partials", {});
     let changed = false;
     const stored: HistoryEntry[] = [];
-    for (const [sender, rawText, rawSentAt, ms, part] of messages) {
+    let blobApi: string | undefined;
+    for (const [sender, rawText, rawSentAt, ms, part, kind, tags] of messages) {
       const contact = await contacts.approved(this.st, sender);
       if (!contact) continue; // not paired, or blocked: drop silently
+      if (kind === KIND_FILE) {
+        blobApi ??= (await this.hub.config()).blob_api ?? this.hub.url + "/blob";
+        const info = parseFileTags(tags, rawText, blobApi);
+        if (!info) continue; // malformed, or a blob that isn't on our hub
+        stored.push(await record(this.st, {
+          type: "file", direction: "in", peer: contact.npub, alias: contact.alias, sent_at: rawSentAt,
+          text: `file: ${info.name} (${info.size} bytes)`, ...info,
+        }));
+        continue;
+      }
       let text = rawText, sentAt = rawSentAt;
       if (part) {
         changed = true;
@@ -357,7 +432,7 @@ export class Agent {
         [text, sentAt] = done;
       }
       stored.push(await record(this.st, {
-        type: "message", direction: "in", peer: contact.npub, alias: contact.alias, text, sent_at: sentAt,
+        type: "message", direction: "in", peer: contact.npub, alias: contact.alias, text, sent_at: sentAt, ...workerReply(text),
       }));
     }
     for (const [sender, text, sentAt] of parts.expire(buf, now)) {
@@ -404,4 +479,47 @@ function noticeApplies(n: any): n is Notice {
   if (typeof n.min_version === "string" && newer(n.min_version, VERSION)) return false;
   if (typeof n.max_version === "string" && newer(VERSION, n.max_version)) return false;
   return true;
+}
+
+/**
+ * A worker's reply (protocol 7.1) is a kind-14 message whose content is a
+ * JSON object with "myous" "result" or "ack" and the request's id; such a
+ * message is recorded under that type, with its fields, for the command
+ * waiting on it. Anything else is an ordinary message.
+ */
+function workerReply(text: string): Partial<HistoryEntry> {
+  if (!text.startsWith("{")) return {};
+  let obj: any;
+  try {
+    obj = JSON.parse(text);
+  } catch {
+    return {};
+  }
+  if (!obj || typeof obj !== "object" || typeof obj.id !== "string" || !/^[0-9a-f]{32}$/.test(obj.id)) return {};
+  if (obj.myous === "result") {
+    return { type: "result", id: obj.id, exit: Number(obj.exit), stdout: String(obj.stdout ?? ""), stderr: String(obj.stderr ?? ""), truncated: Boolean(obj.truncated) };
+  }
+  if (obj.myous === "ack") {
+    const fields: Partial<HistoryEntry> = { type: "ack", id: obj.id, ok: Boolean(obj.ok) };
+    if (typeof obj.path === "string") fields.path = obj.path;
+    if (typeof obj.size === "number") fields.size = obj.size;
+    if (typeof obj.sha256 === "string") fields.sha256 = obj.sha256;
+    if (typeof obj.error === "string") fields.error = obj.error;
+    return fields;
+  }
+  return {};
+}
+
+/** `name` in `dir`, or `name` with a numeric suffix if it's taken. */
+async function freeName(dir: string, name: string): Promise<string> {
+  const dot = name.lastIndexOf(".");
+  const [stem, ext] = dot > 0 ? [name.slice(0, dot), name.slice(dot)] : [name, ""];
+  for (let i = 0; ; i++) {
+    const candidate = join(dir, i ? `${stem}-${i}${ext}` : name);
+    try {
+      await fs.access(candidate);
+    } catch {
+      return candidate;
+    }
+  }
 }

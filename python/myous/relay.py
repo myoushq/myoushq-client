@@ -34,6 +34,7 @@ from myous import parts, proxy
 
 KIND_PROFILE = 0
 KIND_CHAT = 14
+KIND_FILE = 15
 KIND_GIFT_WRAP = 1059
 KIND_INBOX_RELAYS = 10050
 KIND_AUTH = 22242
@@ -86,9 +87,9 @@ class Connection:
             reasons = "; ".join(f"{url}: {why}" for url, why in out.failed.items())
             raise RelayError(f"no relay accepted the event ({reasons or 'no response'})")
 
-    async def register(self, alias: str, difficulty: int) -> None:
+    async def register(self, alias: str, difficulty: int, about: str = "myoushq agent") -> None:
         """Publish our profile. The first one, with proof of work, registers us."""
-        content = json.dumps({"name": alias, "about": "myoushq agent"})
+        content = json.dumps({"name": alias, "about": about})
         unsigned = EventBuilder(Kind(KIND_PROFILE), content).finalize_unsigned(self.keys.public_key())
         if difficulty > 0:
             unsigned = unsigned.mine(MultiThreadPow(), difficulty)
@@ -120,9 +121,20 @@ class Connection:
         # anywhere from 0 to 24 hours after sending.
         # Nostr timestamps are whole seconds; the encrypted "ms" tag keeps
         # messages sent within the same second in order.
+        return await self._send_rumor(KIND_CHAT, recipient, text, extra_tags, targets)
+
+    async def send_file_message(self, recipient: PublicKey, url: str, file_tags: list[list[str]],
+                                targets: list[RelayUrl] | None = None) -> str:
+        """Send a NIP-17 file message (kind 15): the blob URL as content, the
+        key and hashes as tags (files.file_tags)."""
+        return await self._send_rumor(KIND_FILE, recipient, url, file_tags, targets)
+
+    async def _send_rumor(self, kind: int, recipient: PublicKey, content: str,
+                          extra_tags: list[list[str]] | None, targets: list[RelayUrl] | None) -> str:
+        targets = targets or await self.delivery_targets(recipient)
         tags = [Tag.public_key(recipient), Tag.parse(["ms", str(time.time_ns() // 1_000_000)])]
         tags += [Tag.parse(t) for t in extra_tags or []]
-        rumor = EventBuilder(Kind(KIND_CHAT), text).tags(tags).finalize_unsigned(self.keys.public_key())
+        rumor = EventBuilder(Kind(kind), content).tags(tags).finalize_unsigned(self.keys.public_key())
         expires = Timestamp.from_secs(now() + int(MESSAGE_TTL.total_seconds()))
         wrap = nip59_make_gift_wrap(self.keys, recipient, rumor, None, [Tag.expiration(expires)])
         await self.publish(wrap, targets)
@@ -152,31 +164,43 @@ class Connection:
                 yield note.event
 
 
-def unwrap(keys: Keys, wrap: Event) -> tuple[str, str, int, int, tuple[str, int, int] | None] | None:
-    """Return (sender hex, text, sent_at seconds, sent_at ms, part) for a
-    valid chat message, else None. `part` is (id, index, total) for one part
-    of a long message (see parts.py), else None."""
+class Unwrapped:
+    """A valid message out of a gift wrap: who sent it, what kind, its
+    content and tags, when it was written, and its part tag if any."""
+
+    def __init__(self, sender: str, kind: int, content: str, sent_at: int, ms: int,
+                 part: tuple[str, int, int] | None, tags: list[list[str]]):
+        self.sender, self.kind, self.content = sender, kind, content
+        self.sent_at, self.ms, self.part, self.tags = sent_at, ms, part, tags
+
+
+def unwrap(keys: Keys, wrap: Event) -> Unwrapped | None:
+    """The message inside a gift wrap (kind 14 text or kind 15 file), or
+    None if it isn't a valid one."""
     try:
         gift = UnwrappedGift.from_gift_wrap(keys, wrap)
     except Exception:
         return None
     rumor = gift.rumor()
     sender = gift.sender().to_hex()
+    kind = rumor.kind().as_u16()
     # The seal is signed by the sender; the rumor inside must claim the same author.
-    if rumor.kind().as_u16() != KIND_CHAT or rumor.author().to_hex() != sender:
+    if kind not in (KIND_CHAT, KIND_FILE) or rumor.author().to_hex() != sender:
         return None
     sent_at = rumor.created_at().as_secs()
     ms = sent_at * 1000
     part = None
-    for tag in rumor.tags():
-        v = tag.to_vec()
+    tags = [tag.to_vec() for tag in rumor.tags()]
+    for v in tags:
         if len(v) >= 2 and v[0] == "ms" and v[1].isdigit():
             ms = int(v[1])
         elif v and v[0] == "part":
+            if kind != KIND_CHAT:
+                return None  # files are never split
             part = parts.parse_tag(v)
             if part is None:
                 return None  # malformed part tag: drop it
-    return sender, rumor.content(), sent_at, ms, part
+    return Unwrapped(sender, kind, rumor.content(), sent_at, ms, part, tags)
 
 
 def now() -> int:

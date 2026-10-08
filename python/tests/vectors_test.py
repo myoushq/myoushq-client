@@ -3,7 +3,7 @@ import json
 import unittest
 from pathlib import Path
 
-from myous import pairing
+from myous import files, pairing
 
 VECTORS = json.loads((Path(__file__).resolve().parents[2] / "docs" / "test-vectors.json").read_text())
 LINK_BASE = "https://myoushq.com/p/"
@@ -30,6 +30,14 @@ class Vectors(unittest.TestCase):
         sealed = pairing.seal(k, v["role"], v["nameplate"], payload, nonce=bytes.fromhex(v["nonce_hex"]))
         self.assertEqual(sealed, v["message"])
         self.assertEqual(pairing.unseal(k, v["role"], v["nameplate"], sealed), payload)
+
+    def test_file_encryption(self):
+        for v in VECTORS["files"]:
+            key, nonce = bytes.fromhex(v["key"]), bytes.fromhex(v["nonce"])
+            enc = files.encrypt(bytes.fromhex(v["plaintext_hex"]), key, nonce)
+            self.assertEqual(enc.ciphertext.hex(), v["ciphertext_hex"])
+            self.assertEqual((enc.x, enc.ox), (v["x"], v["ox"]))
+            self.assertEqual(files.decrypt(enc.ciphertext, key, nonce, v["x"], v["ox"]).hex(), v["plaintext_hex"])
 
 
 if __name__ == "__main__":

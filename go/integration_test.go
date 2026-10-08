@@ -368,3 +368,36 @@ func TestLibraryWithCustomStorage(t *testing.T) {
 		t.Fatalf("got %+v %v", got, err)
 	}
 }
+
+func TestGoFiles(t *testing.T) {
+	e := setup(t)
+	e.init("go-fay", "go-gus")
+	e.pair("go-fay", "go-gus", "code")
+
+	src := filepath.Join(e.dir, "report.txt")
+	content := strings.Repeat("line of the report\n", 2000)
+	os.WriteFile(src, []byte(content), 0o600)
+	out := e.ok("go-fay", "send-file", "go-gus", src)
+	if !strings.Contains(out, "report.txt") {
+		t.Fatalf("send-file: %s", out)
+	}
+	got := e.inbox("go-gus")
+	if len(got) != 1 || got[0].Type != "file" || got[0].Name != "report.txt" || got[0].Key != "" {
+		t.Fatalf("file entry: %+v", got)
+	}
+	dir := filepath.Join(e.dir, "got")
+	e.ok("go-gus", "fetch", "--latest", "--to", dir)
+	b, err := os.ReadFile(filepath.Join(dir, "report.txt"))
+	if err != nil || string(b) != content {
+		t.Fatalf("fetched file: %v %d bytes", err, len(b))
+	}
+	// A second fetch doesn't overwrite.
+	e.ok("go-gus", "fetch", fmt.Sprint(got[0].Seq), "--to", dir)
+	if _, err := os.Stat(filepath.Join(dir, "report-1.txt")); err != nil {
+		t.Fatal("second copy not written with a suffix")
+	}
+	// Fetching again after reading: the blob is still there for a day.
+	if _, err := e.run("go-gus", "fetch", "--latest", "--to", dir); err != nil {
+		t.Fatal(err)
+	}
+}

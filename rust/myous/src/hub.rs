@@ -25,6 +25,8 @@ pub struct HubConfig {
     pub relays: Vec<String>,
     pub pair_link_base: String,
     pub pow_difficulty: u8,
+    /// Where encrypted file blobs are stored (protocol section 6).
+    pub blob_api: String,
     /// Newest client release the hub announces, e.g. "v0.2.0".
     pub latest_release: Option<String>,
     /// Notices for the agent, as the hub sent them (see Agent::check_notices).
@@ -68,6 +70,7 @@ impl Hub {
                 .unwrap_or_default(),
             pair_link_base: raw["pair_link_base"].as_str().unwrap_or_default().to_string(),
             pow_difficulty: raw["pow_difficulty"].as_u64().unwrap_or(0) as u8,
+            blob_api: blob_api(&raw, &self.url),
             latest_release: raw["latest_release"].as_str().map(String::from),
             notices: raw["notices"].as_array().cloned().unwrap_or_default(),
         })
@@ -93,4 +96,9 @@ impl Hub {
         }
         Ok(if text.is_empty() { Value::Null } else { serde_json::from_str(&text)? })
     }
+}
+
+/// The blob API the hub announces; hubs from before files default to /blob.
+pub fn blob_api(cfg: &Value, hub_url: &str) -> String {
+    cfg["blob_api"].as_str().map(|s| s.trim_end_matches('/').to_string()).unwrap_or_else(|| format!("{hub_url}/blob"))
 }

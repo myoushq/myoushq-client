@@ -1,14 +1,18 @@
 package myous
 
 import (
+	"encoding/hex"
+	"encoding/json"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/nbd-wtf/go-nostr"
 )
 
 // Entry is one history record: a message ("message", direction "in" or
-// "out") or a pairing result ("paired", "pairing_failed").
+// "out"), a file ("file"), a worker reply ("result", "ack"; see
+// protocol.md section 7) or a pairing result ("paired", "pairing_failed").
 type Entry struct {
 	Seq       int    `json:"seq"`
 	Type      string `json:"type"`
@@ -24,8 +28,39 @@ type Entry struct {
 	Sharing      string `json:"sharing,omitempty"`
 	// Incomplete marks a long message whose missing parts never arrived.
 	Incomplete bool   `json:"incomplete,omitempty"`
-	ID         string `json:"id,omitempty"`  // "notice" entries: the notice's id
-	URL        string `json:"url,omitempty"` // "notice" entries: link for more detail
+	ID         string `json:"id,omitempty"`  // "notice": the notice's id; "result"/"ack": the request's id
+	URL        string `json:"url,omitempty"` // "notice": link for more detail; "file": the blob
+	// "file" entries: what's needed to fetch and decrypt the blob. The key
+	// and nonce stay in the history (private, like the messages).
+	Name  string   `json:"name,omitempty"`
+	Mime  string   `json:"mime,omitempty"`
+	Size  int64    `json:"size,omitempty"`
+	X     string   `json:"x,omitempty"`
+	Ox    string   `json:"ox,omitempty"`
+	Key   string   `json:"key,omitempty"`
+	Nonce string   `json:"nonce,omitempty"`
+	W     []string `json:"w,omitempty"` // worker semantics, e.g. ["file", <id>]
+}
+
+// consumedByCommand reports entries that a blocking command (exec, cp)
+// matches by id and consumes, so they don't show up as unread.
+func (e Entry) consumedByCommand() bool {
+	return e.Type == "result" || e.Type == "ack" || (e.Type == "file" && len(e.W) > 0 && e.W[0] == "file")
+}
+
+// workerReply recognizes a worker's JSON reply in a text message.
+func workerReply(text string) (kind, id string, ok bool) {
+	if !strings.HasPrefix(strings.TrimSpace(text), "{") {
+		return "", "", false
+	}
+	var r struct {
+		Myous string `json:"myous"`
+		ID    string `json:"id"`
+	}
+	if json.Unmarshal([]byte(text), &r) != nil || (r.Myous != "result" && r.Myous != "ack") {
+		return "", "", false
+	}
+	return r.Myous, r.ID, true
 }
 
 // State is the "state" document.
@@ -116,12 +151,31 @@ func handleWraps(st Storage, sk string, wraps []*nostr.Event) ([]Entry, error) {
 	if _, err := st.Get("partials", &buf); err != nil {
 		return nil, err
 	}
+	// File messages must point at the hub's own blob store.
+	var cfg HubConfig
+	st.Get("hub", &cfg)
 	changed := false
 	var stored []Entry
 	keep := func(m message, incomplete bool) error {
 		c, err := approvedContact(st, m.sender)
 		if err != nil || c == nil {
 			return err // c == nil: not paired, or blocked: drop silently
+		}
+		if m.file != nil {
+			x, ok := blobURLHash(m.file.URL, cfg.BlobAPI)
+			if !ok || x != m.file.X {
+				return nil // not our hub's blob, or a URL that lies about the hash: drop it
+			}
+			e, err := record(st, Entry{
+				Type: "file", Direction: "in", Peer: c.Npub, Alias: c.Alias, SentAt: m.sentAt,
+				Text: "file: " + m.file.Name, Name: m.file.Name, Mime: m.file.Mime, Size: m.file.Size,
+				X: m.file.X, Ox: m.file.Ox, URL: m.file.URL, Key: hex.EncodeToString(m.file.Key),
+				Nonce: hex.EncodeToString(m.file.Nonce), W: m.file.W,
+			})
+			if err == nil {
+				stored = append(stored, e)
+			}
+			return err
 		}
 		if m.part != nil {
 			changed = true
@@ -131,7 +185,11 @@ func handleWraps(st Storage, sk string, wraps []*nostr.Event) ([]Entry, error) {
 			}
 			m = whole
 		}
-		e, err := record(st, Entry{Type: "message", Direction: "in", Peer: c.Npub, Alias: c.Alias, Text: m.text, SentAt: m.sentAt, Incomplete: incomplete})
+		entry := Entry{Type: "message", Direction: "in", Peer: c.Npub, Alias: c.Alias, Text: m.text, SentAt: m.sentAt, Incomplete: incomplete}
+		if kind, id, ok := workerReply(m.text); ok {
+			entry.Type, entry.ID = kind, id
+		}
+		e, err := record(st, entry)
 		if err == nil {
 			stored = append(stored, e)
 		}
@@ -172,7 +230,7 @@ func unread(st Storage, markRead bool) ([]Entry, error) {
 	}
 	entries := []Entry{}
 	for _, e := range history {
-		if e.Seq > s.ReadSeq && e.Direction != "out" {
+		if e.Seq > s.ReadSeq && e.Direction != "out" && !e.consumedByCommand() {
 			if e.Peer != "" {
 				// So the agent has it when it answers.
 				e.Relationship, e.Sharing = contextOf(st, e.Peer)

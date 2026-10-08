@@ -1,12 +1,12 @@
 {
   "name": "myous",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "lockfileVersion": 3,
   "requires": true,
   "packages": {
     "": {
       "name": "myous",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "license": "UNLICENSED",
       "dependencies": {
         "@noble/ciphers": "2.4.0",

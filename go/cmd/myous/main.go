@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"time"
 
@@ -23,6 +24,8 @@ const usage = `usage: myous <command> [flags]
   invite [--json] [--wait]        start a pairing: get a link and code to share
   accept CODE [--wait SECONDS]    join a pairing from a link or code (default wait 60)
   send NAME TEXT...               send a message (TEXT "-" reads stdin)
+  send-file NAME PATH             send a file, encrypted end to end
+  fetch [SEQ] [--latest] [--to DIR]  download and decrypt a received file (default: the latest)
   inbox [--json] [--peek] [--local]  fetch, then new messages and other items, marked read
   history [--with NAME] [--limit N] [--json]
   contacts [--json]
@@ -64,6 +67,8 @@ func run(ctx context.Context, cmd string, args []string) error {
 	local := fs.Bool("local", false, "inbox: don't fetch; show only what's stored")
 	with := fs.String("with", "", "only this contact")
 	limit := fs.Int("limit", 50, "how many entries")
+	latest := fs.Bool("latest", false, "fetch: the newest received file")
+	toDir := fs.String("to", "", "fetch: directory to write into (default: files/ in the data directory)")
 	waitFlag := fs.String("wait", "", "accept: seconds to wait; invite: stay until done")
 	relationship := fs.String("relationship", "", "how your owner knows this contact: "+strings.Join(myous.Relationships, ", "))
 	sharing := fs.String("sharing", "", "your owner's guidance on what you may share with this contact")
@@ -176,6 +181,49 @@ func run(ctx context.Context, cmd string, args []string) error {
 		}
 		fmt.Printf("sent to %s\n", e.Alias)
 
+	case "send-file":
+		if len(pos) != 2 {
+			return errors.New("usage: myous send-file NAME PATH")
+		}
+		e, err := agent.SendFile(ctx, pos[0], pos[1], nil)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("sent %s (%d bytes) to %s\n", e.Name, e.Size, e.Alias)
+
+	case "fetch":
+		history, err := agent.History("", 0)
+		if err != nil {
+			return err
+		}
+		var chosen *myous.Entry
+		if len(pos) == 1 && !*latest {
+			seq, err := strconv.Atoi(pos[0])
+			if err != nil {
+				return errors.New("usage: myous fetch [SEQ] [--latest] [--to DIR]")
+			}
+			for i := range history {
+				if history[i].Seq == seq {
+					chosen = &history[i]
+				}
+			}
+		} else {
+			for i := len(history) - 1; i >= 0; i-- {
+				if history[i].Type == "file" && history[i].Direction != "out" {
+					chosen = &history[i]
+					break
+				}
+			}
+		}
+		if chosen == nil {
+			return errors.New("no such file entry; `myous inbox` shows received files with their seq")
+		}
+		path, err := agent.Fetch(ctx, *chosen, *toDir)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("wrote %s\n", path)
+
 	case "inbox":
 		if !*local {
 			if _, err := agent.Poll(ctx); err != nil {
@@ -187,7 +235,7 @@ func run(ctx context.Context, cmd string, args []string) error {
 			return err
 		}
 		if *asJSON {
-			return printJSON(entries)
+			return printJSON(withoutKeys(entries))
 		}
 		if len(entries) == 0 {
 			fmt.Println("no new messages")
@@ -200,7 +248,7 @@ func run(ctx context.Context, cmd string, args []string) error {
 			return err
 		}
 		if *asJSON {
-			return printJSON(entries)
+			return printJSON(withoutKeys(entries))
 		}
 		printEntries(entries)
 
@@ -359,6 +407,10 @@ func printEntries(entries []myous.Entry) {
 		}
 		when := time.Unix(at, 0).Format("2006-01-02 15:04")
 		switch {
+		case e.Type == "file" && e.Direction == "out":
+			fmt.Printf("[%s] me -> %s: file %s (%d bytes)\n", when, e.Alias, e.Name, e.Size)
+		case e.Type == "file":
+			fmt.Printf("[%s] file from %s: %s (%d bytes); seq %d, get it with `myous fetch %d`\n", when, e.Alias, e.Name, e.Size, e.Seq, e.Seq)
 		case e.Type != "message":
 			fmt.Printf("[%s] (%s) %s\n", when, e.Type, e.Text)
 		case e.Direction == "out":
@@ -368,6 +420,17 @@ func printEntries(entries []myous.Entry) {
 			fmt.Println(contextLine(e))
 		}
 	}
+}
+
+// withoutKeys drops file decryption keys from printed output; they stay in
+// the history on disk, which is private.
+func withoutKeys(entries []myous.Entry) []myous.Entry {
+	out := make([]myous.Entry, len(entries))
+	for i, e := range entries {
+		e.Key, e.Nonce = "", ""
+		out[i] = e
+	}
+	return out
 }
 
 func printJSON(v any) error {

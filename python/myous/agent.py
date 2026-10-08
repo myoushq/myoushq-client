@@ -15,15 +15,19 @@ Network calls to relays are async; hub calls are plain blocking HTTPS.
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 import re
+import secrets
 import time
 import urllib.parse
+from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
 from nostr_sdk import Keys, PublicKey, RelayStatus
 
 import myous
-from myous import contacts, inbox, parts, relay
+from myous import contacts, files, inbox, parts, relay
 from myous.hub import Hub
 from myous.pairing import Pairing
 from myous.storage import Storage
@@ -39,6 +43,10 @@ _LOST = (
     "was kept, or, if it is truly gone, the owner must clear the contacts and "
     "pair with everyone again."
 )
+
+
+class WorkerError(Exception):
+    """A worker refused or failed a request (an ack with ok false)."""
 
 
 class Agent:
@@ -82,23 +90,28 @@ class Agent:
     def alias(self) -> str:
         return self.st.get("settings", {}).get("alias", "agent")
 
-    async def register(self, alias: str | None = None) -> None:
+    async def register(self, alias: str | None = None, about: str | None = None) -> None:
         """Publish profile and inbox relays. The first time, with proof of
-        work, this registers the key with the hub. Safe to repeat."""
+        work, this registers the key with the hub. Safe to repeat. `about`
+        says what kind of agent this is ("myoushq worker" for a worker)."""
         settings = self.st.get("settings", {})
         if alias:
             settings["alias"] = alias
+        if about:
+            settings["about"] = about
+        if alias or about:
             self.st.put("settings", settings)
+        about = settings.get("about") or "myoushq agent"
         cfg = self.hub.config(refresh=True)
         registered = self.st.get("state", {}).get("registered")
         async with self._connect(cfg) as conn:
             try:
-                await conn.register(self.alias, 0 if registered else cfg["pow_difficulty"])
+                await conn.register(self.alias, 0 if registered else cfg["pow_difficulty"], about)
             except relay.RelayError as e:
                 if "pow:" not in str(e):
                     raise
                 # The hub forgot us (e.g. rebuilt): register again with proof of work.
-                await conn.register(self.alias, cfg["pow_difficulty"])
+                await conn.register(self.alias, cfg["pow_difficulty"], about)
             await conn.publish_inbox_relays(cfg["relays"])
         with self.st.lock():
             state = self.st.get("state", {})
@@ -159,6 +172,173 @@ class Agent:
                                           "peer": contact["npub"], "alias": contact["alias"],
                                           "text": text})
 
+    # --- files (protocol.md, section 6) -------------------------------------
+
+    def blobs(self) -> files.BlobClient:
+        return files.BlobClient(self.keys, self.hub.config().get("blob_api"))
+
+    async def send_file(self, name: str, path: str | os.PathLike, extra_tags: list[list[str]] | None = None,
+                        mime: str | None = None, file_name: str | None = None) -> dict:
+        """Encrypt a file, store the blob on the hub, and send the file
+        message that carries the key. `extra_tags` is for worker semantics
+        (["w", ...]). Returns the history entry."""
+        pubkey, contact = contacts.find(self.st, name)
+        if contact["status"] != contacts.APPROVED:
+            raise ValueError(f"{contact['alias']} is {contact['status']}")
+        path = Path(path)
+        file_name = files.safe_name(file_name or path.name)
+        if file_name is None:
+            raise ValueError("the file needs a usable name")
+        # Check the size before reading: a file a worker was asked for may be
+        # anything a command left in its work directory.
+        if path.stat().st_size > files.MAX_PLAINTEXT:
+            raise ValueError(f"file is {path.stat().st_size} bytes; the limit is {files.MAX_PLAINTEXT}")
+        enc = files.encrypt(path.read_bytes())
+        blobs = self.blobs()
+        descriptor = blobs.upload(enc.ciphertext)
+        url = f"{blobs.url}/{enc.x}"
+        mime = mime or files.DEFAULT_MIME
+        tags = files.file_tags(enc, file_name, mime, extra_tags)
+        async with self._connect() as conn:
+            await conn.send_file_message(PublicKey.parse(pubkey), url, tags)
+        entry = {"type": "file", "direction": "out", "peer": contact["npub"], "alias": contact["alias"],
+                 "name": file_name, "mime": mime, "size": len(enc.ciphertext), "x": enc.x, "ox": enc.ox,
+                 "url": url, "key": enc.key.hex(), "nonce": enc.nonce.hex(), "expires": descriptor.get("expires")}
+        if extra_tags:
+            w = next((t[1:] for t in extra_tags if t and t[0] == "w"), None)
+            if w:
+                entry["w"] = w
+        entry["text"] = "sent file: " + inbox.describe_file(entry)
+        with self.st.lock():
+            return inbox.record(self.st, entry)
+
+    def file_entry(self, which: int | str | dict | None) -> dict:
+        """A file entry from the history: by seq, or the latest received
+        file (None)."""
+        if isinstance(which, dict):
+            return which
+        received = [e for e in self.st.read_history() if e.get("type") == "file" and e.get("direction") == "in"]
+        if which is None:
+            if not received:
+                raise KeyError("no file has been received")
+            return received[-1]
+        for e in received:
+            if e["seq"] == int(which):
+                return e
+        raise KeyError(f"no received file with id {which}")
+
+    def fetch_bytes(self, entry: dict) -> bytes:
+        """Download and decrypt a received file, checking the size the
+        message announced and both hashes."""
+        size = entry.get("size")
+        data = self.blobs().get(entry["x"], size=size)
+        if size is not None and len(data) != size:
+            raise ValueError(f"the blob is {len(data)} bytes, the message said {size}")
+        return files.decrypt(data, bytes.fromhex(entry["key"]), bytes.fromhex(entry["nonce"]), entry["x"], entry["ox"])
+
+    def fetch(self, which: int | str | dict | None = None, to: str | os.PathLike | None = None) -> str:
+        """Download a received file into `to` (a directory, default
+        $MYOUS_HOME/files; or an exact file path to write). A file in the
+        directory is never overwritten: the name gets a number."""
+        entry = self.file_entry(which)
+        plaintext = self.fetch_bytes(entry)
+        if to is not None and (Path(to).is_dir() or str(to).endswith(os.sep)):
+            Path(to).mkdir(parents=True, exist_ok=True)
+            target = files.unique_path(to, entry["name"])
+        elif to is not None:
+            Path(to).parent.mkdir(parents=True, exist_ok=True)
+            target = str(to)
+        else:
+            home = getattr(self.st, "home", None)
+            directory = Path(home) / "files" if home else Path("myous-files")
+            directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+            target = files.unique_path(directory, entry["name"])
+        Path(target).write_bytes(plaintext)
+        with self.st.lock():
+            inbox.record(self.st, {"type": "fetched", "direction": "out", "of": entry["seq"], "path": str(target),
+                                   "peer": entry.get("peer"), "alias": entry.get("alias"),
+                                   "text": f"fetched {entry['name']} to {target}"})
+        return str(target)
+
+    # --- requests to a worker (protocol.md, section 7) ---------------------
+
+    async def exec(self, name: str, cmd: str, timeout: float = 120) -> dict:
+        """Run a command on a worker and wait for its result
+        ({"exit", "stdout", "stderr", "truncated"}). TimeoutError if no
+        reply arrives in time; WorkerError if the worker refused."""
+        rid = new_request_id()
+        body = json.dumps({"myous": "exec", "id": rid, "cmd": cmd, "timeout": int(timeout)})
+        await self.send(name, body)
+        return self._check(await self._await_reply(rid, timeout + 30, self._npub(name)))
+
+    async def put(self, name: str, local_path: str | os.PathLike, remote_path: str, timeout: float = 300) -> dict:
+        """Push a file to a worker and wait until it is written there."""
+        rid = new_request_id()
+        await self.send_file(name, local_path, extra_tags=[["w", "put", rid, remote_path]])
+        return self._check(await self._await_reply(rid, timeout, self._npub(name)))
+
+    async def get(self, name: str, remote_path: str, local_path: str | os.PathLike | None = None,
+                  timeout: float = 300) -> str:
+        """Pull a file from a worker. Returns where it was written."""
+        rid = new_request_id()
+        await self.send(name, json.dumps({"myous": "get", "id": rid, "path": remote_path}))
+        reply = self._check(await self._await_reply(rid, timeout, self._npub(name)))
+        return self.fetch(reply, local_path)
+
+    def _npub(self, name: str) -> str:
+        return contacts.find(self.st, name)[1]["npub"]
+
+    @staticmethod
+    def _check(reply: dict) -> dict:
+        if reply.get("type") == "ack" and not reply.get("ok"):
+            raise WorkerError(reply.get("error") or "the worker refused")
+        return reply
+
+    def _find_reply(self, rid: str, since: int, npub: str) -> dict | None:
+        """The reply with this id from this contact, or None. The sender
+        is checked too: no other contact may answer a request."""
+        for e in self.st.read_history():
+            if e["seq"] < since or e.get("direction") == "out" or e.get("peer") != npub:
+                continue
+            if e.get("type") in inbox.REPLY_OPS and e.get("id") == rid:
+                return e
+            if e.get("type") == "file" and e.get("w") == ["file", rid]:
+                return e
+        return None
+
+    async def _await_reply(self, rid: str, timeout: float, npub: str) -> dict:
+        """Listen until the reply with this id, from this contact, is in
+        the history. Another process (a watcher) may store it first; the
+        history is checked on every tick as well as on arrival."""
+        since = 1
+        found = asyncio.get_running_loop().create_future()
+
+        def check(entries: list[dict] | None = None) -> None:
+            reply = self._find_reply(rid, since, npub)
+            if reply and not found.done():
+                found.set_result(reply)
+
+        async def listen_forever() -> None:
+            while True:
+                try:
+                    await self.listen(on_new=check, on_tick=check, tick=2)
+                except (OSError, relay.RelayError):
+                    await self.poll()
+                    check()
+                    await asyncio.sleep(5)
+
+        listener = asyncio.ensure_future(listen_forever())
+        try:
+            return await asyncio.wait_for(found, timeout)
+        except asyncio.TimeoutError:
+            raise TimeoutError(f"no reply from the worker within {int(timeout)} seconds") from None
+        finally:
+            listener.cancel()
+            try:
+                await listener
+            except (asyncio.CancelledError, Exception):
+                pass
+
     async def poll(self) -> list[dict]:
         """Advance pairings and fetch waiting messages, once. Returns new
         history entries (messages and pairing results)."""
@@ -181,22 +361,16 @@ class Agent:
         on_new(entries) for new messages and pairing results, and on_tick()
         every `tick` seconds (3 while a pairing is pending)."""
         loop = asyncio.get_running_loop()
-
-        async def notify(entries: list[dict]) -> None:
-            if entries and on_new:
-                result = on_new(entries)
-                if asyncio.iscoroutine(result):
-                    await result
+        deliveries = _Deliveries(self, on_new)
 
         async with self._connect() as conn:
 
             async def housekeeping() -> None:
                 down_since = None
                 while True:
-                    before = self._next_seq()
                     await loop.run_in_executor(None, self.advance_pairings)
                     await loop.run_in_executor(None, self.check_notices)
-                    await notify(self._entries_since(before))
+                    await deliveries.deliver()
                     states = [r.status() for r in (await conn.client.relays()).values()]
                     connected = any(s == RelayStatus.CONNECTED for s in states)
                     down_since = None if connected else (down_since or loop.time())
@@ -210,8 +384,8 @@ class Agent:
             try:
                 async for wrap in conn.stream_wraps():
                     with self.st.lock():
-                        stored = inbox.handle_wraps(self.st, self.keys, [wrap])
-                    await notify(stored)
+                        inbox.handle_wraps(self.st, self.keys, [wrap])
+                    await deliveries.deliver()
                     if task.done():
                         task.result()
             finally:
@@ -306,6 +480,32 @@ class Agent:
         if self._next_seq() == seq:
             return []
         return [e for e in self.st.read_history() if e["seq"] >= seq and e.get("direction") != "out"]
+
+
+def new_request_id() -> str:
+    return secrets.token_hex(16)
+
+
+class _Deliveries:
+    """Hands each new history entry to on_new exactly once, whichever of
+    listen()'s two paths (the wrap stream, or housekeeping after pairings
+    and notices) notices it first. Both run on one event loop, and the
+    cursor moves before on_new is awaited, so an entry can't be handed
+    over twice even while on_new is still busy with it."""
+
+    def __init__(self, agent: "Agent", on_new):
+        self.agent, self.on_new = agent, on_new
+        self.cursor = agent._next_seq()
+
+    async def deliver(self) -> None:
+        entries = self.agent._entries_since(self.cursor)
+        if not entries:
+            return
+        self.cursor = entries[-1]["seq"] + 1
+        if self.on_new:
+            result = self.on_new(entries)
+            if asyncio.iscoroutine(result):
+                await result
 
 
 def _version(tag: str) -> tuple[int, ...]:

@@ -15,15 +15,17 @@
 //! # Ok(()) }
 //! ```
 
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{bail, Result};
 use futures::StreamExt;
-use nostr_sdk::prelude::{Keys, PublicKey, ToBech32};
+use nostr_sdk::prelude::{Keys, PublicKey, Tag, ToBech32};
 use serde_json::{json, Value};
 
 use crate::contacts::{self, Contact, Contacts};
+use crate::files;
 use crate::hub::Hub;
 use crate::pairing::{Invite, Outcome, Pairing, Pending};
 use crate::relay::Connection;
@@ -190,7 +192,7 @@ impl Agent {
             let targets = conn.delivery_targets(recipient).await?;
             let (id, total) = (crate::parts::new_id(), chunks.len().to_string());
             for (i, chunk) in chunks.iter().enumerate() {
-                let tag = nostr_sdk::prelude::Tag::parse(["part".to_string(), id.clone(), (i + 1).to_string(), total.clone()])?;
+                let tag = Tag::parse(["part".to_string(), id.clone(), (i + 1).to_string(), total.clone()])?;
                 conn.send_message(recipient, chunk, vec![tag], Some(targets.clone())).await
                     .map_err(|e| anyhow::anyhow!("sent {i} of {} parts, then: {e}", chunks.len()))?;
             }
@@ -202,6 +204,73 @@ impl Agent {
         inbox::record(&*self.storage, json!({
             "type": "message", "direction": "out", "peer": contact.npub, "alias": contact.alias, "text": text,
         }))
+    }
+
+    /// Send a file to a contact: encrypt it, store the blob on the hub, send
+    /// the kind-15 message with the key. `extra_tags` are added to the
+    /// message (e.g. the worker `w` tag).
+    pub async fn send_file(&self, name: &str, path: &Path, extra_tags: Vec<Vec<String>>) -> Result<Value> {
+        let (pubkey, contact) = contacts::find(&*self.storage, name)?;
+        if contact.status != contacts::APPROVED {
+            bail!("{} is {}", contact.alias, contact.status);
+        }
+        let plaintext = std::fs::read(path)?;
+        let file_name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let file_name = files::sanitize_name(&file_name).ok_or_else(|| anyhow::anyhow!("bad file name"))?;
+        let mime = mime_of(&file_name);
+        let enc = files::encrypt(&plaintext)?;
+        let cfg = self.hub.config(false).await?;
+        let keys = self.keys()?;
+        let blobs = files::BlobClient::new(&cfg.blob_api, &keys)?;
+        blobs.upload(&enc.ciphertext, &enc.x).await?;
+        let url = blobs.url_of(&enc.x);
+        let (key, nonce) = (files::hex(&enc.key), files::hex(&enc.nonce));
+        let mut tags = vec![
+            vec!["file-type".to_string(), mime.clone()],
+            vec!["encryption-algorithm".to_string(), "aes-gcm".to_string()],
+            vec!["decryption-key".to_string(), key.clone()],
+            vec!["decryption-nonce".to_string(), nonce.clone()],
+            vec!["x".to_string(), enc.x.clone()],
+            vec!["ox".to_string(), enc.ox.clone()],
+            vec!["size".to_string(), enc.ciphertext.len().to_string()],
+            vec!["name".to_string(), file_name.clone()],
+        ];
+        tags.extend(extra_tags.iter().cloned());
+        let tags = tags.into_iter().map(Tag::parse).collect::<Result<Vec<_>, _>>()?;
+        let recipient = PublicKey::from_hex(&pubkey)?;
+        let conn = self.connect().await?;
+        let sent = conn.send_file_message(recipient, &url, tags, None).await;
+        conn.close().await;
+        sent?;
+        let w = extra_tags.iter().find(|t| t.first().map(String::as_str) == Some("w")).map(|t| t[1..].to_vec());
+        let _lock = self.storage.lock("state", true)?;
+        inbox::record(&*self.storage, json!({
+            "type": "file", "direction": "out", "peer": contact.npub, "alias": contact.alias,
+            "name": file_name, "mime": mime, "size": enc.ciphertext.len(), "x": enc.x, "ox": enc.ox,
+            "url": url, "key": key, "nonce": nonce, "w": w,
+        }))
+    }
+
+    /// Download and decrypt a received file entry into `dir`, never
+    /// overwriting: a taken name gets a numeric suffix. Returns the path.
+    pub async fn fetch(&self, entry: &Value, dir: &Path) -> Result<PathBuf> {
+        if entry["type"] != "file" {
+            bail!("not a file entry");
+        }
+        let field = |k: &str| entry[k].as_str().map(String::from).ok_or_else(|| anyhow::anyhow!("file entry lacks {k}"));
+        let (x, ox, key, nonce) = (field("x")?, field("ox")?, field("key")?, field("nonce")?);
+        let cfg = self.hub.config(false).await?;
+        let blobs = files::BlobClient::new(&cfg.blob_api, &self.keys()?)?;
+        let ciphertext = blobs.get(&x).await?;
+        let plaintext = files::decrypt(&key, &nonce, &ciphertext, &x, &ox)?;
+        let name = files::sanitize_name(entry["name"].as_str().unwrap_or("")).unwrap_or_else(|| format!("file-{}", &x[..8]));
+        std::fs::create_dir_all(dir)?;
+        let path = unused_path(dir, &name);
+        // create_new: the name was free a moment ago; refuse to clobber a racer.
+        let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(&path)?;
+        std::io::Write::write_all(&mut f, &plaintext)?;
+        f.sync_all()?;
+        Ok(path)
     }
 
     /// Pass on what the hub announces, once each: a newer client release (an
@@ -415,4 +484,36 @@ fn notice_applies(n: &Value) -> bool {
         return false;
     }
     true
+}
+
+/// A MIME type from the extension, for the few kinds agents exchange.
+fn mime_of(name: &str) -> String {
+    let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    match ext.as_str() {
+        "txt" | "md" | "log" => "text/plain",
+        "json" => "application/json",
+        "csv" => "text/csv",
+        "html" | "htm" => "text/html",
+        "pdf" => "application/pdf",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "zip" => "application/zip",
+        "py" | "sh" | "rs" | "go" | "ts" | "js" => "text/plain",
+        _ => "application/octet-stream",
+    }.to_string()
+}
+
+/// `dir/name`, or `dir/name-2.ext`, `-3`, ... if taken.
+fn unused_path(dir: &Path, name: &str) -> PathBuf {
+    let first = dir.join(name);
+    if !first.exists() {
+        return first;
+    }
+    let (stem, ext) = match name.rsplit_once('.') {
+        Some((s, e)) if !s.is_empty() => (s.to_string(), format!(".{e}")),
+        _ => (name.to_string(), String::new()),
+    };
+    (2..).map(|n| dir.join(format!("{stem}-{n}{ext}"))).find(|p| !p.exists()).unwrap()
 }

@@ -38,7 +38,7 @@ export interface Storage {
 
 export interface HistoryEntry {
   seq: number;
-  type: "message" | "paired" | "pairing_failed" | "update" | "notice";
+  type: "message" | "file" | "result" | "ack" | "paired" | "pairing_failed" | "update" | "notice";
   direction?: "in" | "out";
   peer?: string;
   alias?: string;
@@ -52,9 +52,29 @@ export interface HistoryEntry {
   sharing?: string | null;
   /** A long message whose missing parts never arrived. */
   incomplete?: boolean;
-  /** "notice" entries: the notice's id and an optional link. */
+  /** "notice" entries: the notice's id and an optional link; worker replies: the request's id. */
   id?: string;
   url?: string;
+  /** "file" entries (protocol section 6): what the message says about the blob. The
+   * key and nonce stay here, in the private history, like the messages. */
+  name?: string;
+  mime?: string;
+  size?: number;
+  x?: string;
+  ox?: string;
+  key?: string;
+  nonce?: string;
+  /** Worker semantics on a file (["put", id, path] or ["file", id]). */
+  w?: string[];
+  /** "result" and "ack" entries (protocol section 7): the worker's reply, parsed. */
+  exit?: number;
+  stdout?: string;
+  stderr?: string;
+  truncated?: boolean;
+  ok?: boolean;
+  path?: string;
+  sha256?: string;
+  error?: string;
 }
 
 /** Runs fn under storage's lock if it has one. */

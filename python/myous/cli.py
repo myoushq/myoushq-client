@@ -9,8 +9,9 @@ import os
 import sys
 import time
 
-from myous import qr, vm
-from myous.agent import Agent, IdentityError
+from myous import contacts, qr, vm
+from myous.agent import Agent, IdentityError, WorkerError
+from myous.files import BlobError
 from myous.hub import DEFAULT_HUB, HubError
 from myous.pairing import PairingError
 from myous.relay import RelayError
@@ -109,7 +110,10 @@ def context_line(e: dict) -> str | None:
 def _print_entries(entries: list[dict]) -> None:
     for e in entries:
         when = time.strftime("%Y-%m-%d %H:%M", time.localtime(e.get("sent_at", e["at"])))
-        if e["type"] != "message":
+        if e["type"] == "file":
+            who = f"me -> {e['alias']}" if e.get("direction") == "out" else f"from {e['alias']}"
+            print(f"[{when}] file {who}: {e['name']} ({e.get('size')} bytes, id {e['seq']}; `myous fetch {e['seq']}`)")
+        elif e["type"] != "message":
             print(f"[{when}] ({e['type']}) {e['text']}")
         elif e["direction"] == "out":
             print(f"[{when}] me -> {e['alias']}: {e['text']}")
@@ -128,19 +132,100 @@ def cmd_inbox(agent: Agent, st: FileStorage, args) -> None:
             print(f"warning: couldn't fetch new items ({e}); showing what's stored", file=sys.stderr)
     entries = agent.unread(mark_read=not args.peek)
     if args.json:
-        print(json.dumps(entries, indent=2))
+        print(json.dumps([_public(e) for e in entries], indent=2))
     elif not entries:
         print("no new messages")
     else:
         _print_entries(entries)
 
 
+def _public(e: dict) -> dict:
+    """An entry without the file key: that stays in the history only."""
+    return {k: v for k, v in e.items() if k not in ("key", "nonce")}
+
+
 def cmd_history(agent: Agent, st: FileStorage, args) -> None:
     entries = agent.history(args.with_, args.limit)
     if args.json:
-        print(json.dumps(entries, indent=2))
+        print(json.dumps([_public(e) for e in entries], indent=2))
     else:
         _print_entries(entries)
+
+
+def cmd_send_file(agent: Agent, st: FileStorage, args) -> None:
+    if not os.path.isfile(args.path):
+        sys.exit(f"no such file: {args.path}")
+    entry = asyncio.run(agent.send_file(args.to, args.path, mime=args.mime))
+    print(f"sent {entry['name']} ({entry['size']} bytes) to {entry['alias']}; the blob expires in a day")
+
+
+def cmd_fetch(agent: Agent, st: FileStorage, args) -> None:
+    which = None if args.latest or args.id is None else args.id
+    path = agent.fetch(which, args.to)
+    print(path)
+
+
+def _remote(spec: str, agent: Agent) -> tuple[str, str] | None:
+    """(contact, path) if `spec` is CONTACT:PATH naming a contact, else None."""
+    name, sep, path = spec.partition(":")
+    if not sep or not name or "/" in name or os.path.exists(spec):
+        return None
+    try:
+        contacts.find(agent.st, name)
+    except KeyError:
+        return None
+    return name, path
+
+
+def cmd_cp(agent: Agent, st: FileStorage, args) -> None:
+    src, dst = _remote(args.src, agent), _remote(args.dst, agent)
+    if bool(src) == bool(dst):
+        sys.exit("exactly one side must be CONTACT:PATH (a paired contact), e.g. "
+                 "myous cp report.pdf worker:in.pdf  or  myous cp worker:out.png out.png")
+    if dst:
+        if not os.path.isfile(args.src):
+            sys.exit(f"no such file: {args.src}")
+        ack = asyncio.run(agent.put(dst[0], args.src, dst[1] or os.path.basename(args.src), timeout=args.timeout))
+        print(f"written on {dst[0]}: {ack['path']} ({ack['size']} bytes)")
+    else:
+        to = args.dst if args.dst not in (".", "") else "./"
+        path = asyncio.run(agent.get(src[0], src[1], to, timeout=args.timeout))
+        print(path)
+
+
+def cmd_exec(agent: Agent, st: FileStorage, args) -> None:
+    cmd = " ".join(args.cmd[1:] if args.cmd[:1] == ["--"] else args.cmd)
+    if not cmd.strip():
+        sys.exit("give the command to run: myous exec CONTACT -- CMD...")
+    try:
+        result = asyncio.run(agent.exec(args.contact, cmd, timeout=args.timeout))
+    except TimeoutError as e:
+        sys.stderr.write(f"error: {e}\n")
+        sys.exit(124)
+    sys.stdout.write(result.get("stdout", ""))
+    sys.stdout.flush()
+    sys.stderr.write(result.get("stderr", ""))
+    sys.stderr.flush()
+    sys.exit(result.get("exit", 1) if result.get("exit", 1) >= 0 else 1)
+
+
+def cmd_worker(agent: Agent, st: FileStorage, args) -> None:
+    from myous.worker import ABOUT, Worker
+    alias = args.alias or st.get("settings", {}).get("alias")
+    if not agent.has_identity():
+        if not alias:
+            sys.exit("give this worker a name the first time: myous worker --alias NAME")
+        agent.create_identity()
+    if not agent.is_registered() or st.get("settings", {}).get("about") != ABOUT or args.alias:
+        print(f"registering with {agent.hub.url}...", flush=True)
+        asyncio.run(agent.register(alias, about=ABOUT))
+    print(f"worker {agent.alias} ({agent.keys.public_key().to_bech32()}), work directory {args.work}", flush=True)
+    worker = Worker(agent, st, args.work, review_cmd=args.review, pause_file=args.pause_file,
+                    allow_absolute=args.allow_absolute, notes=args.note)
+    try:
+        asyncio.run(worker.run())
+    except KeyboardInterrupt:
+        pass
 
 
 def cmd_contacts(agent: Agent, st: FileStorage, args) -> None:
@@ -299,6 +384,35 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("to", help="contact alias or npub")
     p.add_argument("text", nargs="+", help="message text, or - to read it from stdin")
 
+    p = add("send-file", cmd_send_file, "send a file to a paired contact (encrypted; the hub keeps the blob a day)")
+    p.add_argument("to", help="contact alias or npub")
+    p.add_argument("path")
+    p.add_argument("--mime", help="the file's MIME type (default application/octet-stream)")
+
+    p = add("fetch", cmd_fetch, "download and decrypt a received file (default: the latest)")
+    p.add_argument("id", nargs="?", help="the file entry's id, as shown by inbox")
+    p.add_argument("--latest", action="store_true")
+    p.add_argument("--to", help="directory (default $MYOUS_HOME/files) or exact file path")
+
+    p = add("cp", cmd_cp, "copy a file to or from a worker, like scp: CONTACT:PATH on one side")
+    p.add_argument("src")
+    p.add_argument("dst")
+    p.add_argument("--timeout", type=float, default=300, help="seconds to wait for the worker (default 300)")
+
+    p = add("exec", cmd_exec, "run a command on a worker, like ssh: myous exec CONTACT -- CMD...")
+    p.add_argument("contact")
+    p.add_argument("cmd", nargs=argparse.REMAINDER)
+    p.add_argument("--timeout", type=float, default=120, help="seconds the command may run (default 120, max 600)")
+
+    p = add("worker", cmd_worker, "be a worker: run commands and move files for paired contacts")
+    p.add_argument("--alias", help="the worker's name (needed the first time)")
+    p.add_argument("--work", default=os.environ.get("MYOUS_WORK", "work"), help="work directory (default ./work or $MYOUS_WORK)")
+    p.add_argument("--review", metavar="CMD", help="review hook: a command that reads the request as JSON and exits 0 to allow")
+    p.add_argument("--pause-file", help="refuse requests while this file exists (default $MYOUS_HOME/worker.paused)")
+    p.add_argument("--allow-absolute", action="store_true", help="allow absolute paths in cp requests")
+    p.add_argument("--note", action="append", default=[], help="a line to add to the worker's help text (repeatable)")
+    p.add_argument("--hub", help=f"hub URL (default {DEFAULT_HUB})")
+
     p = add("inbox", cmd_inbox, "fetch, then show new messages and other items, and mark them read")
     p.add_argument("--peek", action="store_true", help="don't mark them read")
     p.add_argument("--local", action="store_true", help="don't fetch; show only what's already stored")
@@ -353,7 +467,7 @@ def main() -> None:
         args.func(agent, st, args)
     except IdentityError as e:
         sys.exit(str(e))
-    except (HubError, RelayError, PairingError, KeyError, ValueError) as e:
+    except (HubError, BlobError, RelayError, PairingError, WorkerError, TimeoutError, KeyError, ValueError) as e:
         sys.exit(f"error: {e.args[0] if isinstance(e, KeyError) else e}")
     except OSError as e:
         sys.exit(f"error: network problem ({e}); try again. Behind a proxy? Set HTTPS_PROXY.")

@@ -20,6 +20,7 @@ const (
 	kindProfile     = 0
 	kindSeal        = 13
 	kindChat        = 14
+	kindFile        = 15
 	kindGiftWrap    = 1059
 	kindInboxRelays = 10050
 
@@ -195,7 +196,21 @@ func (c *connection) sendMessage(ctx context.Context, recipient, text string, ex
 			return "", err
 		}
 	}
-	wrap, err := c.wrap(recipient, text, extraTags)
+	wrap, err := c.wrap(recipient, kindChat, text, extraTags)
+	if err != nil {
+		return "", err
+	}
+	return wrap.ID, c.publish(ctx, wrap, targets)
+}
+
+// sendFileMessage sends a kind-15 file message (protocol.md 6.3): the blob
+// URL as content, the key and hashes in tags, wrapped like any message.
+func (c *connection) sendFileMessage(ctx context.Context, recipient, url string, tags nostr.Tags) (string, error) {
+	targets, err := c.deliveryTargets(ctx, recipient)
+	if err != nil {
+		return "", err
+	}
+	wrap, err := c.wrap(recipient, kindFile, url, tags)
 	if err != nil {
 		return "", err
 	}
@@ -205,11 +220,11 @@ func (c *connection) sendMessage(ctx context.Context, recipient, text string, ex
 // wrap builds rumor → seal → gift wrap by hand. Library helpers tend to
 // derive the expiration from the wrap's randomized (past) timestamp, so
 // messages would expire anywhere from 0 to 24 hours after sending.
-func (c *connection) wrap(recipient, text string, extraTags nostr.Tags) (nostr.Event, error) {
+func (c *connection) wrap(recipient string, kind int, text string, extraTags nostr.Tags) (nostr.Event, error) {
 	rumor := nostr.Event{
 		PubKey:    c.pk,
 		CreatedAt: nostr.Now(),
-		Kind:      kindChat,
+		Kind:      kind,
 		// Nostr timestamps are whole seconds; "ms" keeps messages sent within
 		// the same second in order.
 		Tags:    append(nostr.Tags{{"p", recipient}, {"ms", strconv.FormatInt(time.Now().UnixMilli(), 10)}}, extraTags...),
@@ -330,10 +345,11 @@ type message struct {
 	sentAt int64
 	ms     int64
 	part   *partInfo // one part of a long message (see parts.go)
+	file   *fileInfo // a kind-15 file message (see files.go)
 }
 
-// unwrap opens a gift wrap. Only a valid chat message whose seal is signed
-// by the same key the rumor claims as its author is accepted.
+// unwrap opens a gift wrap. Only a valid chat or file message whose seal is
+// signed by the same key the rumor claims as its author is accepted.
 func unwrap(sk string, wrap *nostr.Event) (message, bool) {
 	k1, err := nip44.GenerateConversationKey(wrap.PubKey, sk)
 	if err != nil {
@@ -362,16 +378,23 @@ func unwrap(sk string, wrap *nostr.Event) (message, bool) {
 	if err := json.Unmarshal([]byte(rumorJSON), &rumor); err != nil {
 		return message{}, false
 	}
-	if rumor.Kind != kindChat || rumor.PubKey != seal.PubKey {
+	if (rumor.Kind != kindChat && rumor.Kind != kindFile) || rumor.PubKey != seal.PubKey {
 		return message{}, false
 	}
 	m := message{sender: seal.PubKey, text: rumor.Content, sentAt: int64(rumor.CreatedAt), ms: int64(rumor.CreatedAt) * 1000}
+	if rumor.Kind == kindFile {
+		f, ok := parseFileTags(rumor.Tags, rumor.Content)
+		if !ok {
+			return message{}, false // malformed file message: drop it
+		}
+		m.file = f
+	}
 	for _, t := range rumor.Tags {
 		if len(t) >= 2 && t[0] == "ms" {
 			if v, err := strconv.ParseInt(t[1], 10, 64); err == nil && v >= 0 {
 				m.ms = v
 			}
-		} else if len(t) >= 1 && t[0] == "part" {
+		} else if len(t) >= 1 && t[0] == "part" && m.file == nil {
 			p, ok := parsePartTag(t)
 			if !ok {
 				return message{}, false // malformed part tag: drop it

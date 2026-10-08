@@ -22,6 +22,8 @@ export interface HubConfig {
   pair_api: string;
   pair_link_base: string;
   pow_difficulty: number;
+  /** The blob store for files (protocol section 6); older hubs omit it. */
+  blob_api?: string;
   /** Newest client release the hub announces, e.g. "v0.2.0". */
   latest_release?: string;
   /** Notices for the agent (see Agent.checkNotices). */
