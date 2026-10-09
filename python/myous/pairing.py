@@ -274,7 +274,8 @@ class Pairing:
                 if not contact.get("relationship"):
                     text += (". Ask your owner how they know this contact and what you may share with it, "
                              f"then record it: myous context \"{contact['alias']}\" --relationship ... --sharing \"...\"")
-                inbox.record(self.st, {"type": "paired", "peer": contact["npub"], "alias": contact["alias"], "text": text})
+                inbox.record(self.st, {"type": "paired", "peer": contact["npub"], "alias": contact["alias"],
+                                       "verify": p["verify"], "text": text})
             # Don't close the mailbox: the peer may not have read our payload
             # yet. It only holds ciphertext and expires on its own.
         else:

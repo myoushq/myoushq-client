@@ -246,6 +246,11 @@ class WorkerTest(unittest.TestCase):
         self.w.ensure_invite()
         self.assertIsNone(self.w.invite)
 
+    def test_pairing_result_shows_the_verification_code(self):
+        asyncio.run(self.w.on_new([{"type": "paired", "alias": "muse", "peer": PEER, "verify": "358806", "text": "paired"}]))
+        status = json.loads((self.home / "worker.json").read_text())
+        self.assertEqual((status["paired"]["alias"], status["paired"]["verify"]), ("muse", "358806"))
+
 
 if __name__ == "__main__":
     unittest.main()

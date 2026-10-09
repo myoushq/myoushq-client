@@ -55,6 +55,7 @@ class Worker:
         self.started = int(time.time())
         self.requests = 0
         self.last: dict | None = None
+        self.paired: dict | None = None  # the most recent pairing, with its verification code
         self.invite: dict | None = None
         self.help_sent: dict[str, float] = {}
         self._status_written = 0.0
@@ -117,7 +118,10 @@ class Worker:
                 if e.get("direction") == "out":
                     continue
                 if e["type"] == "paired":
-                    self.say(f"paired with {e.get('alias')}")
+                    # Owners compare this number on both sides, so it must be visible here too.
+                    self.paired = {"alias": e.get("alias"), "verify": e.get("verify"), "at": int(time.time())}
+                    self.say(f"paired with {e.get('alias')}: verification code {e.get('verify')} "
+                             f"(your agent shows the same number; compare them)")
                     self.ensure_invite()
                 elif e["type"] in ("message", "file"):
                     await self.handle(e)
@@ -297,7 +301,7 @@ class Worker:
             "invite": ({"code": self.invite["code"], "link": self.invite["link"], "expires_at": self.invite["expires_at"],
                         "message": pairing_message(self.invite["code"], self.agent.alias)}
                        if self.invite else None),
-            "paused": self.paused(), "requests": self.requests, "last": self.last, "work": str(self.work),
+            "paused": self.paused(), "requests": self.requests, "last": self.last, "paired": self.paired, "work": str(self.work),
             "updated": int(time.time()),
         })
         self._status_written = time.time()

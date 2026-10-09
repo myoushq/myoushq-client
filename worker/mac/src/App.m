@@ -196,6 +196,11 @@ static NSDictionary *dict(id v) { return [v isKindOfClass:[NSDictionary class]] 
     }
     if (s) {
         [lines addObject:[NSString stringWithFormat:@"Contacts: %@   Requests: %@", num(s[@"contacts"]) ?: @0, num(s[@"requests"]) ?: @0]];
+        NSDictionary *paired = dict(s[@"paired"]);
+        if (paired && str(paired[@"verify"])) {
+            [lines addObject:[NSString stringWithFormat:@"Paired with %@: verification code %@ (your agent shows the same number)",
+                              str(paired[@"alias"]) ?: @"?", str(paired[@"verify"])]];
+        }
         NSDictionary *last = dict(s[@"last"]);
         if (last) {
             NSNumber *at = num(last[@"at"]);

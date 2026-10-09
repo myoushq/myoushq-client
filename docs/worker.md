@@ -111,7 +111,9 @@ minutes. Give it to the user and say: "Tell your Muse to accept this
 code; it's your desktop worker. Your Muse will ask how it knows this
 contact: it's yours, and it may run commands there for you."
 
-Once paired, `worker.json` shows `"contacts": 1` and the user's agent can ask
+Once paired, `worker.json` shows `"contacts": 1` and `paired` with the
+verification code (also in the log and the Mac app): tell the user to
+compare it with the number their agent reports. The user's agent can ask
 it for `help`. The worker's guide for the agent on the other side is in
 their own skill (for Muse, "Using a worker" in
 [muse.md](https://myoushq.com/muse.md)).

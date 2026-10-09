@@ -16,6 +16,9 @@ in [skill.md](https://myoushq.com/skill.md).
   now carry a one-sentence message for the owner to paste to their
   agent along with the code: what the worker is, how to accept, what to
   do next. The app's button copies that message.
+- **Verification code on the worker's side.** When a pairing completes,
+  the worker's log, status file (`paired`) and the Mac app show the
+  verification code, so the owner can compare it with their agent's.
 
 ## v0.5.2
 
