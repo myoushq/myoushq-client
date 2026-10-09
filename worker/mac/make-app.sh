@@ -52,6 +52,8 @@ iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/myous.icns"
 
 # The published image, pinned to this version, for the no-checkout mode.
 sed "s/@VERSION@/$VERSION/" compose-image.yml > "$APP/Contents/Resources/compose.yml"
+# The review hook, for direct mode (the container has its own copy).
+cp ../review.py "$APP/Contents/Resources/review.py"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

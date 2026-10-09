@@ -33,7 +33,7 @@ DEFAULT_TIMEOUT = 120
 STDOUT_LIMIT = 150_000  # bytes of each stream kept in a result, so the message fits
 STDERR_LIMIT = 40_000
 HELP_INTERVAL = 60  # seconds between help replies to the same contact
-REVIEW_TIMEOUT = 60
+REVIEW_TIMEOUT = 150  # the hook may wait for the owner (worker/review.py: 120 s), inside an agent's default wait
 STATUS_EVERY = 5
 TICK = 5  # seconds between ticks: status writes and the owner's commands
 REQUESTS_KEEP = 200  # request records kept in <home>/requests for the owner's app
@@ -263,6 +263,7 @@ class Worker:
         """Why the request is refused, or None to go ahead (protocol.md 7.2)."""
         request = {"op": op, "id": rid, "sender": e.get("peer"), "alias": e.get("alias"), **fields}
         if self.review_cmd:
+            self.record(rid, **request, at=int(time.time()), decision="pending")   # the hook may ask the owner
             try:
                 # Not in the work directory: the hook must not pick up anything a request wrote there.
                 r = subprocess.run(self.review_cmd, shell=True, input=json.dumps(request), capture_output=True,

@@ -18,6 +18,9 @@ NSDictionary *dict(id v) { return [v isKindOfClass:[NSDictionary class]] ? v : n
 + (NSString *)work { return [[self home] stringByAppendingPathComponent:@"work"]; }
 + (NSString *)commands { return [[self home] stringByAppendingPathComponent:@"commands"]; }
 + (NSString *)requests { return [[self home] stringByAppendingPathComponent:@"requests"]; }
++ (NSString *)approvals { return [[self home] stringByAppendingPathComponent:@"approvals"]; }
++ (NSString *)review { return [[self home] stringByAppendingPathComponent:@"review.json"]; }
++ (NSString *)bundledReview { return [[NSBundle mainBundle] pathForResource:@"review" ofType:@"py"]; }
 + (NSString *)bundledCompose { return [[NSBundle mainBundle] pathForResource:@"compose" ofType:@"yml"]; }
 @end
 
@@ -107,6 +110,41 @@ void sendWorkerCommand(NSString *name) {
     NSFileManager *fm = [NSFileManager defaultManager];
     [fm createDirectoryAtPath:[Paths commands] withIntermediateDirectories:YES attributes:nil error:nil];
     [fm createFileAtPath:[[Paths commands] stringByAppendingPathComponent:name] contents:[NSData data] attributes:nil];
+}
+
+NSArray<NSDictionary *> *loadApprovals(void) {
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSMutableArray *out = [NSMutableArray new];
+    for (NSString *name in [fm contentsOfDirectoryAtPath:[Paths approvals] error:nil]) {
+        if (![name hasSuffix:@".json"]) continue;
+        NSData *data = [NSData dataWithContentsOfFile:[[Paths approvals] stringByAppendingPathComponent:name]];
+        NSDictionary *d = data ? dict([NSJSONSerialization JSONObjectWithData:data options:0 error:nil]) : nil;
+        if (d) [out addObject:d];
+    }
+    [out sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+        return [num(a[@"asked_at"]) ?: @0 compare:num(b[@"asked_at"]) ?: @0];
+    }];
+    return out;
+}
+
+void answerApproval(NSString *rid, NSString *verdict) {
+    NSString *safe = [[rid componentsSeparatedByCharactersInSet:[[NSCharacterSet alphanumericCharacterSet] invertedSet]] componentsJoinedByString:@""];
+    if (!safe.length) return;
+    NSString *path = [[Paths approvals] stringByAppendingPathComponent:[safe stringByAppendingString:@".answer"]];
+    [[verdict dataUsingEncoding:NSUTF8StringEncoding] writeToFile:path atomically:YES];
+}
+
+NSString *reviewLevel(void) {
+    NSData *data = [NSData dataWithContentsOfFile:[Paths review]];
+    NSString *lv = data ? str(dict([NSJSONSerialization JSONObjectWithData:data options:0 error:nil])[@"level"]) : nil;
+    return [@[@"trust", @"changes", @"all"] containsObject:lv] ? lv : @"trust";
+}
+
+void setReviewLevel(NSString *level) {
+    [[NSFileManager defaultManager] createDirectoryAtPath:[Paths home] withIntermediateDirectories:YES
+                                               attributes:@{NSFilePosixPermissions: @0700} error:nil];
+    NSData *data = [NSJSONSerialization dataWithJSONObject:@{@"level": level} options:0 error:nil];
+    [data writeToFile:[Paths review] atomically:YES];
 }
 
 NSString *appVersion(void) {

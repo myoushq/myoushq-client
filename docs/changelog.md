@@ -31,6 +31,14 @@ in [skill.md](https://myoushq.com/skill.md).
   decision, outcome, duration and output (newest 200); command files in
   `commands/` (`new-code`, `unpair`); `paired` and `unpair` entries in
   the log; a changed name re-registers at the next start.
+- **Review levels and approvals.** The review hook (`worker/review.py`)
+  reads `review.json` in the worker's home: `trust` (everything runs),
+  `changes` (reads run, anything that changes something asks the owner)
+  or `all` (every request asks). A question is a file in `approvals/`
+  that the Mac app shows as a notification with Allow and Refuse and at
+  the top of its Requests list; the hook waits up to 120 s for the
+  answer file. The app's Settings choose the level; direct mode starts
+  at `changes`. Requests waiting for an answer show as "waiting for you".
 - **Clipboard and shortcuts in the browser view.** Cmd+V on a Mac (Ctrl+V
   on Windows and Linux) pastes the host's clipboard into the worker's
   browser, Cmd+C / Ctrl+C copies from it to the host, and the other

@@ -148,6 +148,15 @@ and offer a code). The Mac app uses all of these.
 
 - **Pause:** `touch ~/.myous-worker/worker.paused` refuses every request
   until the file is removed. The user can do this any time.
+- **Review level:** `~/.myous-worker/review.json` with `{"level": ...}`:
+  `trust` (default; everything from paired agents runs), `changes` (reads
+  run: `get`, and `exec` of a read-only command such as `ls`, `cat`,
+  `grep`, `find`; anything else asks the user), or `all` (every request
+  asks). Asking means the hook writes the request to
+  `~/.myous-worker/approvals/<id>.json` and waits up to 120 seconds for
+  `<id>.answer` containing `allow` or `refuse`; the Mac app shows the
+  question as a notification and in its window and writes the answer.
+  No answer in time refuses the request with a reason the agent sees.
 - **Stop:** `docker compose down` (keeps identity, logins and files).
   `docker compose up -d` starts it again.
 - **Restart on reboot:** the container is set to restart with Docker;

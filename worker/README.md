@@ -14,7 +14,7 @@ What's here:
 | `Dockerfile`, `compose.yml` | the container: client, Chromium, virtual display, VNC view |
 | `entrypoint.sh` | starts the display, the browser, then `myous worker` |
 | `browser.py` | keeps a Chromium with a persistent profile running, reachable on port 9222 |
-| `review.py` | the review hook: decides what runs (allow everything, log, honour the pause file) |
+| `review.py` | the review hook: honours the pause file, then the review level in `review.json` (`trust`: everything runs; `changes`: reads run, the rest asks the owner; `all`: everything asks) by writing a question to `approvals/` and waiting for the answer the desktop app writes |
 | `mac/` | optional: a Dock app showing status, the pairing code, pause (see `mac/README.md`) |
 
 ## Docker mode (recommended)

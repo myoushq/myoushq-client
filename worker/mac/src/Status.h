@@ -17,6 +17,9 @@ extern const NSTimeInterval kStaleAfter;
 + (NSString *)work;      // work/
 + (NSString *)commands;  // commands/: files the worker picks up (new-code, unpair)
 + (NSString *)requests;  // requests/: one JSON record per request
++ (NSString *)approvals; // approvals/: questions from the review hook, answers from the app
++ (NSString *)review;    // review.json: {"level": "trust" | "changes" | "all"}
++ (NSString *)bundledReview;    // Contents/Resources/review.py, for direct mode
 + (NSString *)bundledCompose;   // Contents/Resources/compose.yml: the published image
 @end
 
@@ -56,6 +59,14 @@ NSArray<NSDictionary *> *loadRequests(NSUInteger limit);
 
 /// Drop a command file for the worker (it removes the file once done).
 void sendWorkerCommand(NSString *name);
+
+/// approvals/*.json: requests the review hook is waiting on, oldest first.
+NSArray<NSDictionary *> *loadApprovals(void);
+/// Answer a question: "allow" or "refuse" into approvals/<id>.answer.
+void answerApproval(NSString *rid, NSString *verdict);
+/// The review level ("trust", "changes", "all"); missing file means "trust".
+NSString *reviewLevel(void);
+void setReviewLevel(NSString *level);
 
 /// The app's own version (CFBundleShortVersionString), which names the image tag.
 NSString *appVersion(void);

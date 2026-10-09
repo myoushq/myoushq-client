@@ -48,14 +48,18 @@ static const double kInviteSeconds = 900;
 @property (nonatomic, strong) NSPopover *qrPopover;
 @property (nonatomic, copy) NSString *lastQRLink;
 @property (nonatomic, strong) NSTextField *pairedText, *pairedCode;
-@property (nonatomic, strong) NSTextField *requestsTitle, *pausedNote;
-@property (nonatomic, strong) NSButton *pauseButton;
+@property (nonatomic, strong) NSTextField *requestsTitle, *pausedNote, *approvalText;
+@property (nonatomic, strong) NSButton *pauseButton, *allowButton, *refuseButton;
+@property (nonatomic, strong) NSStackView *approvalRow;
+@property (nonatomic, strong) NSArray<NSDictionary *> *approvals;
+@property (nonatomic, copy) NSString *fakeApprovalId;
 @property (nonatomic, strong) NSTableView *table;
 @property (nonatomic, strong) NSTextField *stoppedText;
 @property (nonatomic, strong) NSWindow *logWindow, *detailWindow, *settingsWindow;
 @property (nonatomic, strong) NSTextView *logView, *detailView;
 @property (nonatomic, strong) NSTextField *settingsName;
 @property (nonatomic, strong) NSButton *settingsDock, *settingsLogin, *settingsNotify, *settingsUpdate;
+@property (nonatomic, strong) NSPopUpButton *settingsReview;
 @property (nonatomic, strong) NSTimer *timer;
 @property (nonatomic) CGFloat lastHeight;
 @end
@@ -419,6 +423,13 @@ static const double kInviteSeconds = 900;
     [top.widthAnchor constraintEqualToConstant:kInner - 28].active = YES;
     self.pausedNote = [self wrap:@"Paused: requests are refused until you resume."];
     self.pausedNote.textColor = [NSColor systemOrangeColor];
+    // A question from the review hook: the agent is waiting for Allow or Refuse.
+    self.approvalText = [self wrap:@""];
+    self.approvalText.preferredMaxLayoutWidth = kInner - 200;
+    self.allowButton = [self button:@"Allow" action:@selector(allowRequest)];
+    self.allowButton.keyEquivalent = @"\r";
+    self.refuseButton = [self button:@"Refuse" action:@selector(refuseRequest)];
+    self.approvalRow = [self row:@[self.approvalText, self.allowButton, self.refuseButton]];
 
     self.table = [NSTableView new];
     NSArray *cols = @[@[@"time", @"Time", @44], @[@"agent", @"Agent", @90], @[@"op", @"", @36], @[@"what", @"What", @250], @[@"outcome", @"Outcome", @70]];
@@ -445,7 +456,7 @@ static const double kInviteSeconds = 900;
     NSTextField *hint = [self label:@"Double-click a row for the command and its output." size:11 weight:NSFontWeightRegular];
     hint.textColor = [NSColor tertiaryLabelColor];
     NSButton *log = [self button:@"Open log" action:@selector(openLog)];
-    NSStackView *col = [self column:@[top, self.pausedNote, scroll, [self row:@[hint, [self buttons:@[log]]]]]];
+    NSStackView *col = [self column:@[top, self.pausedNote, self.approvalRow, scroll, [self row:@[hint, [self buttons:@[log]]]]]];
     self.requestsCard = [self card:@"Requests" content:col];
 }
 
@@ -520,6 +531,7 @@ static const double kInviteSeconds = 900;
         if (++self.ticks % 5 == 0 && [self.config usesDocker]) [self probeRuntimeAsync];
     }
     [self loadRequestsIfChanged];
+    if (!self.fake) self.approvals = loadApprovals();
     NSDictionary *s = self.status.status;
     NSString *phase = [self.status phase] ?: @"";
     BOOL fresh = [self.status fresh];
@@ -614,6 +626,8 @@ static const double kInviteSeconds = 900;
         default: break;
     }
     if (!self.requestsCard.hidden) [self fillRequests];
+    [self fillApproval];
+    if (self.approvals.count && self.requestsCard.hidden && (screen == ScreenPair)) { /* a question while unpaired can't happen */ }
     if (screen == ScreenPaired || screen == ScreenRunning) [self notifyPaired:paired];
     [self notifyRefusals];
 
@@ -694,6 +708,34 @@ static const double kInviteSeconds = 900;
                                                         : @"Nothing yet. Ask your agent to run something on this Mac.";
 }
 
+- (void)fillApproval {
+    NSDictionary *q = self.approvals.firstObject;
+    self.approvalRow.hidden = q == nil;
+    if (!q) return;
+    NSString *what = str(q[@"cmd"]) ?: str(q[@"path"]) ?: @"";
+    NSString *verb = [str(q[@"op"]) isEqualToString:@"exec"] ? @"run" : [str(q[@"op"]) isEqualToString:@"put"] ? @"write" : @"read";
+    double left = num(q[@"asked_at"]).doubleValue + num(q[@"wait"]).doubleValue - [[NSDate date] timeIntervalSince1970];
+    self.approvalText.stringValue = [NSString stringWithFormat:@"%@ wants to %@ %@%@", str(q[@"alias"]) ?: @"Your agent", verb, what,
+                                     left > 0 ? [NSString stringWithFormat:@"  (%d s left)", (int)left] : @""];
+    self.approvalText.textColor = [NSColor systemOrangeColor];
+    NSString *key = [@"ask-" stringByAppendingString:str(q[@"id"]) ?: @""];
+    [self notifyOnce:key title:[NSString stringWithFormat:@"%@ wants to %@ on %@", str(q[@"alias"]) ?: @"Your agent", verb, self.config.name ?: @"the worker"]
+                body:what category:@"approval"];
+}
+
+- (void)allowRequest { [self answer:@"allow"]; }
+- (void)refuseRequest { [self answer:@"refuse"]; }
+- (void)answer:(NSString *)verdict {
+    NSDictionary *q = self.approvals.firstObject;
+    if (!q) return;
+    answerApproval(str(q[@"id"]) ?: @"", verdict);
+    [self append:[NSString stringWithFormat:@"%@: %@ %@", verdict, str(q[@"op"]) ?: @"", str(q[@"cmd"]) ?: str(q[@"path"]) ?: @""]];
+    self.approvals = @[];
+    self.approvalRow.hidden = YES;
+    [[UNUserNotificationCenter currentNotificationCenter] removeDeliveredNotificationsWithIdentifiers:@[[@"ask-" stringByAppendingString:str(q[@"id"]) ?: @""]]];
+    [self fitWindow];
+}
+
 - (BOOL)requestInProgress {
     NSDictionary *r = self.requests.firstObject;
     return r && [str(r[@"decision"]) isEqualToString:@"allow"] && !r[@"done_at"] && [[NSDate date] timeIntervalSince1970] - num(r[@"at"]).doubleValue < 700;
@@ -754,6 +796,7 @@ static const double kInviteSeconds = 900;
         s[@"invite"] = @{@"code": @"4821-K7F3QX", @"link": @"https://myoushq.com/p/4821#K7F3QX", @"expires_at": @(now + 702)}; }
     else if ([f isEqualToString:@"paired"]) { self.config.seenPairedAt = 0; }
     else if ([f isEqualToString:@"paused"]) { s[@"phase"] = @"paused"; }
+    else if ([f isEqualToString:@"approval"]) { self.approvals = @[@{@"id": @"q1", @"op": @"exec", @"alias": @"Max's Muse", @"cmd": @"rm -rf /work/old", @"asked_at": @(now - 20), @"wait": @120}]; }
     else if ([f isEqualToString:@"stopped"]) { st.modified = [NSDate dateWithTimeIntervalSinceNow:-3600]; }
     st.status = s;
     self.status = st;
@@ -806,8 +849,9 @@ static const double kInviteSeconds = 900;
         cell.font = [NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular];
     } else {
         NSNumber *exit = num(r[@"exit"]);
-        text = refused ? @"refused" : !done ? @"running…" : (exit && exit.intValue != 0) ? [NSString stringWithFormat:@"exit %d", exit.intValue] : @"ok";
-        color = refused ? [NSColor systemRedColor] : (exit && exit.intValue != 0) ? [NSColor systemOrangeColor] : [NSColor secondaryLabelColor];
+        BOOL pending = [decision isEqualToString:@"pending"];
+        text = refused ? @"refused" : pending ? @"waiting for you" : !done ? @"running…" : (exit && exit.intValue != 0) ? [NSString stringWithFormat:@"exit %d", exit.intValue] : @"ok";
+        color = refused ? [NSColor systemRedColor] : (pending || (exit && exit.intValue != 0)) ? [NSColor systemOrangeColor] : [NSColor secondaryLabelColor];
     }
     cell.stringValue = text;
     cell.textColor = color;
@@ -966,7 +1010,9 @@ static const double kInviteSeconds = 900;
     NSString *aliasOpt = [name isEqualToString:current] ? @"" :
         [NSString stringWithFormat:@"--alias '%@' ", [name stringByReplacingOccurrencesOfString:@"'" withString:@"'\\''"]];
     NSString *home = [[Paths home] stringByReplacingOccurrencesOfString:@"'" withString:@"'\\''"];
-    t.arguments = @[@"-lc", [NSString stringWithFormat:@"exec myous worker %@--work '%@/work' >> '%@/worker.log' 2>&1", aliasOpt, home, home]];
+    NSString *hook = [[Paths bundledReview] stringByReplacingOccurrencesOfString:@"'" withString:@"'\\''"];
+    NSString *reviewOpt = hook ? [NSString stringWithFormat:@"--review '%@' ", hook] : @"";
+    t.arguments = @[@"-lc", [NSString stringWithFormat:@"exec myous worker %@%@--work '%@/work' >> '%@/worker.log' 2>&1", aliasOpt, reviewOpt, home, home]];
     NSMutableDictionary *env = [[[NSProcessInfo processInfo] environment] mutableCopy];
     env[@"MYOUS_HOME"] = [Paths home];
     t.environment = env;
@@ -1030,10 +1076,18 @@ static const double kInviteSeconds = 900;
     }
     self.config.mode = @"direct";
     [self.config write];
+    if (![[NSFileManager defaultManager] fileExistsAtPath:[Paths review]]) setReviewLevel(@"changes");
     [self start];
 }
 
-- (void)useDirect { self.config.mode = @"direct"; [self.config write]; [self append:@"mode: direct (no container)"]; [self refresh]; }
+- (void)useDirect {
+    self.config.mode = @"direct";
+    [self.config write];
+    // No container around the commands: ask before anything that changes things, unless the owner chose otherwise.
+    if (![[NSFileManager defaultManager] fileExistsAtPath:[Paths review]]) setReviewLevel(@"changes");
+    [self append:@"mode: direct (no container)"];
+    [self refresh];
+}
 - (void)useImage { self.config.mode = @"image"; [self.config write]; [self append:[NSString stringWithFormat:@"mode: the published image ghcr.io/myoushq/worker:%@", appVersion()]]; [self refresh]; }
 
 - (void)chooseRepo {
@@ -1189,6 +1243,14 @@ static const double kInviteSeconds = 900;
         nameHint.font = [NSFont systemFontOfSize:11];
         nameHint.textColor = [NSColor secondaryLabelColor];
         nameHint.preferredMaxLayoutWidth = 380;
+        self.settingsReview = [NSPopUpButton new];
+        [self.settingsReview addItemsWithTitles:@[@"Trust my agent: everything it asks runs",
+                                                   @"Ask me before anything that changes things",
+                                                   @"Ask me before every request"]];
+        NSTextField *reviewHint = [self wrap:@"Questions arrive as notifications and at the top of the Requests list; an agent waits up to two minutes for your answer."];
+        reviewHint.font = [NSFont systemFontOfSize:11];
+        reviewHint.textColor = [NSColor secondaryLabelColor];
+        reviewHint.preferredMaxLayoutWidth = 380;
         self.settingsDock = [NSButton checkboxWithTitle:@"Show an icon in the Dock as well as the menu bar" target:nil action:nil];
         self.settingsLogin = [NSButton checkboxWithTitle:@"Open myous at login" target:nil action:nil];
         self.settingsNotify = [NSButton checkboxWithTitle:@"Notify me when the worker pairs, refuses a request or stops" target:nil action:nil];
@@ -1197,6 +1259,7 @@ static const double kInviteSeconds = 900;
         save.keyEquivalent = @"\r";
         NSButton *cancel = [self button:@"Cancel" action:@selector(closeSettings)];
         NSStackView *col = [self column:@[[self row:@[[self label:@"Worker name" size:13 weight:NSFontWeightRegular], self.settingsName]], nameHint,
+                                          [self label:@"Review" size:13 weight:NSFontWeightRegular], self.settingsReview, reviewHint,
                                           self.settingsDock, self.settingsLogin, self.settingsNotify, self.settingsUpdate, [self row:@[cancel, save]]]];
         col.edgeInsets = NSEdgeInsetsMake(16, 20, 16, 20);
         col.translatesAutoresizingMaskIntoConstraints = NO;
@@ -1209,6 +1272,7 @@ static const double kInviteSeconds = 900;
         ]];
     }
     self.settingsName.stringValue = self.config.name ?: @"";
+    [self.settingsReview selectItemAtIndex:[@[@"trust", @"changes", @"all"] indexOfObject:reviewLevel()]];
     self.settingsDock.state = self.config.dock ? NSControlStateValueOn : NSControlStateValueOff;
     self.settingsNotify.state = self.config.notifications ? NSControlStateValueOn : NSControlStateValueOff;
     self.settingsUpdate.state = self.config.autoUpdate ? NSControlStateValueOn : NSControlStateValueOff;
@@ -1231,6 +1295,8 @@ static const double kInviteSeconds = 900;
     self.config.notifications = self.settingsNotify.state == NSControlStateValueOn;
     self.config.autoUpdate = self.settingsUpdate.state == NSControlStateValueOn;
     [self.config write];
+    NSString *level = @[@"trust", @"changes", @"all"][MAX(0, self.settingsReview.indexOfSelectedItem)];
+    if (![level isEqualToString:reviewLevel()]) { setReviewLevel(level); [self append:[@"review level: " stringByAppendingString:level]]; }
     [NSApp setActivationPolicy:self.config.dock ? NSApplicationActivationPolicyRegular : NSApplicationActivationPolicyAccessory];
     if (@available(macOS 13.0, *)) {
         BOOL want = self.settingsLogin.state == NSControlStateValueOn;
@@ -1252,6 +1318,10 @@ static const double kInviteSeconds = 900;
     if (![NSBundle mainBundle].bundleIdentifier || self.snapshotPath) return;
     UNUserNotificationCenter *c = [UNUserNotificationCenter currentNotificationCenter];
     c.delegate = self;
+    UNNotificationAction *allow = [UNNotificationAction actionWithIdentifier:@"allow" title:@"Allow" options:0];
+    UNNotificationAction *refuse = [UNNotificationAction actionWithIdentifier:@"refuse" title:@"Refuse" options:UNNotificationActionOptionDestructive];
+    UNNotificationCategory *cat = [UNNotificationCategory categoryWithIdentifier:@"approval" actions:@[allow, refuse] intentIdentifiers:@[] options:0];
+    [c setNotificationCategories:[NSSet setWithObject:cat]];
     [c requestAuthorizationWithOptions:UNAuthorizationOptionAlert | UNAuthorizationOptionSound completionHandler:^(BOOL granted, NSError *error) {}];
 }
 
@@ -1262,17 +1332,33 @@ static const double kInviteSeconds = 900;
 
 - (void)userNotificationCenter:(UNUserNotificationCenter *)center didReceiveNotificationResponse:(UNNotificationResponse *)response
          withCompletionHandler:(void (^)(void))handler {
-    [self showWindow];
+    NSString *action = response.actionIdentifier;
+    NSString *ident = response.notification.request.identifier;
+    if ([ident hasPrefix:@"ask-"] && ([action isEqualToString:@"allow"] || [action isEqualToString:@"refuse"])) {
+        NSString *rid = [ident substringFromIndex:4];
+        self.approvals = loadApprovals();
+        for (NSDictionary *q in self.approvals) {
+            if ([str(q[@"id"]) isEqualToString:rid]) { answerApproval(rid, action); [self append:[NSString stringWithFormat:@"%@ (from the notification): %@", action, str(q[@"cmd"]) ?: str(q[@"path"]) ?: @""]]; }
+        }
+        [self refresh];
+    } else {
+        [self showWindow];
+    }
     handler();
 }
 
 - (void)notifyOnce:(NSString *)key title:(NSString *)title body:(NSString *)body {
+    [self notifyOnce:key title:title body:body category:nil];
+}
+
+- (void)notifyOnce:(NSString *)key title:(NSString *)title body:(NSString *)body category:(NSString *)category {
     if ([self.notified containsObject:key]) return;
     [self.notified addObject:key];
     if (!self.config.notifications || ![NSBundle mainBundle].bundleIdentifier || self.fake) return;
     UNMutableNotificationContent *content = [UNMutableNotificationContent new];
     content.title = title;
     content.body = body;
+    if (category) content.categoryIdentifier = category;
     UNNotificationRequest *req = [UNNotificationRequest requestWithIdentifier:key content:content trigger:nil];
     [[UNUserNotificationCenter currentNotificationCenter] addNotificationRequest:req withCompletionHandler:nil];
 }
