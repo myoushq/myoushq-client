@@ -330,9 +330,25 @@ static NSDictionary *dict(id v) { return [v isKindOfClass:[NSDictionary class]] 
 }
 
 - (void)openBrowserView {
-    // Straight into the noVNC client, connected and scaled to the tab; the
-    // bare port shows the served folder's listing.
-    [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:@"http://localhost:6080/vnc.html?autoconnect=1&reconnect=1&resize=remote"]];
+    // The container's browser view is published on a port Docker picks at
+    // each start; ask Docker which one, by the label our compose files set.
+    NSString *bin = [[NSProcessInfo processInfo] environment][@"MYOUS_DOCKER_BIN"] ?: @"docker";
+    NSTask *t = [NSTask new];
+    t.launchPath = @"/bin/sh";
+    t.arguments = @[@"-lc", [NSString stringWithFormat:
+        @"id=$(%@ ps -q --filter label=com.myoushq.worker | head -1); [ -n \"$id\" ] && %@ port \"$id\" 6080/tcp | head -1", bin, bin]];
+    NSPipe *out = [NSPipe pipe];
+    t.standardOutput = out;
+    t.standardError = [NSFileHandle fileHandleWithNullDevice];
+    if (![t launchAndReturnError:nil]) { [self append:@"can't run docker to find the browser view"]; return; }
+    [t waitUntilExit];
+    NSString *addr = [[[NSString alloc] initWithData:[out.fileHandleForReading readDataToEndOfFile] encoding:NSUTF8StringEncoding]
+                      stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    NSString *port = [addr componentsSeparatedByString:@":"].lastObject;
+    if (port.length == 0 || port.integerValue <= 0) { [self append:@"the worker isn't running, so there's no browser to open"]; return; }
+    NSString *url = [NSString stringWithFormat:@"http://localhost:%@/?autoconnect=1&reconnect=1&resize=remote", port];
+    [self append:[NSString stringWithFormat:@"opening %@", url]];
+    [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:url]];
 }
 
 - (void)openLog {

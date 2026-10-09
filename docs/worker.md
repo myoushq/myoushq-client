@@ -89,7 +89,11 @@ few seconds of proof of work).
 
 ## 4. Let the user log into sites
 
-Tell the user to open **http://localhost:6080** (it connects on its own),
+Find the port Docker picked for the browser view (it changes at each
+start, so it never collides with anything on the machine):
+`docker compose -p myous-worker port worker 6080` prints `127.0.0.1:PORT`.
+Tell the user to open **http://localhost:PORT** (it connects on its own;
+the Mac app's "Open browser" does this for them),
 and log into the sites the worker should use (their Google account, say)
 in the browser shown there. Logins persist across restarts. This page is
 reachable only from this machine.

@@ -20,15 +20,11 @@ Xvnc :99 -geometry 1440x900 -depth 24 -rfbport 5900 -localhost -SecurityTypes No
 	-AcceptSetDesktopSize -desktop myous >/dev/null 2>&1 &
 sleep 1
 matchbox-window-manager -use_titlebar no -use_cursor yes >/dev/null 2>&1 &
-# noVNC: the VNC view in a browser tab. Serve a copy of the client with an
-# index page that goes straight to it, connected and scaled, so the bare
-# port never shows a directory listing.
+# noVNC: the VNC view in a browser tab. A copy of the client is served
+# with the client itself as the index page, so the bare address opens it
+# and never shows a directory listing.
 NOVNC=/tmp/novnc
 rm -rf "$NOVNC" && cp -r /usr/share/novnc "$NOVNC"
-cat > "$NOVNC/index.html" <<'HTML'
-<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0; url=vnc.html?autoconnect=1&reconnect=1&resize=remote">
-<title>Myous Worker browser</title><a href="vnc.html?autoconnect=1&reconnect=1&resize=remote">Open the worker's browser</a>
-HTML
 # The tab's title: "myous - <paired agent>" (the worker's own alias until
 # it is paired). A small script in the page reads title.json, which the
 # loop below refreshes from the worker's contacts.
@@ -47,6 +43,9 @@ cat > "$NOVNC/title.js" <<'JS'
 })();
 JS
 sed -i 's#</body>#<script src="title.js"></script></body>#' "$NOVNC/vnc.html"
+# The client is the site's index, so the address is just
+# http://localhost:<port>/?autoconnect=1&reconnect=1&resize=remote
+cp "$NOVNC/vnc.html" "$NOVNC/index.html"
 (
 	while true; do
 		python3 - > "$NOVNC/title.json.tmp" 2>/dev/null <<'PY' && mv "$NOVNC/title.json.tmp" "$NOVNC/title.json"

@@ -27,7 +27,9 @@ docker compose logs -f           # watch it start; Ctrl-C leaves it running
 Then:
 
 - **Log into sites** the worker should use: open
-  http://localhost:6080 (it connects on its own) and use the browser you
+  http://localhost:PORT, where PORT is what `docker compose port worker 6080`
+  prints (Docker picks a free one at each start; the Mac app's "Open
+  browser" finds it for you). It connects on its own; use the browser you
   see. Logins persist across restarts (the `browser-profile` volume).
 - **Pair it** with your agent: the pairing code is in
   `~/.myous-worker/worker.json` (`invite.code`) and in the logs. Tell
@@ -48,7 +50,7 @@ Where things are:
 | identity, contacts, status (`worker.json`), log, pause file | `~/.myous-worker` on the host, `/home/worker/.myous` inside |
 | browser profile (logins) | Docker volume `browser-profile` |
 | work directory (files sent to the worker, outputs) | Docker volume `work`, `/work` inside |
-| ports | 6080 (noVNC, the browser fills the tab at its size), on 127.0.0.1 only; 9222 (Chromium CDP) inside the container only |
+| ports | noVNC (the browser view) on a free port Docker picks at each start, 127.0.0.1 only (`docker compose port worker 6080`); 9222 (Chromium CDP) inside the container only |
 
 Commands run inside the container as user `worker`, in `/work`. Nothing
 from the host is mounted except `~/.myous-worker`.
@@ -89,7 +91,7 @@ Dock app (`mac/`).
   replace it with a `put`, and the worker refuses to start if it's there.
 - The browser holds your logins. In Docker mode they stay in the
   container's volume; the noVNC page has no password because it's
-  reachable only from this machine. Don't publish port 6080 beyond
+  reachable only from this machine. Don't publish the browser view beyond
   127.0.0.1.
 - Chromium runs with `--no-sandbox` inside the container (its own sandbox
   needs privileges the container doesn't get); the container is the

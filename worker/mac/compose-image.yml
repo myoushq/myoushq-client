@@ -9,7 +9,11 @@ services:
     restart: unless-stopped
     # The browser view (noVNC), on this machine only.
     ports:
-      - "127.0.0.1:6080:6080"
+      # A free port chosen by Docker at each start, so nothing on the host
+      # collides with it; `docker compose port worker 6080` shows it.
+      - "127.0.0.1::6080"
+    labels:
+      com.myoushq.worker: "1"
     volumes:
       # Identity, contacts, status and logs: a host directory, so the Dock
       # app can read worker.json and set the pause file.
