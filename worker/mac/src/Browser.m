@@ -96,11 +96,15 @@ static int freePort(void) {
     NSString *html = [NSString stringWithFormat:
         @"<!doctype html><meta charset=utf-8><title>myous · %@</title>"
         "<style>body{font:15px/1.5 -apple-system,system-ui,sans-serif;color:#222;background:#f4f1ea;margin:0;display:flex;min-height:100vh;align-items:center;justify-content:center}"
-        "main{max-width:34em;padding:2em}h1{font-size:1.4em;margin:0 0 .5em}h1 b{color:#1f7a6d}p{margin:.5em 0}small{color:#666}</style>"
+        "main{max-width:36em;padding:2em}h1{font-size:1.4em;margin:0 0 .5em}h1 b{color:#1f7a6d}p{margin:.5em 0}small{color:#666}"
+        ".note{border:1px solid #d9b25a;background:#fff6dc;border-radius:8px;padding:.8em 1em;margin:1em 0}.note b{color:#7a5a00}kbd{font:inherit;background:#eee;border:1px solid #ccc;border-radius:4px;padding:0 .3em}</style>"
         "<main><h1><b>myous</b> · %@'s browser</h1>"
+        "<div class=note><b>Expected:</b> a bar above this page says the <kbd>--no-sandbox</kbd> flag is unsupported and &ldquo;stability and security will suffer&rdquo;. "
+        "Close it with its &times;. myous confines this browser with a macOS sandbox of its own, and macOS allows no sandbox inside another, so the browser's built-in one is switched off here. "
+        "The outer one does the work: see below.</div>"
         "<p>This window belongs to the worker <b>%@</b>: your agent browses here, and so can you. "
         "Sites you log into here stay logged in for it.</p>"
-        "<p>It is kept to the worker's folder by a sandbox: it can't read your files, reach other programs on this Mac, or save anywhere but the worker's downloads folder.</p>"
+        "<p>It is kept to the worker's folder by that sandbox: it can't read your files, reach other programs on this Mac, or save anywhere but the worker's downloads folder.</p>"
         "<p><small>Your own browser and its logins are untouched. Close this window when you like; myous starts it again while the worker runs.</small></p></main>",
         esc, esc, esc];
     NSString *path = [[self.paths browserDir] stringByAppendingPathComponent:@"start.html"];

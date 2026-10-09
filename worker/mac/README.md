@@ -116,7 +116,8 @@ clears anything older. The mode and checkout path are in
   browser" launches it hidden (Cmd+H) and it keeps working there. macOS
   allows no sandbox inside a sandbox, so Chrome's own helper sandbox is
   off (`--no-sandbox`, as in the container, where the container is the
-  sandbox); Chrome shows a bar about that flag, which you can close. If
+  sandbox); Chrome shows a bar about that flag, and the start page says
+so and to close it. If
   the browser can't run (uninstalled, or `sandbox-exec` gone), a red
   line says so. **In the container:** a Chromium inside the container
   started as a plain process (not through Playwright, whose launch marks
