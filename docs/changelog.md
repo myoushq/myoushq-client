@@ -30,7 +30,10 @@ in [skill.md](https://myoushq.com/skill.md).
   the worker, read through their own client's `status --json`; an
   agent's card shows its contacts and pairings, and "Pair with code…" or
   "Which agent?" on the Pair screen lets the app accept a code as that
-  agent, marked `added_by: owner`.
+  agent, marked `added_by: owner`. **Several workers:** "Add a worker…"
+  gives this Mac another worker with its own key, folder
+  (`~/.myous-worker-2`, …), container and pairing; the list and the menu
+  show each one, the icon the worst state.
 - **Worker:** `phase` in the status file (`starting`, `browser`,
   `registering` from the container; `running`, `paused`, `error: ...`
   from the worker); one JSON record per request in `requests/` with its

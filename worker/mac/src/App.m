@@ -3,11 +3,11 @@
 #import "Icon.h"
 #import "Runtime.h"
 #import "Agents.h"
+#import "Worker.h"
 #import <CoreImage/CoreImage.h>
 #import <UserNotifications/UserNotifications.h>
 #import <ServiceManagement/ServiceManagement.h>
 
-typedef NS_ENUM(NSInteger, Screen) { ScreenSetup, ScreenNoRuntime, ScreenStarting, ScreenPair, ScreenPaired, ScreenRunning, ScreenStopped };
 
 static const CGFloat kWidth = 560;
 static const CGFloat kInner = kWidth - 40;
@@ -17,21 +17,29 @@ static const CGFloat kSidebar = 150;
 static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads of the local agents
 
 @interface AppDelegate () <NSMenuDelegate, NSTableViewDataSource, NSTableViewDelegate, NSWindowDelegate, UNUserNotificationCenterDelegate>
-// model
+// model: the workers (Worker.h), one per folder; `current` is the one the window shows.
+// The per-worker properties below forward to `current`, so the rest of the
+// app reads as it did with one worker.
+@property (nonatomic, strong) NSMutableArray<Worker *> *workers;
+@property (nonatomic, strong) Worker *current;
 @property (nonatomic, strong) AppConfig *config;
 @property (nonatomic, strong) StatusFile *status;
-@property (nonatomic, copy) NSString *runtimeState;   // nil (unknown), "ok", "missing", "stopped"
-@property (nonatomic, copy) NSString *runtimeName;
 @property (nonatomic, strong) NSArray<NSDictionary *> *requests;
 @property (nonatomic, strong) NSDate *requestsDirDate;
 @property (nonatomic) Screen screen;
-@property (nonatomic, copy) NSString *launchStage;    // "pulling" or "creating" while compose up runs
-@property (nonatomic) double launchedAt;              // when Start was pressed (0: not by us)
-@property (nonatomic) BOOL stopping;                  // Stop pressed: a stale status is expected
+@property (nonatomic, copy) NSString *launchStage;
+@property (nonatomic) double launchedAt;
+@property (nonatomic) BOOL stopping;
 @property (nonatomic) BOOL wasRunning;
+@property (nonatomic, strong) NSTask *direct;
+@property (nonatomic, strong) NSArray<NSDictionary *> *approvals;
+@property (nonatomic, readonly) Paths *paths;
+@property (nonatomic, readonly) AppConfig *appConfig;   // the first worker's app.json holds the app's settings
+@property (nonatomic, copy) NSString *runtimeState;   // nil (unknown), "ok", "missing", "stopped"
+@property (nonatomic, copy) NSString *runtimeName;
 @property (nonatomic, copy) NSString *latestRelease;  // "vX.Y.Z" from the hub, when newer
 @property (nonatomic) NSUInteger ticks;
-@property (nonatomic, strong) NSTask *direct;         // the `myous worker` child in direct mode
+@property (nonatomic, strong) NSArray<NSDictionary *> *tableRequests;   // what the table last showed
 @property (nonatomic, strong) NSMutableSet *notified;
 @property (nonatomic, copy) NSString *fake;
 // agents on this Mac (Agents.h): read every kAgentsEvery ticks, shown next to the worker
@@ -59,7 +67,6 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
 @property (nonatomic, strong) NSTextField *requestsTitle, *pausedNote, *approvalText;
 @property (nonatomic, strong) NSButton *pauseButton, *allowButton, *refuseButton;
 @property (nonatomic, strong) NSStackView *approvalRow;
-@property (nonatomic, strong) NSArray<NSDictionary *> *approvals;
 @property (nonatomic, copy) NSString *fakeApprovalId;
 @property (nonatomic, strong) NSTableView *table;
 @property (nonatomic, strong) NSTextField *stoppedText;
@@ -83,12 +90,50 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
 @end
 
 @implementation AppDelegate
+@dynamic config, status, requests, requestsDirDate, screen, launchStage, launchedAt, stopping, wasRunning, direct, approvals, paths, appConfig;
+
+- (AppConfig *)config { return self.current.config; }
+- (void)setConfig:(AppConfig *)c { self.current.config = c; }
+- (StatusFile *)status { return self.current.status; }
+- (void)setStatus:(StatusFile *)v { self.current.status = v; }
+- (NSArray<NSDictionary *> *)requests { return self.current.requests; }
+- (void)setRequests:(NSArray<NSDictionary *> *)v { self.current.requests = v; }
+- (NSDate *)requestsDirDate { return self.current.requestsDirDate; }
+- (void)setRequestsDirDate:(NSDate *)v { self.current.requestsDirDate = v; }
+- (Screen)screen { return self.current.screen; }
+- (void)setScreen:(Screen)v { self.current.screen = v; }
+- (NSString *)launchStage { return self.current.launchStage; }
+- (void)setLaunchStage:(NSString *)v { self.current.launchStage = v; }
+- (double)launchedAt { return self.current.launchedAt; }
+- (void)setLaunchedAt:(double)v { self.current.launchedAt = v; }
+- (BOOL)stopping { return self.current.stopping; }
+- (void)setStopping:(BOOL)v { self.current.stopping = v; }
+- (BOOL)wasRunning { return self.current.wasRunning; }
+- (void)setWasRunning:(BOOL)v { self.current.wasRunning = v; }
+- (NSTask *)direct { return self.current.direct; }
+- (void)setDirect:(NSTask *)v { self.current.direct = v; }
+- (NSArray<NSDictionary *> *)approvals { return self.current.approvals; }
+- (void)setApprovals:(NSArray<NSDictionary *> *)v { self.current.approvals = v; }
+- (Paths *)paths { return self.current.paths; }
+- (AppConfig *)appConfig { return self.workers.firstObject.config; }
+
+/// One Worker per folder (the default and every ~/.myous-worker-<n>), keeping
+/// the ones already loaded.
+- (void)loadWorkers {
+    if (!self.workers) self.workers = [NSMutableArray new];
+    for (NSString *home in [Paths allHomes]) {
+        BOOL have = NO;
+        for (Worker *w in self.workers) if ([w.paths.home isEqualToString:home]) have = YES;
+        if (!have) [self.workers addObject:[[Worker alloc] initWithHome:home]];
+    }
+    if (!self.current || ![self.workers containsObject:self.current]) self.current = self.workers.firstObject;
+}
 
 - (void)applicationDidFinishLaunching:(NSNotification *)note {
     self.notified = [NSMutableSet new];
     self.fake = [[NSProcessInfo processInfo] environment][@"MYOUS_FAKE_STATE"];
-    self.config = [AppConfig read];
-    [NSApp setActivationPolicy:self.config.dock ? NSApplicationActivationPolicyRegular : NSApplicationActivationPolicyAccessory];
+    [self loadWorkers];
+    [NSApp setActivationPolicy:self.appConfig.dock ? NSApplicationActivationPolicyRegular : NSApplicationActivationPolicyAccessory];
     [self buildMainMenu];
     [self buildStatusItem];
     [self buildWindow];
@@ -99,7 +144,7 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
     self.timer = [NSTimer scheduledTimerWithTimeInterval:2 target:self selector:@selector(refresh) userInfo:nil repeats:YES];
     [self.window makeKeyAndOrderFront:nil];
     [NSApp activateIgnoringOtherApps:YES];
-    if (self.config.autoUpdate && [[NSDate date] timeIntervalSince1970] - self.config.lastUpdateCheck > 86400 && !self.fake)
+    if (self.appConfig.autoUpdate && [[NSDate date] timeIntervalSince1970] - self.appConfig.lastUpdateCheck > 86400 && !self.fake)
         [self checkForUpdates:NO];
     if (self.snapshotPath) {
         // Render the window's content view once it has laid out: a PNG from
@@ -240,16 +285,38 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
 
 - (void)menuNeedsUpdate:(NSMenu *)menu {
     [menu removeAllItems];
-    NSDictionary *s = self.status.status;
-    NSString *name = self.config.name ?: str(s[@"alias"]) ?: @"myous worker";
-    NSMenuItem *state = [menu addItemWithTitle:[NSString stringWithFormat:@"%@ · %@", name, [self stateWord]] action:@selector(showWindow) keyEquivalent:@""];
-    state.image = statusIcon([self stateColor], NO);
-    NSDictionary *paired = dict(s[@"paired"]);
-    NSString *pairedWith = str(paired[@"alias"]);
-    if (pairedWith) {
-        NSMenuItem *p = [menu addItemWithTitle:[NSString stringWithFormat:@"   paired with %@", pairedWith] action:nil keyEquivalent:@""];
-        p.enabled = NO;
+    BOOL several = self.workers.count > 1;
+    for (Worker *w in self.workers) {
+        NSDictionary *s = w.status.status;
+        NSMenuItem *state = [menu addItemWithTitle:[NSString stringWithFormat:@"%@ · %@", w.name, [self stateWordFor:w]] action:@selector(selectWorkerFromMenu:) keyEquivalent:@""];
+        state.image = statusIcon([self stateColorFor:w], NO);
+        state.representedObject = w.paths.home;
+        NSString *pairedWith = str(dict(s[@"paired"])[@"alias"]);
+        if (pairedWith && !several) {
+            NSMenuItem *p = [menu addItemWithTitle:[NSString stringWithFormat:@"   paired with %@", pairedWith] action:nil keyEquivalent:@""];
+            p.enabled = NO;
+        }
+        if (several) {
+            // Each worker's actions in its own submenu; the flat list below is for one worker.
+            NSMenu *sub = [NSMenu new];
+            if (pairedWith) [sub addItemWithTitle:[NSString stringWithFormat:@"Paired with %@", pairedWith] action:nil keyEquivalent:@""].enabled = NO;
+            BOOL up = w.screen == ScreenRunning || w.screen == ScreenPair || w.screen == ScreenPaired;
+            if (up) {
+                if (![w.config isDirect]) [self menu:sub add:@"Open browser" worker:w sel:@selector(openBrowserView)];
+                [self menu:sub add:[self isPausedFor:w] ? @"Resume" : @"Pause" worker:w sel:@selector(togglePaused)];
+                [self menu:sub add:@"Show requests…" worker:w sel:@selector(showWindow)];
+                [self menu:sub add:@"Stop" worker:w sel:@selector(stop)];
+            } else if (w.screen == ScreenStarting) {
+                [self menu:sub add:@"Stop" worker:w sel:@selector(stop)];
+            } else if (w.screen == ScreenStopped) {
+                [self menu:sub add:@"Start" worker:w sel:@selector(start)];
+            } else {
+                [self menu:sub add:@"Set up…" worker:w sel:@selector(showWindow)];
+            }
+            state.submenu = sub;
+        }
     }
+    if (several) [menu addItemWithTitle:@"Add a worker…" action:@selector(addWorker) keyEquivalent:@""];
     for (LocalAgent *a in self.agents) {
         NSString *what = a.error ? @"not readable" : [NSString stringWithFormat:@"%lu contact%@", (unsigned long)a.contacts.count, a.contacts.count == 1 ? @"" : @"s"];
         NSMenuItem *m = [menu addItemWithTitle:[NSString stringWithFormat:@"%@ · %@", a.displayName, what] action:@selector(selectAgentFromMenu:) keyEquivalent:@""];
@@ -258,7 +325,9 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
     }
     [menu addItem:[NSMenuItem separatorItem]];
     BOOL running = self.screen == ScreenRunning || self.screen == ScreenPair || self.screen == ScreenPaired;
-    if (running) {
+    if (several) {
+        // the per-worker items are in the submenus above
+    } else if (running) {
         if (![self.config isDirect]) [menu addItemWithTitle:@"Open browser" action:@selector(openBrowserView) keyEquivalent:@""];
         [menu addItemWithTitle:[self isPaused] ? @"Resume" : @"Pause" action:@selector(togglePaused) keyEquivalent:@""];
         [menu addItemWithTitle:@"Show requests…" action:@selector(showWindow) keyEquivalent:@""];
@@ -291,6 +360,8 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
         [sub addItemWithTitle:@"Open worker folder" action:@selector(openHome) keyEquivalent:@""];
         [sub addItemWithTitle:@"Remove stale containers" action:@selector(removeContainers) keyEquivalent:@""];
         [sub addItem:[NSMenuItem separatorItem]];
+        [sub addItemWithTitle:@"Add a worker…" action:@selector(addWorker) keyEquivalent:@""];
+        if (!self.current.isDefault) [sub addItemWithTitle:[NSString stringWithFormat:@"Remove %@…", self.current.name] action:@selector(removeWorker) keyEquivalent:@""];
         [sub addItemWithTitle:@"Add an agent's folder…" action:@selector(addAgentHome) keyEquivalent:@""];
         adv.submenu = sub;
     }
@@ -559,7 +630,7 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
     if (self.agentsBusy) return;
     self.agentsBusy = YES;
     __weak typeof(self) weak = self;
-    [Agents read:[Agents homes:self.config.agentHomes] done:^(NSArray<LocalAgent *> *agents) {
+    [Agents read:[Agents homes:self.appConfig.agentHomes] done:^(NSArray<LocalAgent *> *agents) {
         weak.agentsBusy = NO;
         weak.agents = agents;
         if (weak.selectedAgent) {
@@ -619,6 +690,67 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
     }];
 }
 
+- (void)menu:(NSMenu *)menu add:(NSString *)title worker:(Worker *)w sel:(SEL)sel {
+    NSMenuItem *item = [menu addItemWithTitle:title action:@selector(workerMenuAction:) keyEquivalent:@""];
+    item.representedObject = @{@"home": w.paths.home, @"sel": NSStringFromSelector(sel)};
+}
+
+- (void)workerMenuAction:(NSMenuItem *)item {
+    for (Worker *w in self.workers) if ([w.paths.home isEqualToString:item.representedObject[@"home"]]) self.current = w;
+    self.selectedAgent = nil;
+    SEL sel = NSSelectorFromString(item.representedObject[@"sel"]);
+    #pragma clang diagnostic push
+    #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+    [self performSelector:sel];
+    #pragma clang diagnostic pop
+}
+
+- (void)selectWorkerFromMenu:(NSMenuItem *)item {
+    for (Worker *w in self.workers) if ([w.paths.home isEqualToString:item.representedObject]) self.current = w;
+    self.selectedAgent = nil;
+    self.nameField.stringValue = @"";
+    [self refresh];
+    [self showWindow];
+}
+
+/// A new worker: its own folder, key, container and pairing; the mode and
+/// checkout come from the first worker. Its Set up screen asks for the name.
+- (void)addWorker {
+    NSString *home = [Paths newHome];
+    if (!home) return;
+    Worker *w = [[Worker alloc] initWithHome:home];
+    w.config.mode = self.appConfig.mode;
+    w.config.repo = self.appConfig.repo;
+    [w.config write];
+    [self.workers addObject:w];
+    self.current = w;
+    self.selectedAgent = nil;
+    self.nameField.stringValue = @"";
+    [self append:[NSString stringWithFormat:@"new worker folder %@", home]];
+    [self refresh];
+    [self showWindow];
+}
+
+- (void)removeWorker {
+    Worker *w = self.current;
+    if (w.isDefault) return;
+    NSAlert *a = [NSAlert new];
+    a.messageText = [NSString stringWithFormat:@"Remove %@?", w.name];
+    a.informativeText = @"Stops it, removes its container and moves its folder (key, logins, files) to the Trash. Agents paired with it lose it.";
+    [a addButtonWithTitle:@"Remove"];
+    [a addButtonWithTitle:@"Cancel"];
+    if ([a runModal] != NSAlertFirstButtonReturn) return;
+    NSString *home = w.paths.home;
+    void (^trash)(void) = ^{
+        [[NSFileManager defaultManager] trashItemAtURL:[NSURL fileURLWithPath:home] resultingItemURL:nil error:nil];
+    };
+    if ([w.config isDirect]) { [self stopDirect]; dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), dispatch_get_main_queue(), trash); }
+    else [self runLogged:[[self composePrefix] stringByAppendingString:@" down --remove-orphans"] in:home line:nil done:^(int status) { trash(); }];
+    [self.workers removeObject:w];
+    self.current = self.workers.firstObject;
+    [self refresh];
+}
+
 - (void)selectAgentFromMenu:(NSMenuItem *)item {
     for (LocalAgent *a in self.agents) if ([a.home isEqualToString:item.representedObject]) self.selectedAgent = a;
     [self refresh];
@@ -641,9 +773,9 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
         [alert runModal];
         return;
     }
-    self.config.agentHomes = [(self.config.agentHomes ?: @[]) arrayByAddingObject:home];
-    self.config.showAgents = YES;
-    [self.config write];
+    self.appConfig.agentHomes = [(self.appConfig.agentHomes ?: @[]) arrayByAddingObject:home];
+    self.appConfig.showAgents = YES;
+    [self.appConfig write];
     [self readAgentsNow];
 }
 
@@ -744,47 +876,65 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
 }
 
 - (void)windowDidBecomeKey:(NSNotification *)n {
-    if (n.object != self.window) return;
+    if (n.object != self.window || self.fake) return;
     // New requests are the ones since the window was last in front.
-    self.config.seenRequestsAt = [[NSDate date] timeIntervalSince1970];
-    [self.config write];
+    for (Worker *w in self.workers) { w.config.seenRequestsAt = [[NSDate date] timeIntervalSince1970]; [w.config write]; }
     [self updateBadge];
 }
 
 #pragma mark - state
 
-- (BOOL)isPaused { return [[NSFileManager defaultManager] fileExistsAtPath:[Paths paused]]; }
+- (BOOL)isPaused { return [[NSFileManager defaultManager] fileExistsAtPath:[self.paths paused]]; }
 
-- (NSString *)stateWord {
-    switch (self.screen) {
+- (BOOL)isPausedFor:(Worker *)w { return [[NSFileManager defaultManager] fileExistsAtPath:[w.paths paused]]; }
+
+- (NSString *)stateWordFor:(Worker *)w {
+    switch (w.screen) {
         case ScreenSetup: case ScreenNoRuntime: return @"Not set up";
         case ScreenStarting: return @"Starting…";
         case ScreenPair: return @"Running · not paired";
-        case ScreenPaired: case ScreenRunning: return [self isPaused] ? @"Paused" : @"Running";
+        case ScreenPaired: case ScreenRunning: return [self isPausedFor:w] ? @"Paused" : @"Running";
         case ScreenStopped: return @"Stopped";
     }
     return @"";
 }
 
-- (NSColor *)stateColor {
-    if (self.banner.stringValue.length && !self.banner.hidden) return [NSColor systemRedColor];
-    switch (self.screen) {
+- (NSColor *)stateColorFor:(Worker *)w {
+    if (w.attention || w.approvals.count) return [NSColor systemRedColor];
+    switch (w.screen) {
         case ScreenStarting: return [NSColor systemBlueColor];
-        case ScreenPair: case ScreenPaired: case ScreenRunning: return [self isPaused] ? [NSColor systemOrangeColor] : [NSColor systemGreenColor];
+        case ScreenPair: case ScreenPaired: case ScreenRunning: return [self isPausedFor:w] ? [NSColor systemOrangeColor] : [NSColor systemGreenColor];
         default: return [NSColor systemGrayColor];
     }
 }
 
+- (NSString *)stateWord { return [self stateWordFor:self.current]; }
+- (NSColor *)stateColor { return [self stateColorFor:self.current]; }
+
 - (void)refresh {
-    self.config = [AppConfig read];
+    if (!self.fake) {
+        ++self.ticks;
+        if (self.ticks % kAgentsEvery == 0) [self loadWorkers];   // a folder added by hand
+        if (self.ticks % 5 == 0 && [self.config usesDocker]) [self probeRuntimeAsync];
+        if (self.appConfig.showAgents && (self.agents == nil || self.ticks % kAgentsEvery == 0)) [self readAgents];
+        if (!self.appConfig.showAgents) { self.agents = @[]; self.selectedAgent = nil; }
+    }
+    // Every worker's state (the menu bar shows the worst; each one notifies), then the window for the current one.
+    Worker *shown = self.current;
+    for (Worker *w in self.workers) { self.current = w; [self evaluate]; }
+    self.current = shown;
+    [self render];
+}
+
+/// The current worker's screen and attention, from its files; notifications
+/// for what changed. No UI.
+- (void)evaluate {
     if (self.fake) [self applyFake]; else {
-        self.status = [StatusFile read];
-        if (++self.ticks % 5 == 0 && [self.config usesDocker]) [self probeRuntimeAsync];
-        if (self.config.showAgents && (self.agents == nil || self.ticks % kAgentsEvery == 0)) [self readAgents];
-        if (!self.config.showAgents) { self.agents = @[]; self.selectedAgent = nil; }
+        self.config = [AppConfig readAt:self.paths];
+        self.status = [StatusFile readAt:self.paths];
     }
     [self loadRequestsIfChanged];
-    if (!self.fake) self.approvals = loadApprovals();
+    if (!self.fake) self.approvals = loadApprovals(self.paths);
     NSDictionary *s = self.status.status;
     NSString *phase = [self.status phase] ?: @"";
     BOOL fresh = [self.status fresh];
@@ -820,13 +970,28 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
         else if (self.wasRunning && !self.stopping) { attention = @"The worker stopped on its own."; attentionButton = @"Start"; [self notifyOnce:@"stopped" title:@"myous worker stopped" body:@"The worker stopped on its own. Open myous to start it again."]; }
         else if (self.launchedAt && !launching) { attention = @"The worker didn't start. The log says why."; attentionButton = @"Show log"; }
     }
-    if (self.latestRelease && ![self.latestRelease isEqualToString:self.config.skippedVersion] && !attention) {
-        attention = [NSString stringWithFormat:@"myous %@ is available (you have %@).", self.latestRelease, appVersion()];
-        attentionButton = @"Download";
-    }
     if (alive) self.wasRunning = YES;
     if (screen != ScreenStopped) self.wasRunning = alive;
     self.screen = screen;
+    self.current.alive = alive;
+    self.current.attention = attention;
+    self.current.attentionButton = attentionButton;
+    if (screen == ScreenPaired || screen == ScreenRunning) [self notifyPaired:dict(s[@"paired"])];
+    [self notifyRefusals];
+    [self notifyApproval];
+}
+
+- (void)render {
+    NSDictionary *s = self.status.status;
+    NSString *phase = [self.status phase] ?: @"";
+    BOOL alive = self.current.alive;
+    Screen screen = self.screen;
+    NSString *attention = self.current.attention, *attentionButton = self.current.attentionButton;
+    if (self.latestRelease && ![self.latestRelease isEqualToString:self.appConfig.skippedVersion] && !attention) {
+        attention = [NSString stringWithFormat:@"myous %@ is available (you have %@).", self.latestRelease, appVersion()];
+        attentionButton = @"Download";
+    }
+    if (self.requests != self.tableRequests) { self.tableRequests = self.requests; [self.table reloadData]; }
 
     // Header
     NSString *name = self.config.name ?: @"myous";
@@ -836,6 +1001,7 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
     self.headTitle.attributedStringValue = title;
     NSDictionary *paired = dict(s[@"paired"]);
     NSString *pairedWith = str(paired[@"alias"]);
+    (void)phase;
     if (!pairedWith && num(s[@"contacts"]).integerValue > 0) pairedWith = @"your agent";
     self.headRight.stringValue = screen == ScreenSetup || screen == ScreenNoRuntime ? @"" : pairedWith ? [NSString stringWithFormat:@"Paired · %@", pairedWith] : @"Not paired yet";
     NSMutableArray *facts = [NSMutableArray new];
@@ -909,33 +1075,42 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
         if ([self.fake isEqualToString:@"pairlocal"] && titles.count > 1) [self.pairWhich selectItemAtIndex:1];
         [self pairWhichChanged];
     }
-    if (self.approvals.count && self.requestsCard.hidden && (screen == ScreenPair)) { /* a question while unpaired can't happen */ }
-    if (screen == ScreenPaired || screen == ScreenRunning) [self notifyPaired:paired];
-    [self notifyRefusals];
 
-    self.statusItem.button.image = statusIcon([self stateColor], [self requestInProgress]);
+    self.statusItem.button.image = statusIcon([self worstColor], [self requestInProgress]);
     [self updateBadge];
     [self fitWindow];
+}
+
+/// The menu bar colour: the worst state over every worker.
+- (NSColor *)worstColor {
+    NSArray *order = @[[NSColor systemRedColor], [NSColor systemBlueColor], [NSColor systemOrangeColor], [NSColor systemGreenColor], [NSColor systemGrayColor]];
+    NSColor *worst = [NSColor systemGrayColor];
+    for (Worker *w in self.workers) {
+        NSColor *c = [self stateColorFor:w];
+        if ([order indexOfObject:c] < [order indexOfObject:worst]) worst = c;
+    }
+    return worst;
 }
 
 /// On this Mac: the worker and the local agents, shown once there are two.
 - (void)fillSidebar {
     NSMutableArray *rows = [NSMutableArray new];
-    NSString *name = self.config.name ?: @"Worker";
     [rows addObject:@{@"kind": @"group", @"title": @"WORKERS"}];
-    [rows addObject:@{@"kind": @"worker", @"title": name}];
+    for (Worker *w in self.workers) [rows addObject:@{@"kind": @"worker", @"title": w.name, @"home": w.paths.home}];
+    if (self.workers.count > 1 || self.agents.count) [rows addObject:@{@"kind": @"add", @"title": @"Add a worker…"}];
     if (self.agents.count) {
         [rows addObject:@{@"kind": @"group", @"title": @"AGENTS"}];
         for (LocalAgent *a in self.agents) [rows addObject:@{@"kind": @"agent", @"title": a.displayName, @"home": a.home}];
     }
-    BOOL show = self.agents.count > 0;
+    BOOL show = self.agents.count > 0 || self.workers.count > 1;
     if (!show) self.selectedAgent = nil;
     if (![rows isEqualToArray:self.sidebarRows]) {
         self.sidebarRows = rows;
         [self.sidebar reloadData];
     }
     NSInteger want = 1;
-    for (NSUInteger i = 0; i < rows.count; i++) if (self.selectedAgent && [rows[i][@"home"] isEqualToString:self.selectedAgent.home]) want = i;
+    NSString *selectedHome = self.selectedAgent ? self.selectedAgent.home : self.current.paths.home;
+    for (NSUInteger i = 0; i < rows.count; i++) if ([rows[i][@"home"] isEqualToString:selectedHome]) want = i;
     if (self.sidebar.selectedRow != want) [self.sidebar selectRowIndexes:[NSIndexSet indexSetWithIndex:want] byExtendingSelection:NO];
     self.sidebarScroll.hidden = !show;
 }
@@ -1022,6 +1197,13 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
     self.approvalText.stringValue = [NSString stringWithFormat:@"%@ wants to %@ %@%@", str(q[@"alias"]) ?: @"Your agent", verb, what,
                                      left > 0 ? [NSString stringWithFormat:@"  (%d s left)", (int)left] : @""];
     self.approvalText.textColor = [NSColor systemOrangeColor];
+}
+
+- (void)notifyApproval {
+    NSDictionary *q = self.approvals.firstObject;
+    if (!q) return;
+    NSString *what = str(q[@"cmd"]) ?: str(q[@"path"]) ?: @"";
+    NSString *verb = [str(q[@"op"]) isEqualToString:@"exec"] ? @"run" : [str(q[@"op"]) isEqualToString:@"put"] ? @"write" : @"read";
     NSString *key = [@"ask-" stringByAppendingString:str(q[@"id"]) ?: @""];
     [self notifyOnce:key title:[NSString stringWithFormat:@"%@ wants to %@ on %@", str(q[@"alias"]) ?: @"Your agent", verb, self.config.name ?: @"the worker"]
                 body:what category:@"approval"];
@@ -1032,7 +1214,7 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
 - (void)answer:(NSString *)verdict {
     NSDictionary *q = self.approvals.firstObject;
     if (!q) return;
-    answerApproval(str(q[@"id"]) ?: @"", verdict);
+    answerApproval(self.paths, str(q[@"id"]) ?: @"", verdict);
     [self append:[NSString stringWithFormat:@"%@: %@ %@", verdict, str(q[@"op"]) ?: @"", str(q[@"cmd"]) ?: str(q[@"path"]) ?: @""]];
     self.approvals = @[];
     self.approvalRow.hidden = YES;
@@ -1047,18 +1229,17 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
 
 - (void)loadRequestsIfChanged {
     if (self.fake) return;
-    NSDictionary *attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:[Paths requests] error:nil];
+    NSDictionary *attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:[self.paths requests] error:nil];
     NSDate *d = attrs[NSFileModificationDate];
     if (self.requests && ((!d && !self.requestsDirDate) || [d isEqualToDate:self.requestsDirDate])) return;
     self.requestsDirDate = d;
-    self.requests = loadRequests(kRequestRows);
-    [self.table reloadData];
+    self.requests = loadRequests(self.paths, kRequestRows);
 }
 
 - (void)updateBadge {
     NSUInteger fresh = 0;
     if (!self.window.keyWindow || !self.window.visible) {
-        for (NSDictionary *r in self.requests) if (num(r[@"at"]).doubleValue > self.config.seenRequestsAt) fresh++;
+        for (Worker *w in self.workers) for (NSDictionary *r in w.requests) if (num(r[@"at"]).doubleValue > w.config.seenRequestsAt) fresh++;
     }
     self.statusItem.button.title = fresh ? [NSString stringWithFormat:@" %lu", (unsigned long)fresh] : @"";
     NSApp.dockTile.badgeLabel = fresh ? [NSString stringWithFormat:@"%lu", (unsigned long)fresh] : nil;
@@ -1083,6 +1264,23 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
 - (void)applyFake {
     NSString *f = self.fake;
     double now = [[NSDate date] timeIntervalSince1970];
+    if ([f isEqualToString:@"workers"] && self.workers.count < 2) {
+        Worker *w = [[Worker alloc] initWithHome:[[Paths defaultHome] stringByAppendingString:@"-2"]];
+        w.config.name = @"Family Mac";
+        w.status = [StatusFile new];
+        [self.workers addObject:w];
+    }
+    if (!self.current.isDefault) {
+        // The second fake worker: stopped, paired with a second agent.
+        self.config.name = @"Family Mac";
+        StatusFile *st = [StatusFile new];
+        st.modified = [NSDate dateWithTimeIntervalSinceNow:-3600];
+        st.status = @{@"alias": @"Family Mac", @"contacts": @1, @"paired": @{@"alias": @"Sam's Muse", @"at": @(now - 86400)}};
+        self.status = st;
+        self.runtimeState = @"ok";
+        self.config.seenPairedAt = now;
+        return;
+    }
     NSMutableDictionary *s = [@{@"alias": @"Max's Mac", @"contacts": @1, @"requests": @12, @"phase": @"running",
                                 @"paired": @{@"alias": @"Max's Muse", @"verify": @"358806", @"at": @(now - 3600)},
                                 @"last": @{@"op": @"exec", @"at": @(now - 120), @"alias": @"Max's Muse", @"ok": @YES}} mutableCopy];
@@ -1092,8 +1290,8 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
     self.config.seenPairedAt = now;
     StatusFile *st = [StatusFile new];
     st.modified = [NSDate date];
-    if ([f isEqualToString:@"setup"]) { self.config.name = nil; }
-    else if ([f isEqualToString:@"noruntime"]) { self.config.name = nil; self.runtimeState = @"missing"; }
+    if ([f isEqualToString:@"setup"]) { self.config.name = nil; [s removeObjectForKey:@"alias"]; }
+    else if ([f isEqualToString:@"noruntime"]) { self.config.name = nil; [s removeObjectForKey:@"alias"]; self.runtimeState = @"missing"; }
     else if ([f isEqualToString:@"stoppedruntime"]) { self.runtimeState = @"stopped"; }
     else if ([f isEqualToString:@"starting"]) { s[@"phase"] = @"browser"; s[@"contacts"] = @0; self.launchedAt = now - 75; }
     else if ([f isEqualToString:@"pair"]) { s[@"contacts"] = @0; [s removeObjectForKey:@"paired"];
@@ -1159,9 +1357,16 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
 - (void)tableViewSelectionDidChange:(NSNotification *)n {
     if (n.object != self.sidebar || self.sidebar.selectedRow < 0) return;
     NSDictionary *r = self.sidebarRows[self.sidebar.selectedRow];
+    if ([r[@"kind"] isEqualToString:@"add"]) { [self addWorker]; return; }
     LocalAgent *pick = nil;
     for (LocalAgent *a in self.agents) if ([a.home isEqualToString:r[@"home"]]) pick = a;
-    if (pick != self.selectedAgent) { self.selectedAgent = pick; [self refresh]; }
+    Worker *worker = nil;
+    for (Worker *w in self.workers) if ([w.paths.home isEqualToString:r[@"home"]]) worker = w;
+    if (pick != self.selectedAgent || (worker && worker != self.current)) {
+        self.selectedAgent = pick;
+        if (worker) { self.current = worker; self.nameField.stringValue = @""; }
+        [self refresh];
+    }
 }
 
 - (NSView *)sidebarCell:(NSInteger)row {
@@ -1175,11 +1380,13 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
         cell.textColor = group ? [NSColor tertiaryLabelColor] : [NSColor labelColor];
         cell.lineBreakMode = NSLineBreakByTruncatingTail;
     }
-    NSString *prefix = group ? @"" : [r[@"kind"] isEqualToString:@"worker"] ? @"● " : @"○ ";
+    NSString *prefix = group ? @"" : [r[@"kind"] isEqualToString:@"worker"] ? @"● " : [r[@"kind"] isEqualToString:@"add"] ? @"+ " : @"○ ";
     NSMutableAttributedString *t = [[NSMutableAttributedString alloc] initWithString:[prefix stringByAppendingString:r[@"title"]]];
     [t addAttribute:NSFontAttributeName value:cell.font range:NSMakeRange(0, t.length)];
-    [t addAttribute:NSForegroundColorAttributeName value:cell.textColor range:NSMakeRange(0, t.length)];
-    if ([r[@"kind"] isEqualToString:@"worker"]) [t addAttribute:NSForegroundColorAttributeName value:[self stateColor] range:NSMakeRange(0, 1)];
+    [t addAttribute:NSForegroundColorAttributeName value:[r[@"kind"] isEqualToString:@"add"] ? [NSColor secondaryLabelColor] : cell.textColor range:NSMakeRange(0, t.length)];
+    if ([r[@"kind"] isEqualToString:@"worker"]) {
+        for (Worker *w in self.workers) if ([w.paths.home isEqualToString:r[@"home"]]) [t addAttribute:NSForegroundColorAttributeName value:[self stateColorFor:w] range:NSMakeRange(0, 1)];
+    }
     cell.attributedStringValue = t;
     return cell;
 }
@@ -1318,18 +1525,18 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
     // One project name whatever the mode, so Stop finds the containers after
     // a mode switch or an app update; the compose file travels in the bundle.
     NSString *file = [[self composeFile] stringByReplacingOccurrencesOfString:@"'" withString:@"'\\''"];
-    return [NSString stringWithFormat:@"%@ compose -f '%@' -p myous-worker", [Runtime dockerBin], file];
+    return [NSString stringWithFormat:@"%@ compose -f '%@' -p %@", [Runtime dockerBin], file, [self.paths project]];
 }
 
 - (NSDictionary *)composeEnv {
     NSMutableDictionary *env = [NSMutableDictionary new];
     if (self.config.name) env[@"MYOUS_ALIAS"] = self.config.name;
-    env[@"MYOUS_WORKER_HOME"] = [Paths home];
+    env[@"MYOUS_WORKER_HOME"] = [self.paths home];
     return env;
 }
 
 - (void)start {
-    [[NSFileManager defaultManager] createDirectoryAtPath:[Paths home] withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions: @0700} error:nil];
+    [[NSFileManager defaultManager] createDirectoryAtPath:[self.paths home] withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions: @0700} error:nil];
     self.launchedAt = [[NSDate date] timeIntervalSince1970];
     self.stopping = NO;
     self.wasRunning = NO;
@@ -1343,7 +1550,7 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
     self.launchStage = @"pulling";
     NSString *cmd = [[self composePrefix] stringByAppendingString:[self.config isImage] ? @" up -d" : @" up -d --build"];
     __weak typeof(self) weak = self;
-    [self runLogged:cmd in:[Paths home] line:^(NSString *line) {
+    [self runLogged:cmd in:[self.paths home] line:^(NSString *line) {
         if ([line containsString:@"Pulled"] || [line containsString:@"Created"] || [line containsString:@"Started"] || [line containsString:@"Running"])
             weak.launchStage = @"creating";
     } done:^(int status) {
@@ -1358,10 +1565,11 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
     self.stopping = YES;
     self.launchedAt = 0;
     if ([self.config isDirect]) { [self stopDirect]; return; }
-    // `down` for our project, then anything left from another project name.
-    NSString *cmd = [NSString stringWithFormat:@"%@ down; %@", [self composePrefix], [Runtime removeAllCommand]];
+    // `down` for this worker's project only; other workers keep running.
+    // "Remove stale containers" in Advanced clears anything older.
+    NSString *cmd = [[self composePrefix] stringByAppendingString:@" down --remove-orphans"];
     __weak typeof(self) weak = self;
-    [self runLogged:cmd in:[Paths home] line:nil done:^(int status) { [weak refresh]; }];
+    [self runLogged:cmd in:[self.paths home] line:nil done:^(int status) { [weak refresh]; }];
 }
 
 - (void)rebuild {
@@ -1373,7 +1581,7 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
 
 - (void)removeContainers {
     __weak typeof(self) weak = self;
-    [self runLogged:[Runtime removeAllCommand] in:[Paths home] line:nil done:^(int status) { [weak refresh]; }];
+    [self runLogged:[Runtime removeAllCommand] in:[self.paths home] line:nil done:^(int status) { [weak refresh]; }];
 }
 
 - (void)runLogged:(NSString *)cmd in:(NSString *)dir line:(LineBlock)line done:(DoneBlock)done {
@@ -1389,22 +1597,22 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
 }
 
 - (void)startDirect {
-    [[NSFileManager defaultManager] createDirectoryAtPath:[Paths work] withIntermediateDirectories:YES attributes:nil error:nil];
+    [[NSFileManager defaultManager] createDirectoryAtPath:[self.paths work] withIntermediateDirectories:YES attributes:nil error:nil];
     NSTask *t = [NSTask new];
     t.launchPath = @"/bin/sh";
     // A login shell, so the user's PATH (where `myous` lives) applies. The
     // name is passed only when it changed (passing it re-registers).
-    NSData *settings = [NSData dataWithContentsOfFile:[[Paths home] stringByAppendingPathComponent:@"settings.json"]];
+    NSData *settings = [NSData dataWithContentsOfFile:[[self.paths home] stringByAppendingPathComponent:@"settings.json"]];
     NSString *current = settings ? str(dict([NSJSONSerialization JSONObjectWithData:settings options:0 error:nil])[@"alias"]) : nil;
     NSString *name = self.config.name ?: @"Desktop worker";
     NSString *aliasOpt = [name isEqualToString:current] ? @"" :
         [NSString stringWithFormat:@"--alias '%@' ", [name stringByReplacingOccurrencesOfString:@"'" withString:@"'\\''"]];
-    NSString *home = [[Paths home] stringByReplacingOccurrencesOfString:@"'" withString:@"'\\''"];
+    NSString *home = [[self.paths home] stringByReplacingOccurrencesOfString:@"'" withString:@"'\\''"];
     NSString *hook = [[Paths bundledReview] stringByReplacingOccurrencesOfString:@"'" withString:@"'\\''"];
     NSString *reviewOpt = hook ? [NSString stringWithFormat:@"--review '%@' ", hook] : @"";
     t.arguments = @[@"-lc", [NSString stringWithFormat:@"exec myous worker %@%@--work '%@/work' >> '%@/worker.log' 2>&1", aliasOpt, reviewOpt, home, home]];
     NSMutableDictionary *env = [[[NSProcessInfo processInfo] environment] mutableCopy];
-    env[@"MYOUS_HOME"] = [Paths home];
+    env[@"MYOUS_HOME"] = [self.paths home];
     t.environment = env;
     __weak typeof(self) weak = self;
     t.terminationHandler = ^(NSTask *task) {
@@ -1428,7 +1636,7 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
         [self append:[NSString stringWithFormat:@"stopping myous worker (pid %d)", self.direct.processIdentifier]];
         [self.direct terminate];
     } else {
-        NSNumber *pid = num([StatusFile read].status[@"pid"]);   // started outside this app
+        NSNumber *pid = num([StatusFile readAt:self.paths].status[@"pid"]);   // started outside this app
         if (pid) { kill((pid_t)pid.intValue, SIGTERM); [self append:[NSString stringWithFormat:@"sent SIGTERM to worker pid %@", pid]]; }
     }
 }
@@ -1466,7 +1674,7 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
     }
     self.config.mode = @"direct";
     [self.config write];
-    if (![[NSFileManager defaultManager] fileExistsAtPath:[Paths review]]) setReviewLevel(@"changes");
+    if (![[NSFileManager defaultManager] fileExistsAtPath:[self.paths review]]) setReviewLevel(self.paths, @"changes");
     [self start];
 }
 
@@ -1474,7 +1682,7 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
     self.config.mode = @"direct";
     [self.config write];
     // No container around the commands: ask before anything that changes things, unless the owner chose otherwise.
-    if (![[NSFileManager defaultManager] fileExistsAtPath:[Paths review]]) setReviewLevel(@"changes");
+    if (![[NSFileManager defaultManager] fileExistsAtPath:[self.paths review]]) setReviewLevel(self.paths, @"changes");
     [self append:@"mode: direct (no container)"];
     [self refresh];
 }
@@ -1522,7 +1730,7 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
     [self.qrPopover showRelativeToRect:sender.bounds ofView:sender preferredEdge:NSRectEdgeMaxY];
 }
 
-- (void)newCode { sendWorkerCommand(@"new-code"); self.pairWait.stringValue = @"Asking the worker for a new code…"; }
+- (void)newCode { sendWorkerCommand(self.paths, @"new-code"); self.pairWait.stringValue = @"Asking the worker for a new code…"; }
 
 - (void)unpair {
     NSAlert *a = [NSAlert new];
@@ -1531,7 +1739,7 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
     [a addButtonWithTitle:@"Unpair"];
     [a addButtonWithTitle:@"Cancel"];
     if ([a runModal] == NSAlertFirstButtonReturn) {
-        sendWorkerCommand(@"unpair");
+        sendWorkerCommand(self.paths, @"unpair");
         self.config.seenPairedAt = [[NSDate date] timeIntervalSince1970];
         [self.config write];
         [self refresh];
@@ -1562,31 +1770,31 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
 
 - (void)togglePaused {
     NSFileManager *fm = [NSFileManager defaultManager];
-    if ([fm fileExistsAtPath:[Paths paused]]) {
-        [fm removeItemAtPath:[Paths paused] error:nil];
+    if ([fm fileExistsAtPath:[self.paths paused]]) {
+        [fm removeItemAtPath:[self.paths paused] error:nil];
         [self append:@"resumed"];
     } else {
-        [fm createDirectoryAtPath:[Paths home] withIntermediateDirectories:YES attributes:nil error:nil];
-        [fm createFileAtPath:[Paths paused] contents:[NSData data] attributes:nil];
+        [fm createDirectoryAtPath:[self.paths home] withIntermediateDirectories:YES attributes:nil error:nil];
+        [fm createFileAtPath:[self.paths paused] contents:[NSData data] attributes:nil];
         [self append:@"paused: requests are refused while worker.paused exists"];
     }
     [self refresh];
 }
 
 - (void)openBrowserView {
-    NSString *port = [Runtime browserPort];
+    NSString *port = [Runtime browserPort:[self composePrefix] legacy:self.current.isDefault];
     if (!port) { [self append:@"the worker isn't running, so there's no browser to open"]; return; }
     NSString *url = [NSString stringWithFormat:@"http://localhost:%@/?autoconnect=1&reconnect=1&resize=remote", port];
     [self append:[NSString stringWithFormat:@"opening %@", url]];
     [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:url]];
 }
 
-- (void)openHome { [[NSWorkspace sharedWorkspace] openURL:[NSURL fileURLWithPath:[Paths home]]]; }
+- (void)openHome { [[NSWorkspace sharedWorkspace] openURL:[NSURL fileURLWithPath:[self.paths home]]]; }
 
 - (void)containerLog {
     [self openLog];
     __weak typeof(self) weak = self;
-    [self runLogged:[[self composePrefix] stringByAppendingString:@" logs --tail 100"] in:[Paths home] line:nil done:^(int status) { (void)weak; }];
+    [self runLogged:[[self composePrefix] stringByAppendingString:@" logs --tail 100"] in:[self.paths home] line:nil done:^(int status) { (void)weak; }];
 }
 
 #pragma mark - log window
@@ -1663,11 +1871,11 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
         ]];
     }
     self.settingsName.stringValue = self.config.name ?: @"";
-    [self.settingsReview selectItemAtIndex:[@[@"trust", @"changes", @"all"] indexOfObject:reviewLevel()]];
-    self.settingsDock.state = self.config.dock ? NSControlStateValueOn : NSControlStateValueOff;
-    self.settingsNotify.state = self.config.notifications ? NSControlStateValueOn : NSControlStateValueOff;
-    self.settingsUpdate.state = self.config.autoUpdate ? NSControlStateValueOn : NSControlStateValueOff;
-    self.settingsAgents.state = self.config.showAgents ? NSControlStateValueOn : NSControlStateValueOff;
+    [self.settingsReview selectItemAtIndex:[@[@"trust", @"changes", @"all"] indexOfObject:reviewLevel(self.paths)]];
+    self.settingsDock.state = self.appConfig.dock ? NSControlStateValueOn : NSControlStateValueOff;
+    self.settingsNotify.state = self.appConfig.notifications ? NSControlStateValueOn : NSControlStateValueOff;
+    self.settingsUpdate.state = self.appConfig.autoUpdate ? NSControlStateValueOn : NSControlStateValueOff;
+    self.settingsAgents.state = self.appConfig.showAgents ? NSControlStateValueOn : NSControlStateValueOff;
     if (@available(macOS 13.0, *)) {
         self.settingsLogin.state = SMAppService.mainAppService.status == SMAppServiceStatusEnabled ? NSControlStateValueOn : NSControlStateValueOff;
         self.settingsLogin.enabled = YES;
@@ -1683,16 +1891,17 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
 - (void)saveSettings {
     NSString *name = [self.settingsName.stringValue stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
     if (name.length) self.config.name = name;
-    self.config.dock = self.settingsDock.state == NSControlStateValueOn;
-    self.config.notifications = self.settingsNotify.state == NSControlStateValueOn;
-    self.config.autoUpdate = self.settingsUpdate.state == NSControlStateValueOn;
+    self.appConfig.dock = self.settingsDock.state == NSControlStateValueOn;
+    self.appConfig.notifications = self.settingsNotify.state == NSControlStateValueOn;
+    self.appConfig.autoUpdate = self.settingsUpdate.state == NSControlStateValueOn;
     BOOL showAgents = self.settingsAgents.state == NSControlStateValueOn;
-    if (showAgents != self.config.showAgents) self.agents = nil;
-    self.config.showAgents = showAgents;
+    if (showAgents != self.appConfig.showAgents) self.agents = nil;
+    self.appConfig.showAgents = showAgents;
     [self.config write];
+    if (self.appConfig != self.config) [self.appConfig write];
     NSString *level = @[@"trust", @"changes", @"all"][MAX(0, self.settingsReview.indexOfSelectedItem)];
-    if (![level isEqualToString:reviewLevel()]) { setReviewLevel(level); [self append:[@"review level: " stringByAppendingString:level]]; }
-    [NSApp setActivationPolicy:self.config.dock ? NSApplicationActivationPolicyRegular : NSApplicationActivationPolicyAccessory];
+    if (![level isEqualToString:reviewLevel(self.paths)]) { setReviewLevel(self.paths, level); [self append:[@"review level: " stringByAppendingString:level]]; }
+    [NSApp setActivationPolicy:self.appConfig.dock ? NSApplicationActivationPolicyRegular : NSApplicationActivationPolicyAccessory];
     if (@available(macOS 13.0, *)) {
         BOOL want = self.settingsLogin.state == NSControlStateValueOn;
         BOOL have = SMAppService.mainAppService.status == SMAppServiceStatusEnabled;
@@ -1731,9 +1940,10 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
     NSString *ident = response.notification.request.identifier;
     if ([ident hasPrefix:@"ask-"] && ([action isEqualToString:@"allow"] || [action isEqualToString:@"refuse"])) {
         NSString *rid = [ident substringFromIndex:4];
-        self.approvals = loadApprovals();
-        for (NSDictionary *q in self.approvals) {
-            if ([str(q[@"id"]) isEqualToString:rid]) { answerApproval(rid, action); [self append:[NSString stringWithFormat:@"%@ (from the notification): %@", action, str(q[@"cmd"]) ?: str(q[@"path"]) ?: @""]]; }
+        for (Worker *w in self.workers) {
+            for (NSDictionary *q in loadApprovals(w.paths)) {
+                if ([str(q[@"id"]) isEqualToString:rid]) { answerApproval(w.paths, rid, action); [self append:[NSString stringWithFormat:@"%@ (from the notification): %@", action, str(q[@"cmd"]) ?: str(q[@"path"]) ?: @""]]; }
+            }
         }
         [self refresh];
     } else {
@@ -1747,9 +1957,10 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
 }
 
 - (void)notifyOnce:(NSString *)key title:(NSString *)title body:(NSString *)body category:(NSString *)category {
+    if (![key hasPrefix:@"ask-"] && ![key hasPrefix:@"update-"]) key = [NSString stringWithFormat:@"%@/%@", self.paths.home.lastPathComponent, key];
     if ([self.notified containsObject:key]) return;
     [self.notified addObject:key];
-    if (!self.config.notifications || ![NSBundle mainBundle].bundleIdentifier || self.fake) return;
+    if (!self.appConfig.notifications || ![NSBundle mainBundle].bundleIdentifier || self.fake) return;
     UNMutableNotificationContent *content = [UNMutableNotificationContent new];
     content.title = title;
     content.body = body;
@@ -1769,7 +1980,7 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
     double now = [[NSDate date] timeIntervalSince1970];
     for (NSDictionary *r in self.requests) {
         if (![str(r[@"decision"]) isEqualToString:@"refuse"] || now - num(r[@"at"]).doubleValue > 120) continue;
-        if (self.ticks < 2) { [self.notified addObject:[@"refused-" stringByAppendingString:str(r[@"id"]) ?: @""]]; continue; }   // from before launch
+        if (self.ticks < 2) { [self.notified addObject:[NSString stringWithFormat:@"%@/refused-%@", self.paths.home.lastPathComponent, str(r[@"id"]) ?: @""]]; continue; }   // from before launch
         [self notifyOnce:[@"refused-" stringByAppendingString:str(r[@"id"]) ?: @""] title:[NSString stringWithFormat:@"%@ refused a request", self.config.name ?: @"The worker"]
                     body:[NSString stringWithFormat:@"%@: %@", str(r[@"cmd"]) ?: str(r[@"path"]) ?: str(r[@"op"]) ?: @"", str(r[@"reason"]) ?: @"refused by the review hook"]];
     }
@@ -1782,8 +1993,8 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
 - (void)checkForUpdates:(BOOL)manual {
     NSString *hub = [[NSProcessInfo processInfo] environment][@"MYOUS_HUB"] ?: @"https://myoushq.com";
     NSURL *url = [NSURL URLWithString:[hub stringByAppendingString:@"/config.json"]];
-    self.config.lastUpdateCheck = [[NSDate date] timeIntervalSince1970];
-    [self.config write];
+    self.appConfig.lastUpdateCheck = [[NSDate date] timeIntervalSince1970];
+    [self.appConfig write];
     __weak typeof(self) weak = self;
     [[[NSURLSession sharedSession] dataTaskWithURL:url completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
         NSDictionary *d = data ? dict([NSJSONSerialization JSONObjectWithData:data options:0 error:nil]) : nil;
@@ -1801,7 +2012,7 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
                 if (newer) { [a addButtonWithTitle:@"Download"]; [a addButtonWithTitle:@"Later"]; }
                 if ([a runModal] == NSAlertFirstButtonReturn && newer)
                     [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:@"https://myoushq.com/download/mac"]];
-                else if (newer) { weak.config.skippedVersion = latest; [weak.config write]; }
+                else if (newer) { weak.appConfig.skippedVersion = latest; [weak.appConfig write]; }
             }
             [weak refresh];
         });

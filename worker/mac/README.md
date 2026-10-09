@@ -96,6 +96,15 @@ clears anything older. The mode and checkout path are in
   got and opens it connected and sized to the tab.
 - A red line at the top asks for the one thing that needs you: the
   runtime is gone, the worker stopped on its own, a release is available.
+- **Several workers:** "Add a worker…" (the list on the left, the menu, or
+  Advanced) creates `~/.myous-worker-2`, `-3`, … next to the first
+  worker's folder, each with its own key, container (compose project
+  `myous-worker-2`, …), browser and pairing; its Set up screen asks for
+  the name. The list on the left and the menu bar menu show every worker
+  (one row each, with its actions in a submenu); the menu bar icon shows
+  the worst state. "Remove <name>…" in Advanced stops a worker and moves
+  its folder to the Trash. The first worker's `app.json` holds the app's
+  settings. Stop stops one worker's containers only.
 - **On this Mac:** when an agent lives on this Mac (a myous client
   directory `~/.myous` or `~/.myous-<name>` with a key, or a folder added
   with "Add an agent's folder…" in the Advanced menu), a list appears on
@@ -111,7 +120,7 @@ clears anything older. The mode and checkout path are in
 Checking the layout without a worker: `build/myous.app/Contents/MacOS/myous
 --snapshot /tmp/window.png` renders the window (a PDF next to it carries
 the text) and exits; `MYOUS_FAKE_STATE=setup|noruntime|stoppedruntime|
-starting|pair|paired|running|paused|stopped|approval|agents|agent|pairlocal`
+starting|pair|paired|running|paused|stopped|approval|agents|agent|pairlocal|workers`
 shows each screen with made-up data, `MYOUS_WORKER_HOME=<dir>` points at
 another worker's home, `MYOUS_AGENT_HOMES=<dir>:<dir>` replaces the search
 for agents' directories (`MYOUS_SNAPSHOT_AGENT=1` shows the first one's

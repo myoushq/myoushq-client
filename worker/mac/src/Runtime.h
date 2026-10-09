@@ -20,8 +20,9 @@ typedef void (^DoneBlock)(int status);
 + (void)run:(NSString *)command in:(NSString *)dir env:(NSDictionary *)env line:(LineBlock)line done:(DoneBlock)done;
 /// Run a command and return its trimmed stdout (synchronous, for short ones).
 + (NSString *)output:(NSString *)command;
-/// The host port of the running worker's browser view, or nil.
-+ (NSString *)browserPort;
+/// The host port of a worker's browser view (`<compose prefix> port worker
+/// 6080`), or nil. `legacy` also looks for a container from before v0.6.0.
++ (NSString *)browserPort:(NSString *)composePrefix legacy:(BOOL)legacy;
 /// Remove any worker container, whatever compose project made it.
 + (NSString *)removeAllCommand;
 + (NSString *)dockerBin;

@@ -53,13 +53,16 @@
     return [s stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
 }
 
-+ (NSString *)browserPort {
++ (NSString *)browserPort:(NSString *)composePrefix legacy:(BOOL)legacy {
     // The browser view is published on a port Docker picks at each start;
-    // ask Docker which one, by the label the compose files set.
+    // ask compose which one this worker's project got. A container from
+    // before v0.6.0 (the first worker only) has no project we started: find
+    // it by label, then by its old name.
     NSString *bin = [self dockerBin];
-    // A container from before v0.6.0 has no label; its compose name does.
-    NSString *addr = [self output:[NSString stringWithFormat:
-        @"id=$(%@ ps -q --filter label=com.myoushq.worker | head -1); id=${id:-myous-worker-worker-1}; %@ port \"$id\" 6080/tcp 2>/dev/null | head -1", bin, bin]];
+    NSString *cmd = [NSString stringWithFormat:@"%@ port worker 6080 2>/dev/null | head -1", composePrefix];
+    if (legacy) cmd = [NSString stringWithFormat:
+        @"p=$(%@); [ -n \"$p\" ] && echo \"$p\" || { id=$(%@ ps -q --filter label=com.myoushq.worker | head -1); id=${id:-myous-worker-worker-1}; %@ port \"$id\" 6080/tcp 2>/dev/null | head -1; }", cmd, bin, bin];
+    NSString *addr = [self output:cmd];
     NSString *port = [addr componentsSeparatedByString:@":"].lastObject;
     return port.integerValue > 0 ? port : nil;
 }
