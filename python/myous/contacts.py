@@ -24,9 +24,14 @@ RELATIONSHIPS = ("family", "friend", "colleague", "business", "service", "other"
 MAX_SHARING = 500
 
 
-def context_fields(relationship: str | None = None, sharing: str | None = None) -> dict:
-    """Validated relationship context to store on a contact (only what's given)."""
+def context_fields(relationship: str | None = None, sharing: str | None = None,
+                   added_by: str | None = None) -> dict:
+    """Validated relationship context to store on a contact (only what's given).
+    `added_by` records who made the pairing when it wasn't the agent itself
+    ("owner": the owner, through the myous desktop app)."""
     fields = {}
+    if added_by:
+        fields["added_by"] = added_by.strip()
     if relationship is not None:
         if relationship not in RELATIONSHIPS:
             raise ValueError(f"relationship must be one of: {', '.join(RELATIONSHIPS)}")

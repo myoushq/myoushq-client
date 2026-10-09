@@ -29,6 +29,9 @@ enum Command {
         /// Hub URL (default https://myoushq.com)
         #[arg(long)]
         hub: Option<String>,
+        /// Rename this agent
+        #[arg(long)]
+        rename: bool,
     },
     /// Start a pairing: get a link and code to share
     Invite {
@@ -140,12 +143,13 @@ async fn run(cli: Cli) -> Result<()> {
     let agent = Agent::new(st.clone(), hub_url.as_deref())?;
 
     match cli.command {
-        Command::Init { alias, .. } => {
+        Command::Init { alias, rename, .. } => {
             let settings = st.storage_get("settings");
+            let created = !agent.has_identity()?;
+            guard_home(!created, settings["alias"].as_str(), alias.as_deref(), rename)?;
             let Some(alias) = alias.or_else(|| settings["alias"].as_str().map(String::from)) else {
                 bail!("give this agent a friendly name: myous init --alias NAME");
             };
-            let created = !agent.has_identity()?;
             if created {
                 agent.create_identity()?;
             }
@@ -266,7 +270,8 @@ async fn run(cli: Cli) -> Result<()> {
                 println!("no contacts yet; pair with `myous invite` or `myous accept`");
             } else {
                 for c in contacts.values() {
-                    println!("{:<20} {:<9} {:<10} {}", c.alias, c.status, c.relationship.as_deref().unwrap_or("-"), c.npub);
+                    println!("{:<20} {:<9} {:<10} {:<8} {}", c.alias, c.status, c.relationship.as_deref().unwrap_or("-"),
+                        c.added_by.as_deref().unwrap_or("-"), c.npub);
                 }
             }
         }
@@ -294,19 +299,24 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Command::Status { json } => {
             let has_identity = agent.has_identity()?;
+            let contacts = agent.contacts()?;
             let info = json!({
                 "data_dir": st.home.display().to_string(),
+                "client": "rust",
+                "version": myous::agent::VERSION,
                 "hub": agent.hub.url,
                 "identity": if has_identity { Some(agent.keys()?.public_key().to_bech32()?) } else { None },
                 "alias": st.storage_get("settings")["alias"],
                 "registered": agent.is_registered()?,
-                "contacts": agent.contacts()?.len(),
+                "contacts": contacts.len(),
+                "contact_list": contacts.values().collect::<Vec<_>>(),
                 "pending_pairings": if has_identity {
                     agent.pending_pairings()?.iter().map(describe_pending).collect::<Vec<_>>()
                 } else {
                     vec![]
                 },
                 "unread": agent.unread(false)?.len(),
+                "last_used": st.last_used(),
             });
             if json {
                 println!("{}", serde_json::to_string_pretty(&info)?);
@@ -315,6 +325,18 @@ async fn run(cli: Cli) -> Result<()> {
                     println!("{k:<17} {}", v.as_str().map(String::from).unwrap_or_else(|| v.to_string()));
                 }
             }
+        }
+    }
+    Ok(())
+}
+
+/// `init` must not quietly turn one agent's home into another's: a different
+/// alias on an existing identity is refused unless --rename says it's the
+/// same agent.
+fn guard_home(has_identity: bool, stored: Option<&str>, given: Option<&str>, rename: bool) -> Result<()> {
+    if let (true, Some(stored), Some(given)) = (has_identity, stored, given) {
+        if stored != given && !rename {
+            bail!("this directory belongs to {stored}; use another MYOUS_HOME, or pass --rename if this is the same agent");
         }
     }
     Ok(())
@@ -412,11 +434,14 @@ struct ContextArgs {
     /// Your owner's guidance on what you may share with this contact
     #[arg(long)]
     sharing: Option<String>,
+    /// Who made this pairing on your behalf ("owner": through the myous desktop app)
+    #[arg(long)]
+    added_by: Option<String>,
 }
 
 impl From<ContextArgs> for myous::contacts::ContactContext {
     fn from(a: ContextArgs) -> Self {
-        Self { relationship: a.relationship, sharing: a.sharing }
+        Self { relationship: a.relationship, sharing: a.sharing, added_by: a.added_by }
     }
 }
 
@@ -433,4 +458,20 @@ fn context_line(e: &Value) -> String {
         line += &format!("; may share: {s}");
     }
     format!("    ({line})")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn init_refuses_another_agents_home() {
+        let err = guard_home(true, Some("alice"), Some("bob"), false).unwrap_err().to_string();
+        assert_eq!(err, "this directory belongs to alice; use another MYOUS_HOME, or pass --rename if this is the same agent");
+        assert!(guard_home(true, Some("alice"), Some("bob"), true).is_ok(), "--rename");
+        assert!(guard_home(true, Some("alice"), Some("alice"), false).is_ok(), "same alias");
+        assert!(guard_home(true, Some("alice"), None, false).is_ok(), "no alias given");
+        assert!(guard_home(true, None, Some("bob"), false).is_ok(), "no stored alias");
+        assert!(guard_home(false, Some("alice"), Some("bob"), false).is_ok(), "no identity yet");
+    }
 }

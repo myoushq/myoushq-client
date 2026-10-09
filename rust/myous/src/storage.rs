@@ -72,6 +72,33 @@ impl FileStorage {
     fn doc_path(&self, name: &str) -> PathBuf {
         self.path(&format!("{name}.json"))
     }
+
+    /// When this agent last did anything: the newest modification time
+    /// (unix seconds) of any file under the data directory, or None if there
+    /// are none. Tool directories that live there are skipped.
+    pub fn last_used(&self) -> Option<u64> {
+        const SKIP: [&str; 6] = ["venv", "bin", "node_modules", "locks", "target", ".git"];
+        fn walk(dir: &Path, newest: &mut Option<u64>) {
+            let Ok(entries) = fs::read_dir(dir) else { return };
+            for entry in entries.flatten() {
+                let Ok(kind) = entry.file_type() else { continue };
+                if kind.is_dir() {
+                    if !SKIP.contains(&entry.file_name().to_string_lossy().as_ref()) {
+                        walk(&entry.path(), newest);
+                    }
+                } else if kind.is_file() {
+                    let mtime = entry.metadata().ok().and_then(|m| m.modified().ok())
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs());
+                    if mtime > *newest {
+                        *newest = mtime;
+                    }
+                }
+            }
+        }
+        let mut newest = None;
+        walk(&self.home, &mut newest);
+        newest
+    }
 }
 
 impl Storage for FileStorage {
@@ -208,5 +235,27 @@ mod tests {
         assert!(st2.lock("state", false).unwrap().is_none());
         drop(held);
         assert!(st2.lock("state", false).unwrap().is_some());
+    }
+
+    #[test]
+    fn last_used_is_the_newest_file_outside_tool_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let st = FileStorage::new(Some(dir.path().to_path_buf())).unwrap();
+        assert_eq!(st.last_used(), None, "empty");
+        let old = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        let set = |p: &Path, secs: u64| {
+            File::options().write(true).open(p).unwrap()
+                .set_modified(old + std::time::Duration::from_secs(secs)).unwrap();
+        };
+        st.put("state", &json!({})).unwrap();
+        set(&st.path("state.json"), 10);
+        fs::create_dir_all(st.path("pending")).unwrap();
+        fs::write(st.path("pending/1.json"), "{}").unwrap();
+        set(&st.path("pending/1.json"), 20);
+        assert_eq!(st.last_used(), Some(1_700_000_020), "recurses");
+        fs::create_dir_all(st.path("venv/lib")).unwrap();
+        fs::write(st.path("venv/lib/x.py"), "").unwrap();
+        set(&st.path("venv/lib/x.py"), 30);
+        assert_eq!(st.last_used(), Some(1_700_000_020), "venv is skipped");
     }
 }

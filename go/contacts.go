@@ -26,6 +26,9 @@ type Contact struct {
 	// (one of Relationships) and what may be shared with it.
 	Relationship string `json:"relationship,omitempty"`
 	Sharing      string `json:"sharing,omitempty"`
+	// AddedBy records who made the pairing when it wasn't the agent itself
+	// ("owner": the owner, through the myous desktop app).
+	AddedBy string `json:"added_by,omitempty"`
 }
 
 // Relationships are the accepted values of Contact.Relationship.
@@ -38,6 +41,7 @@ const maxSharing = 500
 type ContactContext struct {
 	Relationship string
 	Sharing      string
+	AddedBy      string
 }
 
 func (cc ContactContext) validate() error {
@@ -56,6 +60,9 @@ func (cc ContactContext) apply(c *Contact) {
 	}
 	if s := strings.TrimSpace(cc.Sharing); s != "" {
 		c.Sharing = s
+	}
+	if s := strings.TrimSpace(cc.AddedBy); s != "" {
+		c.AddedBy = s
 	}
 }
 

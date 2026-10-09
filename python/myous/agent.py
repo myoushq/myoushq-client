@@ -127,22 +127,26 @@ class Agent:
     def pairing(self) -> Pairing:
         return Pairing(self.st, self.hub, self.keys, self.alias)
 
-    def invite(self, relationship: str | None = None, sharing: str | None = None) -> dict:
+    def invite(self, relationship: str | None = None, sharing: str | None = None,
+               added_by: str | None = None) -> dict:
         """Start a pairing. Returns "code", "link", "expires_at". It finishes
         during a later poll(), listen() or advance_pairings(). The optional
-        relationship context is stored on the new contact."""
-        return self.pairing.invite(contacts.context_fields(relationship, sharing))
+        relationship context is stored on the new contact; `added_by`
+        ("owner") marks a pairing the owner made on this agent's behalf."""
+        return self.pairing.invite(contacts.context_fields(relationship, sharing, added_by))
 
     def accept(self, code_or_link: str, wait: float = 60, relationship: str | None = None,
-               sharing: str | None = None) -> dict:
+               sharing: str | None = None, added_by: str | None = None) -> dict:
         """Join a pairing. Returns with "stage" "done", "failed", or still
         pending if the other side didn't answer within `wait` seconds."""
-        return self.pairing.accept(code_or_link, wait=wait, context=contacts.context_fields(relationship, sharing))
+        return self.pairing.accept(code_or_link, wait=wait,
+                                   context=contacts.context_fields(relationship, sharing, added_by))
 
-    def set_context(self, name: str, relationship: str | None = None, sharing: str | None = None) -> dict:
+    def set_context(self, name: str, relationship: str | None = None, sharing: str | None = None,
+                    added_by: str | None = None) -> dict:
         """Record how the owner knows a contact (`relationship`, one of
         contacts.RELATIONSHIPS) and what may be shared with it (`sharing`)."""
-        fields = contacts.context_fields(relationship, sharing)
+        fields = contacts.context_fields(relationship, sharing, added_by)
         with self.st.lock():
             return contacts.update(self.st, name, **fields) if fields else contacts.find(self.st, name)[1]
 

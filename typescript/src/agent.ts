@@ -90,6 +90,14 @@ export class Agent {
     return (await this.st.get<Record<string, string>>("settings", {})).alias ?? "agent";
   }
 
+  /** Refuse to run an existing identity under another alias unless renaming: one agent, one home. */
+  async checkHome(alias: string, rename = false): Promise<void> {
+    const stored = (await this.st.get<Record<string, string>>("settings", {})).alias;
+    if (!rename && stored && stored !== alias && (await this.hasIdentity())) {
+      throw new IdentityError(`this directory belongs to ${stored}; use another MYOUS_HOME, or pass --rename if this is the same agent`);
+    }
+  }
+
   /** Publish profile and inbox relays; the first time, with proof of work, this registers. */
   async register(alias?: string): Promise<void> {
     if (alias) {

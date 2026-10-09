@@ -193,7 +193,9 @@ that comes with Xcode's command line tools (Objective-C, no Xcode, no
 Swift toolchain needed; a few seconds). It lives in the menu bar, shows
 whether the worker is running and what phase it is in, the pairing
 message, every request with its outcome, and offers Pause, Start/Stop
-and "Open browser". Details in `worker/mac/README.md`.
+and "Open browser". It also lists the agents whose myous directories are
+on this Mac and can accept a pairing code on their behalf (the contact
+then carries `added_by: owner`). Details in `worker/mac/README.md`.
 
 ## When something's wrong
 

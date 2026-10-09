@@ -77,6 +77,34 @@ export interface HistoryEntry {
   error?: string;
 }
 
+// Installs, locks and git metadata say nothing about what the agent did.
+const SKIP_DIRS = new Set(["venv", "bin", "node_modules", "locks", "target", ".git"]);
+
+/**
+ * Unix time of the newest regular file under dir (recursively), or null if
+ * there is none: when this agent last did anything, without writing on
+ * every command.
+ */
+export async function lastUsed(dir: string): Promise<number | null> {
+  let newest = 0;
+  let entries;
+  try {
+    entries = await fs.readdir(dir, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  for (const e of entries) {
+    const path = join(dir, e.name);
+    if (e.isDirectory()) {
+      if (!SKIP_DIRS.has(e.name)) newest = Math.max(newest, (await lastUsed(path)) ?? 0);
+    } else if (e.isFile()) {
+      const stat = await fs.stat(path).catch(() => null);
+      if (stat) newest = Math.max(newest, Math.floor(stat.mtimeMs / 1000));
+    }
+  }
+  return newest || null;
+}
+
 /** Runs fn under storage's lock if it has one. */
 export async function locked<T>(st: Storage, name: string, fn: () => Promise<T>, wait = true): Promise<T | undefined> {
   return st.withLock ? st.withLock(name, fn, wait) : fn();

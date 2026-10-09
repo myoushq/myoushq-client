@@ -160,15 +160,15 @@ func (e *env) inbox(agent string) []Entry {
 	return entries
 }
 
-// pair has inviter invite and joiner accept (by "code" or "link"), and
-// checks both see the same verification code.
-func (e *env) pair(inviter, joiner, how string) {
+// pair has inviter invite and joiner accept (by "code" or "link"), both
+// with any extra flags, and checks both see the same verification code.
+func (e *env) pair(inviter, joiner, how string, extra ...string) {
 	e.t.Helper()
 	var inv map[string]any
-	if err := json.Unmarshal([]byte(e.ok(inviter, "invite", "--json")), &inv); err != nil {
+	if err := json.Unmarshal([]byte(e.ok(inviter, append([]string{"invite", "--json"}, extra...)...)), &inv); err != nil {
 		e.t.Fatal(err)
 	}
-	e.ok(joiner, "accept", inv[how].(string), "--wait", "3")
+	e.ok(joiner, append([]string{"accept", inv[how].(string), "--wait", "3"}, extra...)...)
 	e.ok(inviter, "poll", "--quiet")
 	e.ok(joiner, "poll", "--quiet")
 	a, b := e.inbox(inviter), e.inbox(joiner)
@@ -252,6 +252,56 @@ func TestGoToGo(t *testing.T) {
 		t.Fatal("a new key was created")
 	}
 	os.Rename(key+".bak", key)
+}
+
+// The status fields the desktop app reads, added_by kept through a pairing,
+// and init refusing to adopt another agent's home.
+func TestGoStatusAndInitGuard(t *testing.T) {
+	e := setup(t)
+	e.init("go-ida", "go-jon")
+	e.pair("go-ida", "go-jon", "code", "--added-by", "owner", "--relationship", "friend")
+	var info struct {
+		Client, Version string
+		Contacts        int
+		ContactList     []Contact `json:"contact_list"`
+		LastUsed        int64     `json:"last_used"`
+	}
+	if err := json.Unmarshal([]byte(e.ok("go-ida", "status", "--json")), &info); err != nil {
+		t.Fatal(err)
+	}
+	if info.Client != "go" || info.Version != Version || info.Contacts != 1 || len(info.ContactList) != 1 || info.LastUsed == 0 {
+		t.Fatalf("status: %+v", info)
+	}
+	c := info.ContactList[0]
+	if c.Alias != "go-jon" || c.Status != Approved || c.Relationship != "friend" || c.AddedBy != "owner" || c.PairedAt == 0 || c.Npub == "" {
+		t.Fatalf("contact_list: %+v", c)
+	}
+	if out := e.ok("go-jon", "contacts"); !strings.Contains(out, "go-ida               approved  friend     owner   npub1") {
+		t.Fatalf("contacts: %s", out)
+	}
+
+	belongs := "this directory belongs to go-ida; use another MYOUS_HOME, or pass --rename if this is the same agent"
+	for _, tc := range []struct {
+		args    []string
+		wantErr string
+	}{
+		{[]string{"init", "--alias", "go-ida"}, ""},
+		{[]string{"init"}, ""},
+		{[]string{"init", "--alias", "Codex"}, belongs},
+		{[]string{"init", "--alias", "go-ida-2", "--rename"}, ""},
+		{[]string{"init", "--alias", "go-ida"}, strings.Replace(belongs, "go-ida;", "go-ida-2;", 1)},
+	} {
+		_, err := e.run("go-ida", tc.args...)
+		switch {
+		case tc.wantErr == "" && err != nil:
+			t.Fatalf("myous %s: %v", strings.Join(tc.args, " "), err)
+		case tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)):
+			t.Fatalf("myous %s: want %q, got %v", strings.Join(tc.args, " "), tc.wantErr, err)
+		}
+	}
+	if out := e.ok("go-ida", "status"); !strings.Contains(out, "alias             go-ida-2") {
+		t.Fatalf("status after rename: %s", out)
+	}
 }
 
 func TestGoListen(t *testing.T) {

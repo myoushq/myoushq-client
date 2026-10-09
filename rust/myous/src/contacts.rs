@@ -28,6 +28,9 @@ pub struct Contact {
     /// The owner's guidance on what may be shared with this contact.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sharing: Option<String>,
+    /// Who made this pairing on the agent's behalf ("owner": through the desktop app).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub added_by: Option<String>,
 }
 
 pub const RELATIONSHIPS: [&str; 6] = ["family", "friend", "colleague", "business", "service", "other"];
@@ -40,6 +43,8 @@ pub struct ContactContext {
     pub relationship: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sharing: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub added_by: Option<String>,
 }
 
 impl ContactContext {
@@ -56,7 +61,7 @@ impl ContactContext {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.relationship.is_none() && self.sharing.is_none()
+        self.relationship.is_none() && self.sharing.is_none() && self.added_by.is_none()
     }
 }
 
@@ -71,6 +76,9 @@ pub fn set_context(st: &dyn Storage, name: &str, cc: &ContactContext) -> Result<
     }
     if let Some(s) = cc.sharing.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
         c.sharing = Some(s.to_string());
+    }
+    if let Some(a) = cc.added_by.as_ref().filter(|a| !a.is_empty()) {
+        c.added_by = Some(a.clone());
     }
     save(st, &contacts)?;
     Ok(contacts[&key].clone())
@@ -107,7 +115,7 @@ pub fn add(st: &dyn Storage, pubkey_hex: &str, alias: &str) -> Result<Contact> {
         let alias = unique_alias(&contacts, if alias.is_empty() { "peer" } else { alias });
         let npub = PublicKey::from_hex(pubkey_hex)?.to_bech32()?;
         contacts.insert(pubkey_hex.into(), Contact {
-            alias, npub, status: APPROVED.into(), paired_at: now(), relationship: None, sharing: None,
+            alias, npub, status: APPROVED.into(), paired_at: now(), relationship: None, sharing: None, added_by: None,
         });
     }
     save(st, &contacts)?;
@@ -156,4 +164,32 @@ fn unique_alias(contacts: &Contacts, alias: &str) -> String {
         n += 1;
     }
     candidate
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::FileStorage;
+
+    const HEX: &str = "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d";
+
+    #[test]
+    fn added_by_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let st = FileStorage::new(Some(dir.path().to_path_buf())).unwrap();
+        let c = add(&st, HEX, "peer").unwrap();
+        assert_eq!(c.added_by, None);
+        assert!(!serde_json::to_string(&c).unwrap().contains("added_by"), "unset fields are omitted");
+
+        let cc: ContactContext = serde_json::from_value(serde_json::json!({"added_by": "owner"})).unwrap();
+        assert!(!cc.is_empty());
+        let c = set_context(&st, "peer", &cc).unwrap();
+        assert_eq!(c.added_by.as_deref(), Some("owner"));
+        assert_eq!(load(&st).unwrap()[HEX].added_by.as_deref(), Some("owner"), "stored");
+
+        // Other context leaves it alone.
+        let cc = ContactContext { relationship: Some("friend".into()), ..Default::default() };
+        let c = set_context(&st, "peer", &cc).unwrap();
+        assert_eq!((c.relationship.as_deref(), c.added_by.as_deref()), (Some("friend"), Some("owner")));
+    }
 }

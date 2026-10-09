@@ -9,8 +9,12 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
+	"maps"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -20,7 +24,8 @@ import (
 
 const usage = `usage: myous <command> [flags]
 
-  init --alias NAME [--hub URL]   create this agent's identity (once) and register
+  init --alias NAME [--hub URL]   create this agent's identity (once) and register; a directory
+                                  that belongs to another alias is refused unless --rename
   invite [--json] [--wait]        start a pairing: get a link and code to share
   accept CODE [--wait SECONDS]    join a pairing from a link or code (default wait 60)
   send NAME TEXT...               send a message (TEXT "-" reads stdin)
@@ -32,7 +37,8 @@ const usage = `usage: myous <command> [flags]
   context NAME [--relationship R] [--sharing TEXT] [--json]
                                   show or set how your owner knows a contact and what you
                                   may share (R: family, friend, colleague, business,
-                                  service, other); invite and accept take the same flags
+                                  service, other); invite and accept take the same flags,
+                                  plus --added-by owner when your owner made the pairing
   block NAME | unblock NAME | rename NAME NEW_ALIAS
   poll [--json] [--quiet]         advance pairings and fetch waiting messages, once
   listen                          stay connected and receive messages live
@@ -72,6 +78,8 @@ func run(ctx context.Context, cmd string, args []string) error {
 	waitFlag := fs.String("wait", "", "accept: seconds to wait; invite: stay until done")
 	relationship := fs.String("relationship", "", "how your owner knows this contact: "+strings.Join(myous.Relationships, ", "))
 	sharing := fs.String("sharing", "", "your owner's guidance on what you may share with this contact")
+	addedBy := fs.String("added-by", "", "who made this pairing, when not the agent itself (owner)")
+	rename := fs.Bool("rename", false, "rename this agent (init only)")
 	pos, err := parseInterleaved(fs, args)
 	if err != nil {
 		return err
@@ -88,15 +96,19 @@ func run(ctx context.Context, cmd string, args []string) error {
 
 	switch cmd {
 	case "init":
+		settings := map[string]any{}
+		st.Get("settings", &settings)
+		stored, _ := settings["alias"].(string)
 		if *alias == "" {
-			settings := map[string]any{}
-			st.Get("settings", &settings)
-			*alias, _ = settings["alias"].(string)
+			*alias = stored
 		}
 		if *alias == "" {
 			return errors.New("give this agent a friendly name: myous init --alias NAME")
 		}
 		created := !agent.HasIdentity()
+		if !created && stored != "" && stored != *alias && !*rename {
+			return fmt.Errorf("this directory belongs to %s; use another MYOUS_HOME, or pass --rename if this is the same agent", stored)
+		}
 		if created {
 			if err := agent.CreateIdentity(); err != nil {
 				return err
@@ -117,7 +129,7 @@ func run(ctx context.Context, cmd string, args []string) error {
 			verb, npub, *alias, st.Home)
 
 	case "invite":
-		inv, err := agent.Invite(ctx, myous.ContactContext{Relationship: *relationship, Sharing: *sharing})
+		inv, err := agent.Invite(ctx, myous.ContactContext{Relationship: *relationship, Sharing: *sharing, AddedBy: *addedBy})
 		if err != nil {
 			return err
 		}
@@ -150,7 +162,7 @@ func run(ctx context.Context, cmd string, args []string) error {
 			}
 		}
 		p, err := agent.Accept(ctx, pos[0], time.Duration(wait*float64(time.Second)),
-			myous.ContactContext{Relationship: *relationship, Sharing: *sharing})
+			myous.ContactContext{Relationship: *relationship, Sharing: *sharing, AddedBy: *addedBy})
 		if err != nil {
 			return err
 		}
@@ -264,18 +276,14 @@ func run(ctx context.Context, cmd string, args []string) error {
 			fmt.Println("no contacts yet; pair with `myous invite` or `myous accept`")
 		}
 		for _, c := range contacts {
-			rel := c.Relationship
-			if rel == "" {
-				rel = "-"
-			}
-			fmt.Printf("%-20s %-9s %-10s %s\n", c.Alias, c.Status, rel, c.Npub)
+			fmt.Printf("%-20s %-9s %-10s %-7s %s\n", c.Alias, c.Status, orElse(c.Relationship, "-"), orElse(c.AddedBy, "-"), c.Npub)
 		}
 
 	case "context":
 		if len(pos) != 1 {
-			return errors.New("usage: myous context NAME [--relationship R] [--sharing TEXT]")
+			return errors.New("usage: myous context NAME [--relationship R] [--sharing TEXT] [--added-by WHO]")
 		}
-		c, err := agent.SetContext(pos[0], myous.ContactContext{Relationship: *relationship, Sharing: *sharing})
+		c, err := agent.SetContext(pos[0], myous.ContactContext{Relationship: *relationship, Sharing: *sharing, AddedBy: *addedBy})
 		if err != nil {
 			return err
 		}
@@ -351,14 +359,14 @@ func run(ctx context.Context, cmd string, args []string) error {
 			}
 		}
 		info := map[string]any{
-			"data_dir": st.Home, "hub": agent.Hub.URL, "identity": npub, "alias": agent.Alias(),
-			"registered": agent.IsRegistered(), "contacts": len(contacts),
-			"pending_pairings": pending, "unread": len(unread),
+			"data_dir": st.Home, "client": "go", "version": myous.Version, "hub": agent.Hub.URL, "identity": npub, "alias": agent.Alias(),
+			"registered": agent.IsRegistered(), "contacts": len(contacts), "contact_list": contactList(contacts),
+			"pending_pairings": pending, "unread": len(unread), "last_used": lastUsed(st.Home),
 		}
 		if *asJSON {
 			return printJSON(info)
 		}
-		for _, k := range []string{"data_dir", "hub", "identity", "alias", "registered", "contacts", "pending_pairings", "unread"} {
+		for _, k := range []string{"data_dir", "client", "version", "hub", "identity", "alias", "registered", "contacts", "contact_list", "pending_pairings", "unread", "last_used"} {
 			fmt.Printf("%-17s %v\n", k, info[k])
 		}
 
@@ -463,6 +471,36 @@ func contextLine(e myous.Entry) string {
 		line += "; may share: " + e.Sharing
 	}
 	return "    (" + line + ")"
+}
+
+// contactList is the contacts in the order `contacts --json` prints them
+// (by key), for the status output.
+func contactList(contacts map[string]myous.Contact) []myous.Contact {
+	out := []myous.Contact{}
+	for _, k := range slices.Sorted(maps.Keys(contacts)) {
+		out = append(out, contacts[k])
+	}
+	return out
+}
+
+// lastUsed is the unix time of the newest file under the data directory:
+// when this agent last did anything, without writing on every command.
+// Skips installs (venv, bin, node_modules, target), locks and .git.
+func lastUsed(dir string) int64 {
+	var newest int64
+	filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() && path != dir && slices.Contains([]string{"venv", "bin", "node_modules", "locks", "target", ".git"}, d.Name()) {
+			return filepath.SkipDir
+		}
+		if info, err := d.Info(); err == nil && info.Mode().IsRegular() {
+			newest = max(newest, info.ModTime().Unix())
+		}
+		return nil
+	})
+	return newest
 }
 
 func orElse(s, fallback string) string {

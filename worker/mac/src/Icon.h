@@ -8,3 +8,5 @@ BOOL writeIconSet(NSString *dir, NSError **error);
 /// The menu bar icon: a filled circle in `color` with a white "m"; `dot`
 /// adds a small white dot (a request in progress).
 NSImage *statusIcon(NSColor *color, BOOL dot);
+/// A menu icon for an agent on this Mac: an outlined circle (it is not ours to colour).
+NSImage *agentIcon(void);

@@ -254,6 +254,7 @@ type Pending struct {
 	// Relationship context to record on the contact once paired.
 	Relationship string   `json:"relationship,omitempty"`
 	Sharing      string   `json:"sharing,omitempty"`
+	AddedBy      string   `json:"added_by,omitempty"`
 	Contact      *Contact `json:"contact,omitempty"`
 	Verify       string   `json:"verify,omitempty"`
 	Error        string   `json:"error,omitempty"`
@@ -312,7 +313,7 @@ func (pr *pairing) invite(ctx context.Context, cc ContactContext) (*Invite, erro
 		return nil, err
 	}
 	p := &Pending{Role: "a", Nameplate: box.Nameplate, Secret: secret, Token: box.Token, ExpiresAt: box.ExpiresAt, Stage: "wait_pake",
-		Relationship: cc.Relationship, Sharing: cc.Sharing}
+		Relationship: cc.Relationship, Sharing: cc.Sharing, AddedBy: cc.AddedBy}
 	if err := pr.start(ctx, p); err != nil {
 		return nil, err
 	}
@@ -345,7 +346,7 @@ func (pr *pairing) accept(ctx context.Context, code string, wait time.Duration, 
 		return nil, err
 	}
 	p := &Pending{Role: "b", Nameplate: nameplate, Secret: secret, Token: claim.Token, ExpiresAt: claim.ExpiresAt, Stage: "wait_pake",
-		Relationship: cc.Relationship, Sharing: cc.Sharing}
+		Relationship: cc.Relationship, Sharing: cc.Sharing, AddedBy: cc.AddedBy}
 	if err := pr.start(ctx, p); err != nil {
 		return nil, err
 	}
@@ -521,7 +522,7 @@ func (pr *pairing) step(ctx context.Context, p *Pending, body string) error {
 		if err != nil {
 			return err
 		}
-		if cc := (ContactContext{p.Relationship, p.Sharing}); cc != (ContactContext{}) {
+		if cc := (ContactContext{p.Relationship, p.Sharing, p.AddedBy}); cc != (ContactContext{}) {
 			if c, err = updateContact(pr.st, peer.Pubkey, cc.apply); err != nil {
 				return err
 			}

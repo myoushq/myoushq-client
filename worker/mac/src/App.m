@@ -2,6 +2,7 @@
 #import "Status.h"
 #import "Icon.h"
 #import "Runtime.h"
+#import "Agents.h"
 #import <CoreImage/CoreImage.h>
 #import <UserNotifications/UserNotifications.h>
 #import <ServiceManagement/ServiceManagement.h>
@@ -12,6 +13,8 @@ static const CGFloat kWidth = 560;
 static const CGFloat kInner = kWidth - 40;
 static const NSUInteger kRequestRows = 200;
 static const double kInviteSeconds = 900;
+static const CGFloat kSidebar = 150;
+static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads of the local agents
 
 @interface AppDelegate () <NSMenuDelegate, NSTableViewDataSource, NSTableViewDelegate, NSWindowDelegate, UNUserNotificationCenterDelegate>
 // model
@@ -31,6 +34,11 @@ static const double kInviteSeconds = 900;
 @property (nonatomic, strong) NSTask *direct;         // the `myous worker` child in direct mode
 @property (nonatomic, strong) NSMutableSet *notified;
 @property (nonatomic, copy) NSString *fake;
+// agents on this Mac (Agents.h): read every kAgentsEvery ticks, shown next to the worker
+@property (nonatomic, strong) NSArray<LocalAgent *> *agents;
+@property (nonatomic, strong) LocalAgent *selectedAgent;   // nil: the worker is selected
+@property (nonatomic) BOOL agentsBusy;
+@property (nonatomic, strong) NSArray<NSDictionary *> *sidebarRows;
 // ui
 @property (nonatomic, strong) NSStatusItem *statusItem;
 @property (nonatomic, strong) NSWindow *window;
@@ -61,7 +69,17 @@ static const double kInviteSeconds = 900;
 @property (nonatomic, strong) NSButton *settingsDock, *settingsLogin, *settingsNotify, *settingsUpdate;
 @property (nonatomic, strong) NSPopUpButton *settingsReview;
 @property (nonatomic, strong) NSTimer *timer;
-@property (nonatomic) CGFloat lastHeight;
+@property (nonatomic) CGFloat lastHeight, lastWidth;
+@property (nonatomic, strong) NSTableView *sidebar;
+@property (nonatomic, strong) NSScrollView *sidebarScroll;
+@property (nonatomic, strong) NSBox *agentCard;
+@property (nonatomic, strong) NSTextField *agentFacts, *agentPending, *agentNote;
+@property (nonatomic, strong) NSTableView *agentContacts;
+@property (nonatomic, strong) NSPopUpButton *pairWhich;
+@property (nonatomic, strong) NSStackView *pairWhichRow, *pairLocalRow;
+@property (nonatomic, strong) NSArray<NSView *> *pairMessageViews;
+@property (nonatomic, strong) NSButton *pairLocalButton, *settingsAgents;
+@property (nonatomic, strong) NSTextField *pairLocalNote;
 @end
 
 @implementation AppDelegate
@@ -88,14 +106,25 @@ static const double kInviteSeconds = 900;
         // the view cache and, next to it, a PDF (text renders there on Macs
         // where the bitmap cache drops it).
         __weak typeof(self) weak = self;
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        __block int waited = 0;
+        __block __weak void (^weakShoot)(void);
+        void (^shoot)(void);
+        weakShoot = shoot = ^{
+            if (weak.agentsBusy && waited++ < 10) {   // the local agents answer in the background
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), weakShoot);
+                return;
+            }
+            // MYOUS_SNAPSHOT_AGENT=1: show the first local agent's card instead of the worker.
+            if ([[NSProcessInfo processInfo] environment][@"MYOUS_SNAPSHOT_AGENT"] && weak.agents.count) weak.selectedAgent = weak.agents.firstObject;
+            [weak refresh];
             NSView *v = weak.window.contentView;
             NSBitmapImageRep *rep = [v bitmapImageRepForCachingDisplayInRect:v.bounds];
             [v cacheDisplayInRect:v.bounds toBitmapImageRep:rep];
             [[rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:weak.snapshotPath atomically:YES];
             [[v dataWithPDFInsideRect:v.bounds] writeToFile:[[weak.snapshotPath stringByDeletingPathExtension] stringByAppendingPathExtension:@"pdf"] atomically:YES];
             [NSApp terminate:nil];
-        });
+        };
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), shoot);
     }
 }
 
@@ -221,6 +250,12 @@ static const double kInviteSeconds = 900;
         NSMenuItem *p = [menu addItemWithTitle:[NSString stringWithFormat:@"   paired with %@", pairedWith] action:nil keyEquivalent:@""];
         p.enabled = NO;
     }
+    for (LocalAgent *a in self.agents) {
+        NSString *what = a.error ? @"not readable" : [NSString stringWithFormat:@"%lu contact%@", (unsigned long)a.contacts.count, a.contacts.count == 1 ? @"" : @"s"];
+        NSMenuItem *m = [menu addItemWithTitle:[NSString stringWithFormat:@"%@ · %@", a.displayName, what] action:@selector(selectAgentFromMenu:) keyEquivalent:@""];
+        m.representedObject = a.home;
+        m.image = agentIcon();
+    }
     [menu addItem:[NSMenuItem separatorItem]];
     BOOL running = self.screen == ScreenRunning || self.screen == ScreenPair || self.screen == ScreenPaired;
     if (running) {
@@ -255,6 +290,8 @@ static const double kInviteSeconds = 900;
         [sub addItemWithTitle:@"Show container log" action:@selector(containerLog) keyEquivalent:@""];
         [sub addItemWithTitle:@"Open worker folder" action:@selector(openHome) keyEquivalent:@""];
         [sub addItemWithTitle:@"Remove stale containers" action:@selector(removeContainers) keyEquivalent:@""];
+        [sub addItem:[NSMenuItem separatorItem]];
+        [sub addItemWithTitle:@"Add an agent's folder…" action:@selector(addAgentHome) keyEquivalent:@""];
         adv.submenu = sub;
     }
     [menu addItem:[NSMenuItem separatorItem]];
@@ -300,18 +337,85 @@ static const double kInviteSeconds = 900;
     [self buildBrowserCard];
     [self buildStoppedCard];
 
+    [self buildAgentCard];
+    [self buildSidebar];
+
     self.root = [self column:@[headRow, self.headFacts, bannerRow, self.setupCard, self.runtimeCard, self.startingCard, self.pairCard,
-                               self.pairedCard, self.stoppedCard, self.requestsCard, self.browserCard]];
+                               self.pairedCard, self.stoppedCard, self.requestsCard, self.browserCard, self.agentCard]];
     self.root.spacing = 12;
     self.root.edgeInsets = NSEdgeInsetsMake(16, 20, 20, 20);
-    self.root.translatesAutoresizingMaskIntoConstraints = NO;
+    // The list of identities on the left appears once there is more than one (On this Mac).
+    NSStackView *shell = [self row:@[self.sidebarScroll, self.root]];
+    shell.alignment = NSLayoutAttributeTop;
+    shell.spacing = 0;
+    shell.translatesAutoresizingMaskIntoConstraints = NO;
     NSView *content = self.window.contentView;
-    [content addSubview:self.root];
+    [content addSubview:shell];
     [NSLayoutConstraint activateConstraints:@[
-        [self.root.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],
-        [self.root.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
-        [self.root.topAnchor constraintEqualToAnchor:content.topAnchor],
+        [shell.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],
+        [shell.topAnchor constraintEqualToAnchor:content.topAnchor],
+        [self.sidebarScroll.heightAnchor constraintEqualToAnchor:self.root.heightAnchor],
     ]];
+}
+
+- (void)buildSidebar {
+    self.sidebar = [NSTableView new];
+    NSTableColumn *col = [[NSTableColumn alloc] initWithIdentifier:@"row"];
+    col.width = kSidebar - 20;
+    [self.sidebar addTableColumn:col];
+    self.sidebar.dataSource = self;
+    self.sidebar.delegate = self;
+    self.sidebar.headerView = nil;
+    self.sidebar.rowHeight = 24;
+    self.sidebar.style = NSTableViewStyleSourceList;
+    self.sidebar.backgroundColor = [NSColor clearColor];
+    self.sidebarScroll = [NSScrollView new];
+    self.sidebarScroll.documentView = self.sidebar;
+    self.sidebarScroll.hasVerticalScroller = YES;
+    self.sidebarScroll.drawsBackground = YES;
+    self.sidebarScroll.backgroundColor = [NSColor windowBackgroundColor];
+    self.sidebarScroll.borderType = NSNoBorder;
+    self.sidebarScroll.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.sidebarScroll.widthAnchor constraintEqualToConstant:kSidebar].active = YES;
+    self.sidebarScroll.hidden = YES;
+}
+
+/// A local agent's card: read-only facts and contacts from its client's
+/// status, and the one thing the owner can do for it: accept a code.
+- (void)buildAgentCard {
+    self.agentFacts = [self wrap:@""];
+    self.agentFacts.textColor = [NSColor secondaryLabelColor];
+    self.agentContacts = [NSTableView new];
+    NSArray *cols = @[@[@"name", @140], @[@"relationship", @90], @[@"paired", @90], @[@"via", @110]];
+    for (NSArray *c in cols) {
+        NSTableColumn *col = [[NSTableColumn alloc] initWithIdentifier:c[0]];
+        col.width = [c[1] doubleValue];
+        [self.agentContacts addTableColumn:col];
+    }
+    self.agentContacts.dataSource = self;
+    self.agentContacts.delegate = self;
+    self.agentContacts.rowHeight = 20;
+    self.agentContacts.headerView = nil;
+    self.agentContacts.usesAlternatingRowBackgroundColors = YES;
+    NSScrollView *scroll = [NSScrollView new];
+    scroll.documentView = self.agentContacts;
+    scroll.hasVerticalScroller = YES;
+    scroll.borderType = NSBezelBorder;
+    scroll.translatesAutoresizingMaskIntoConstraints = NO;
+    [scroll.heightAnchor constraintEqualToConstant:120].active = YES;
+    [scroll.widthAnchor constraintEqualToConstant:kInner - 28].active = YES;
+    self.agentPending = [self wrap:@""];
+    self.agentNote = [self wrap:@""];
+    self.agentNote.textColor = [NSColor secondaryLabelColor];
+    NSTextField *hint = [self wrap:@"The agent manages itself; this is what its client reports. A pairing you make here is marked as added by you, so the agent knows it came from you."];
+    hint.font = [NSFont systemFontOfSize:11];
+    hint.textColor = [NSColor tertiaryLabelColor];
+    NSButton *pair = [self button:@"Pair with code…" action:@selector(pairAgentWithCode)];
+    NSButton *reload = [self button:@"Refresh" action:@selector(readAgentsNow)];
+    NSStackView *col = [self column:@[self.agentFacts, [self label:@"Contacts" size:12 weight:NSFontWeightSemibold], scroll,
+                                      self.agentPending, self.agentNote, hint, [self buttons:@[reload, pair]]]];
+    self.agentCard = [self card:@"" content:col];
+    self.agentCard.hidden = YES;
 }
 
 - (void)buildSetupCard {
@@ -394,8 +498,153 @@ static const double kInviteSeconds = 900;
     NSButton *newCode = [self button:@"New code" action:@selector(newCode)];
     self.pairWait = [self label:@"Waiting for your agent… (it accepts in about a minute)" size:12 weight:NSFontWeightRegular];
     self.pairWait.textColor = [NSColor secondaryLabelColor];
-    NSStackView *col = [self column:@[t, msgBox, [self buttons:@[copy, qr]], [self row:@[self.pairCode, self.pairBar, newCode]], self.pairWait]];
+    // "Which agent?" appears when an agent lives on this Mac: the app can
+    // let it accept the code, so the owner types nothing.
+    self.pairWhich = [NSPopUpButton new];
+    self.pairWhich.target = self;
+    self.pairWhich.action = @selector(pairWhichChanged);
+    self.pairWhichRow = [self row:@[[self label:@"Which agent?" size:13 weight:NSFontWeightRegular], self.pairWhich]];
+    self.pairWhichRow.hidden = YES;
+    self.pairLocalButton = [self button:@"" action:@selector(acceptAsLocalAgent)];
+    self.pairLocalNote = [self wrap:@""];
+    self.pairLocalNote.textColor = [NSColor secondaryLabelColor];
+    self.pairLocalRow = [self column:@[self.pairLocalButton, self.pairLocalNote]];
+    self.pairLocalRow.hidden = YES;
+    NSStackView *buttonsRow = [self buttons:@[copy, qr]];
+    self.pairMessageViews = @[t, msgBox, buttonsRow];
+    NSStackView *col = [self column:@[self.pairWhichRow, t, msgBox, buttonsRow, self.pairLocalRow, [self row:@[self.pairCode, self.pairBar, newCode]], self.pairWait]];
     self.pairCard = [self card:@"Pair with your agent" content:col];
+}
+
+- (void)pairWhichChanged {
+    BOOL local = self.pairWhich.indexOfSelectedItem > 0 && !self.pairWhichRow.hidden;
+    for (NSView *v in self.pairMessageViews) v.hidden = local;
+    self.pairLocalRow.hidden = !local;
+    if (local) {
+        LocalAgent *a = self.agents[MIN(self.agents.count - 1, (NSUInteger)self.pairWhich.indexOfSelectedItem - 1)];
+        self.pairLocalButton.title = [NSString stringWithFormat:@"Let %@ accept the code", a.displayName];
+        if (!self.pairLocalNote.stringValue.length)
+            self.pairLocalNote.stringValue = [NSString stringWithFormat:@"%@ pairs with this worker as its owner's own worker; the contact is marked as added by you.", a.displayName];
+    }
+    [self fitWindow];
+}
+
+- (void)acceptAsLocalAgent {
+    NSInteger i = self.pairWhich.indexOfSelectedItem - 1;
+    if (i < 0 || (NSUInteger)i >= self.agents.count) return;
+    LocalAgent *a = self.agents[i];
+    NSString *code = str(dict(self.status.status[@"invite"])[@"code"]);
+    if (!code) return;
+    self.pairLocalButton.enabled = NO;
+    self.pairLocalNote.stringValue = [NSString stringWithFormat:@"Asking %@ to accept the code…", a.displayName];
+    [self append:[NSString stringWithFormat:@"%@ accepts %@ as %@", a.binary, code, a.displayName]];
+    __weak typeof(self) weak = self;
+    [Agents run:@[@"accept", code, @"--wait", @"90", @"--relationship", @"other", @"--sharing", @"my own worker; run commands there for me", @"--added-by", @"owner"]
+             as:a done:^(int status, NSString *output) {
+        weak.pairLocalButton.enabled = YES;
+        [weak append:output];
+        weak.pairLocalNote.stringValue = status == 0
+            ? [NSString stringWithFormat:@"%@ accepted. The worker confirms in a few seconds.", a.displayName]
+            : [NSString stringWithFormat:@"%@ couldn't accept: %@", a.displayName, [output componentsSeparatedByString:@"\n"].lastObject ?: @"see the log"];
+        [weak readAgentsNow];
+    }];
+}
+
+#pragma mark - agents on this Mac
+
+- (void)readAgentsNow { self.agents = nil; [self refresh]; }
+
+/// Ask every local client for its status, in the background.
+- (void)readAgents {
+    if (self.agentsBusy) return;
+    self.agentsBusy = YES;
+    __weak typeof(self) weak = self;
+    [Agents read:[Agents homes:self.config.agentHomes] done:^(NSArray<LocalAgent *> *agents) {
+        weak.agentsBusy = NO;
+        weak.agents = agents;
+        if (weak.selectedAgent) {
+            LocalAgent *same = nil;
+            for (LocalAgent *a in agents) if ([a.home isEqualToString:weak.selectedAgent.home]) same = a;
+            weak.selectedAgent = same;
+        }
+        [weak refresh];
+    }];
+}
+
+- (void)fillAgent {
+    LocalAgent *a = self.selectedAgent;
+    self.agentCard.title = a.error ? @"Agent" : [NSString stringWithFormat:@"%@'s contacts and pairings", a.displayName];
+    if (a.error) {
+        self.agentFacts.stringValue = [NSString stringWithFormat:@"%@\n%@", a.home, a.error];
+        self.agentFacts.textColor = [NSColor systemRedColor];
+    } else {
+        NSMutableArray *facts = [NSMutableArray arrayWithObject:a.shortNpub];
+        if (a.version) [facts addObject:[NSString stringWithFormat:@"%@ client %@", a.client ?: @"myous", a.version]];
+        if (a.lastUsed) [facts addObject:[NSString stringWithFormat:@"last used %@", timeAgo(a.lastUsed)]];
+        if (a.unread) [facts addObject:[NSString stringWithFormat:@"%ld unread", (long)a.unread]];
+        self.agentFacts.stringValue = [NSString stringWithFormat:@"%@\n%@", [facts componentsJoinedByString:@"   ·   "], a.home];
+        self.agentFacts.textColor = [NSColor secondaryLabelColor];
+    }
+    self.agentPending.stringValue = a.pending.count
+        ? [@"Pairing in progress: " stringByAppendingString:[a.pending componentsJoinedByString:@"; "]]
+        : @"No pairing in progress.";
+    [self.agentContacts reloadData];
+}
+
+- (void)pairAgentWithCode {
+    LocalAgent *a = self.selectedAgent;
+    if (!a || a.error) return;
+    NSAlert *alert = [NSAlert new];
+    alert.messageText = [NSString stringWithFormat:@"Pair %@ with a code", a.displayName];
+    alert.informativeText = @"Paste the link or code another agent's owner gave you. The agent accepts it on your behalf and the contact is marked as added by you.";
+    NSTextField *field = [NSTextField textFieldWithString:@""];
+    field.placeholderString = @"4821-K7F3QX or https://myoushq.com/p/…";
+    field.frame = NSMakeRect(0, 0, 300, 24);
+    alert.accessoryView = field;
+    [alert addButtonWithTitle:@"Pair"];
+    [alert addButtonWithTitle:@"Cancel"];
+    alert.window.initialFirstResponder = field;
+    if ([alert runModal] != NSAlertFirstButtonReturn) return;
+    NSString *code = [field.stringValue stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (!code.length) return;
+    self.agentNote.stringValue = [NSString stringWithFormat:@"Asking %@ to accept…", a.displayName];
+    [self append:[NSString stringWithFormat:@"%@ accepts %@ as %@", a.binary, code, a.displayName]];
+    __weak typeof(self) weak = self;
+    [Agents run:@[@"accept", code, @"--wait", @"90", @"--added-by", @"owner"] as:a done:^(int status, NSString *output) {
+        [weak append:output];
+        weak.agentNote.stringValue = status == 0
+            ? [NSString stringWithFormat:@"%@ accepted. Tell it how you know the new contact (it will ask).", a.displayName]
+            : [NSString stringWithFormat:@"%@ couldn't accept: %@", a.displayName, [output componentsSeparatedByString:@"\n"].lastObject ?: @"see the log"];
+        [weak readAgentsNow];
+    }];
+}
+
+- (void)selectAgentFromMenu:(NSMenuItem *)item {
+    for (LocalAgent *a in self.agents) if ([a.home isEqualToString:item.representedObject]) self.selectedAgent = a;
+    [self refresh];
+    [self showWindow];
+}
+
+- (void)addAgentHome {
+    NSOpenPanel *panel = [NSOpenPanel openPanel];
+    panel.canChooseDirectories = YES;
+    panel.canChooseFiles = NO;
+    panel.showsHiddenFiles = YES;
+    panel.message = @"Choose an agent's myous folder (the one with its key file).";
+    panel.directoryURL = [NSURL fileURLWithPath:NSHomeDirectory()];
+    if ([panel runModal] != NSModalResponseOK) return;
+    NSString *home = panel.URL.path;
+    if (![[NSFileManager defaultManager] fileExistsAtPath:[home stringByAppendingPathComponent:@"key"]]) {
+        NSAlert *alert = [NSAlert new];
+        alert.messageText = @"No key file there";
+        alert.informativeText = @"An agent's folder holds a file named key. This one doesn't.";
+        [alert runModal];
+        return;
+    }
+    self.config.agentHomes = [(self.config.agentHomes ?: @[]) arrayByAddingObject:home];
+    self.config.showAgents = YES;
+    [self.config write];
+    [self readAgentsNow];
 }
 
 - (void)buildPairedCard {
@@ -478,10 +727,12 @@ static const double kInviteSeconds = 900;
 - (void)fitWindow {
     [self.root layoutSubtreeIfNeeded];
     CGFloat h = self.root.fittingSize.height;
-    if (fabs(h - self.lastHeight) < 1) return;
+    CGFloat w = kWidth + (self.sidebarScroll.hidden ? 0 : kSidebar);
+    if (fabs(h - self.lastHeight) < 1 && fabs(w - self.lastWidth) < 1) return;
     self.lastHeight = h;
+    self.lastWidth = w;
     NSRect frame = self.window.frame;
-    NSRect content = [self.window frameRectForContentRect:NSMakeRect(0, 0, kWidth, h)];
+    NSRect content = [self.window frameRectForContentRect:NSMakeRect(0, 0, w, h)];
     frame.origin.y += frame.size.height - content.size.height;
     frame.size = content.size;
     [self.window setFrame:frame display:YES animate:NO];
@@ -529,6 +780,8 @@ static const double kInviteSeconds = 900;
     if (self.fake) [self applyFake]; else {
         self.status = [StatusFile read];
         if (++self.ticks % 5 == 0 && [self.config usesDocker]) [self probeRuntimeAsync];
+        if (self.config.showAgents && (self.agents == nil || self.ticks % kAgentsEvery == 0)) [self readAgents];
+        if (!self.config.showAgents) { self.agents = @[]; self.selectedAgent = nil; }
     }
     [self loadRequestsIfChanged];
     if (!self.fake) self.approvals = loadApprovals();
@@ -627,6 +880,35 @@ static const double kInviteSeconds = 900;
     }
     if (!self.requestsCard.hidden) [self fillRequests];
     [self fillApproval];
+    [self fillSidebar];
+    if (self.selectedAgent) {
+        // An agent's card replaces the worker's step; the header describes the agent.
+        for (NSBox *c in @[self.setupCard, self.runtimeCard, self.startingCard, self.pairCard, self.pairedCard, self.stoppedCard, self.requestsCard, self.browserCard]) c.hidden = YES;
+        self.agentCard.hidden = NO;
+        [self fillAgent];
+        LocalAgent *a = self.selectedAgent;
+        NSMutableAttributedString *t = [[NSMutableAttributedString alloc] initWithString:[NSString stringWithFormat:@"○ %@ · agent on this Mac", a.displayName]];
+        [t addAttribute:NSFontAttributeName value:self.headTitle.font range:NSMakeRange(0, t.length)];
+        self.headTitle.attributedStringValue = t;
+        self.headRight.stringValue = a.error ? @"" : [NSString stringWithFormat:@"%lu contact%@", (unsigned long)a.contacts.count, a.contacts.count == 1 ? @"" : @"s"];
+        self.headFacts.hidden = YES;
+    } else {
+        self.agentCard.hidden = YES;
+    }
+    // Pairing: offer the local agents as the other side.
+    if (!self.pairCard.hidden) {
+        NSMutableArray *titles = [NSMutableArray arrayWithObject:@"Another agent (paste the message)"];
+        for (LocalAgent *a in self.agents) if (!a.error) [titles addObject:[NSString stringWithFormat:@"%@ on this Mac", a.displayName]];
+        if (![[self.pairWhich.itemTitles valueForKey:@"description"] isEqualToArray:titles]) {
+            NSInteger keep = self.pairWhich.indexOfSelectedItem;
+            [self.pairWhich removeAllItems];
+            [self.pairWhich addItemsWithTitles:titles];
+            if (keep > 0 && keep < (NSInteger)titles.count) [self.pairWhich selectItemAtIndex:keep];
+        }
+        self.pairWhichRow.hidden = titles.count < 2;
+        if ([self.fake isEqualToString:@"pairlocal"] && titles.count > 1) [self.pairWhich selectItemAtIndex:1];
+        [self pairWhichChanged];
+    }
     if (self.approvals.count && self.requestsCard.hidden && (screen == ScreenPair)) { /* a question while unpaired can't happen */ }
     if (screen == ScreenPaired || screen == ScreenRunning) [self notifyPaired:paired];
     [self notifyRefusals];
@@ -634,6 +916,28 @@ static const double kInviteSeconds = 900;
     self.statusItem.button.image = statusIcon([self stateColor], [self requestInProgress]);
     [self updateBadge];
     [self fitWindow];
+}
+
+/// On this Mac: the worker and the local agents, shown once there are two.
+- (void)fillSidebar {
+    NSMutableArray *rows = [NSMutableArray new];
+    NSString *name = self.config.name ?: @"Worker";
+    [rows addObject:@{@"kind": @"group", @"title": @"WORKERS"}];
+    [rows addObject:@{@"kind": @"worker", @"title": name}];
+    if (self.agents.count) {
+        [rows addObject:@{@"kind": @"group", @"title": @"AGENTS"}];
+        for (LocalAgent *a in self.agents) [rows addObject:@{@"kind": @"agent", @"title": a.displayName, @"home": a.home}];
+    }
+    BOOL show = self.agents.count > 0;
+    if (!show) self.selectedAgent = nil;
+    if (![rows isEqualToArray:self.sidebarRows]) {
+        self.sidebarRows = rows;
+        [self.sidebar reloadData];
+    }
+    NSInteger want = 1;
+    for (NSUInteger i = 0; i < rows.count; i++) if (self.selectedAgent && [rows[i][@"home"] isEqualToString:self.selectedAgent.home]) want = i;
+    if (self.sidebar.selectedRow != want) [self.sidebar selectRowIndexes:[NSIndexSet indexSetWithIndex:want] byExtendingSelection:NO];
+    self.sidebarScroll.hidden = !show;
 }
 
 - (void)fillSetup {
@@ -798,6 +1102,30 @@ static const double kInviteSeconds = 900;
     else if ([f isEqualToString:@"paused"]) { s[@"phase"] = @"paused"; }
     else if ([f isEqualToString:@"approval"]) { self.approvals = @[@{@"id": @"q1", @"op": @"exec", @"alias": @"Max's Muse", @"cmd": @"rm -rf /work/old", @"asked_at": @(now - 20), @"wait": @120}]; }
     else if ([f isEqualToString:@"stopped"]) { st.modified = [NSDate dateWithTimeIntervalSinceNow:-3600]; }
+    else if ([f isEqualToString:@"agents"] || [f isEqualToString:@"agent"] || [f isEqualToString:@"pairlocal"]) {
+        if (!self.agents.count) {
+            LocalAgent *a = [LocalAgent new];
+            a.home = [NSHomeDirectory() stringByAppendingPathComponent:@".myous"];
+            a.binary = [a.home stringByAppendingPathComponent:@"venv/bin/myous"];
+            a.alias = @"Claude Code"; a.npub = @"npub1q7w9k2m4x8e6r3t5y7u9i1o3p5a7s9d1f3g5h7j9k1l3z5x7c9v1b3n5m7x4f";
+            a.client = @"python"; a.version = appVersion(); a.lastUsed = now - 180; a.unread = 1;
+            a.contacts = @[@{@"alias": @"Max's Muse", @"npub": @"npub1muse", @"status": @"approved", @"relationship": @"colleague", @"paired_at": @(now - 86400 * 2)},
+                           @{@"alias": @"Max's Mac", @"npub": @"npub1mac", @"status": @"approved", @"relationship": @"other", @"added_by": @"owner", @"paired_at": @(now - 3600)}];
+            a.pending = @[];
+            LocalAgent *b = [LocalAgent new];
+            b.home = [NSHomeDirectory() stringByAppendingPathComponent:@".myous-codex"];
+            b.binary = @"/usr/local/bin/myous";
+            b.alias = @"Codex"; b.npub = @"npub1codex000000000000000000000000000000000000000000000000000q2p"; b.client = @"go"; b.version = appVersion();
+            b.contacts = @[]; b.pending = @[@"4821: waiting for the other agent to join, expires in 11 min"]; b.lastUsed = now - 86400 * 3;
+            self.agents = @[a, b];
+        }
+        if ([f isEqualToString:@"agent"]) self.selectedAgent = self.agents.firstObject;
+        if ([f isEqualToString:@"pairlocal"]) {
+            s[@"contacts"] = @0; [s removeObjectForKey:@"paired"];
+            s[@"invite"] = @{@"code": @"4821-K7F3QX", @"link": @"https://myoushq.com/p/4821#K7F3QX", @"expires_at": @(now + 702)};
+            if (self.pairWhich.numberOfItems > 1) [self.pairWhich selectItemAtIndex:1];
+        }
+    }
     st.status = s;
     self.status = st;
     if (!self.requests) {
@@ -814,9 +1142,71 @@ static const double kInviteSeconds = 900;
 
 #pragma mark - requests table
 
-- (NSInteger)numberOfRowsInTableView:(NSTableView *)tableView { return self.requests.count; }
+- (NSInteger)numberOfRowsInTableView:(NSTableView *)tableView {
+    if (tableView == self.sidebar) return self.sidebarRows.count;
+    if (tableView == self.agentContacts) return self.selectedAgent.contacts.count;
+    return self.requests.count;
+}
+
+- (BOOL)tableView:(NSTableView *)tv isGroupRow:(NSInteger)row {
+    return tv == self.sidebar && [self.sidebarRows[row][@"kind"] isEqualToString:@"group"];
+}
+
+- (BOOL)tableView:(NSTableView *)tv shouldSelectRow:(NSInteger)row {
+    return tv != self.sidebar || ![self.sidebarRows[row][@"kind"] isEqualToString:@"group"];
+}
+
+- (void)tableViewSelectionDidChange:(NSNotification *)n {
+    if (n.object != self.sidebar || self.sidebar.selectedRow < 0) return;
+    NSDictionary *r = self.sidebarRows[self.sidebar.selectedRow];
+    LocalAgent *pick = nil;
+    for (LocalAgent *a in self.agents) if ([a.home isEqualToString:r[@"home"]]) pick = a;
+    if (pick != self.selectedAgent) { self.selectedAgent = pick; [self refresh]; }
+}
+
+- (NSView *)sidebarCell:(NSInteger)row {
+    NSDictionary *r = self.sidebarRows[row];
+    BOOL group = [r[@"kind"] isEqualToString:@"group"];
+    NSTextField *cell = [self.sidebar makeViewWithIdentifier:group ? @"group" : @"item" owner:self];
+    if (!cell) {
+        cell = [NSTextField labelWithString:@""];
+        cell.identifier = group ? @"group" : @"item";
+        cell.font = group ? [NSFont systemFontOfSize:11 weight:NSFontWeightSemibold] : [NSFont systemFontOfSize:13];
+        cell.textColor = group ? [NSColor tertiaryLabelColor] : [NSColor labelColor];
+        cell.lineBreakMode = NSLineBreakByTruncatingTail;
+    }
+    NSString *prefix = group ? @"" : [r[@"kind"] isEqualToString:@"worker"] ? @"● " : @"○ ";
+    NSMutableAttributedString *t = [[NSMutableAttributedString alloc] initWithString:[prefix stringByAppendingString:r[@"title"]]];
+    [t addAttribute:NSFontAttributeName value:cell.font range:NSMakeRange(0, t.length)];
+    [t addAttribute:NSForegroundColorAttributeName value:cell.textColor range:NSMakeRange(0, t.length)];
+    if ([r[@"kind"] isEqualToString:@"worker"]) [t addAttribute:NSForegroundColorAttributeName value:[self stateColor] range:NSMakeRange(0, 1)];
+    cell.attributedStringValue = t;
+    return cell;
+}
+
+- (NSView *)contactCell:(NSTableColumn *)col row:(NSInteger)row {
+    NSDictionary *c = self.selectedAgent.contacts[row];
+    NSTextField *cell = [self.agentContacts makeViewWithIdentifier:col.identifier owner:self];
+    if (!cell) {
+        cell = [NSTextField labelWithString:@""];
+        cell.identifier = col.identifier;
+        cell.font = [NSFont systemFontOfSize:12];
+        cell.lineBreakMode = NSLineBreakByTruncatingTail;
+    }
+    NSString *id_ = col.identifier, *text = @"";
+    if ([id_ isEqualToString:@"name"]) text = str(c[@"alias"]) ?: str(c[@"npub"]) ?: @"";
+    else if ([id_ isEqualToString:@"relationship"]) text = [str(c[@"status"]) isEqualToString:@"blocked"] ? @"blocked" : str(c[@"relationship"]) ?: @"";
+    else if ([id_ isEqualToString:@"paired"]) text = num(c[@"paired_at"]) ? dayLabel(num(c[@"paired_at"]).doubleValue) : @"";
+    else text = [str(c[@"added_by"]) isEqualToString:@"owner"] ? @"paired by you" : str(c[@"added_by"]) ?: @"";
+    cell.stringValue = text;
+    cell.textColor = [id_ isEqualToString:@"name"] ? [NSColor labelColor] : [NSColor secondaryLabelColor];
+    cell.toolTip = str(c[@"sharing"]) ?: str(c[@"npub"]);
+    return cell;
+}
 
 - (NSView *)tableView:(NSTableView *)tv viewForTableColumn:(NSTableColumn *)col row:(NSInteger)row {
+    if (tv == self.sidebar) return [self sidebarCell:row];
+    if (tv == self.agentContacts) return [self contactCell:col row:row];
     NSDictionary *r = self.requests[row];
     NSString *id_ = col.identifier;
     NSTextField *cell = [tv makeViewWithIdentifier:id_ owner:self];
@@ -1255,12 +1645,13 @@ static const double kInviteSeconds = 900;
         self.settingsLogin = [NSButton checkboxWithTitle:@"Open myous at login" target:nil action:nil];
         self.settingsNotify = [NSButton checkboxWithTitle:@"Notify me when the worker pairs, refuses a request or stops" target:nil action:nil];
         self.settingsUpdate = [NSButton checkboxWithTitle:@"Check for a new version daily" target:nil action:nil];
+        self.settingsAgents = [NSButton checkboxWithTitle:@"Show the agents on this Mac (their myous folders)" target:nil action:nil];
         NSButton *save = [self button:@"Save" action:@selector(saveSettings)];
         save.keyEquivalent = @"\r";
         NSButton *cancel = [self button:@"Cancel" action:@selector(closeSettings)];
         NSStackView *col = [self column:@[[self row:@[[self label:@"Worker name" size:13 weight:NSFontWeightRegular], self.settingsName]], nameHint,
                                           [self label:@"Review" size:13 weight:NSFontWeightRegular], self.settingsReview, reviewHint,
-                                          self.settingsDock, self.settingsLogin, self.settingsNotify, self.settingsUpdate, [self row:@[cancel, save]]]];
+                                          self.settingsDock, self.settingsLogin, self.settingsNotify, self.settingsUpdate, self.settingsAgents, [self row:@[cancel, save]]]];
         col.edgeInsets = NSEdgeInsetsMake(16, 20, 16, 20);
         col.translatesAutoresizingMaskIntoConstraints = NO;
         [self.settingsWindow.contentView addSubview:col];
@@ -1276,6 +1667,7 @@ static const double kInviteSeconds = 900;
     self.settingsDock.state = self.config.dock ? NSControlStateValueOn : NSControlStateValueOff;
     self.settingsNotify.state = self.config.notifications ? NSControlStateValueOn : NSControlStateValueOff;
     self.settingsUpdate.state = self.config.autoUpdate ? NSControlStateValueOn : NSControlStateValueOff;
+    self.settingsAgents.state = self.config.showAgents ? NSControlStateValueOn : NSControlStateValueOff;
     if (@available(macOS 13.0, *)) {
         self.settingsLogin.state = SMAppService.mainAppService.status == SMAppServiceStatusEnabled ? NSControlStateValueOn : NSControlStateValueOff;
         self.settingsLogin.enabled = YES;
@@ -1294,6 +1686,9 @@ static const double kInviteSeconds = 900;
     self.config.dock = self.settingsDock.state == NSControlStateValueOn;
     self.config.notifications = self.settingsNotify.state == NSControlStateValueOn;
     self.config.autoUpdate = self.settingsUpdate.state == NSControlStateValueOn;
+    BOOL showAgents = self.settingsAgents.state == NSControlStateValueOn;
+    if (showAgents != self.config.showAgents) self.agents = nil;
+    self.config.showAgents = showAgents;
     [self.config write];
     NSString *level = @[@"trust", @"changes", @"all"][MAX(0, self.settingsReview.indexOfSelectedItem)];
     if (![level isEqualToString:reviewLevel()]) { setReviewLevel(level); [self append:[@"review level: " stringByAppendingString:level]]; }

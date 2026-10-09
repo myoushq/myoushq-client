@@ -12,6 +12,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
 
+use myous::contacts::ContactContext;
 use myous::{Agent, FileStorage, Outcome};
 use serde_json::Value;
 
@@ -96,12 +97,16 @@ async fn pair_and_message() {
     let bob = agent(tmp.path(), "bob", &hub.url).await;
 
     // Rust <-> Rust: bob joins with the link; alice finishes on her next poll.
-    let invite = alice.invite(Default::default()).await.unwrap();
+    let owner_made = ContactContext { added_by: Some("owner".into()), ..Default::default() };
+    let invite = alice.invite(owner_made).await.unwrap();
     assert_eq!(bob.accept(&invite.link, Duration::from_secs(1), Default::default()).await.unwrap(), Outcome::Waiting);
     let alice_new = alice.poll().await.unwrap();
     let bob_new = bob.poll().await.unwrap();
     assert_eq!(alice_new.last().unwrap()["type"], "paired");
     assert_eq!(bob_new.last().unwrap()["type"], "paired");
+    let by = |a: &Agent| a.contacts().unwrap().into_values().next().unwrap().added_by;
+    assert_eq!(by(&alice).as_deref(), Some("owner"), "recorded on the inviter's contact");
+    assert_eq!(by(&bob), None);
     // Same verification code on both sides.
     assert_eq!(alice_new.last().unwrap()["text"].as_str().unwrap().rsplit(' ').next(),
                bob_new.last().unwrap()["text"].as_str().unwrap().rsplit(' ').next());

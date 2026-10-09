@@ -9,7 +9,7 @@ import os
 import sys
 import time
 
-from myous import contacts, qr, vm
+from myous import __version__, contacts, qr, vm
 from myous.agent import Agent, IdentityError, WorkerError
 from myous.files import BlobError
 from myous.hub import DEFAULT_HUB, HubError
@@ -23,6 +23,9 @@ def cmd_init(agent: Agent, st: FileStorage, args) -> None:
     if not alias:
         sys.exit("give this agent a friendly name: myous init --alias NAME")
     created = not agent.has_identity()
+    stored = st.get("settings", {}).get("alias")
+    if not created and stored and stored != alias and not args.rename:
+        sys.exit(f"this directory belongs to {stored}; use another MYOUS_HOME, or pass --rename if this is the same agent")
     if created:
         agent.create_identity()
     if not agent.is_registered():
@@ -34,7 +37,7 @@ def cmd_init(agent: Agent, st: FileStorage, args) -> None:
 
 
 def cmd_invite(agent: Agent, st: FileStorage, args) -> None:
-    inv = agent.invite(args.relationship, args.sharing)
+    inv = agent.invite(args.relationship, args.sharing, args.added_by)
     svg = args.qr_out or str(st.path(f"invite-{inv['nameplate']}.svg"))
     try:
         qr.write_svg(inv["link"], svg)
@@ -67,7 +70,7 @@ def cmd_accept(agent: Agent, st: FileStorage, args) -> None:
     code = args.code
     if os.path.isfile(code):
         code = qr.read_image(code)
-    r = agent.accept(code, wait=args.wait, relationship=args.relationship, sharing=args.sharing)
+    r = agent.accept(code, wait=args.wait, relationship=args.relationship, sharing=args.sharing, added_by=args.added_by)
     if r["stage"] not in ("done", "failed", "elsewhere"):
         print("the other agent hasn't answered yet; it finishes the next time this agent polls "
               "or listens (result in `myous inbox`)")
@@ -236,11 +239,11 @@ def cmd_contacts(agent: Agent, st: FileStorage, args) -> None:
     if not all_contacts:
         print("no contacts yet; pair with `myous invite` or `myous accept`")
     for c in all_contacts.values():
-        print(f"{c['alias']:<20} {c['status']:<9} {c.get('relationship') or '-':<10} {c['npub']}")
+        print(f"{c['alias']:<20} {c['status']:<9} {c.get('relationship') or '-':<10} {c.get('added_by') or '-':<7} {c['npub']}")
 
 
 def cmd_context(agent: Agent, st: FileStorage, args) -> None:
-    c = agent.set_context(args.name, args.relationship, args.sharing)
+    c = agent.set_context(args.name, args.relationship, args.sharing, args.added_by)
     if args.json:
         print(json.dumps({"alias": c["alias"], "relationship": c.get("relationship"), "sharing": c.get("sharing")}))
         return
@@ -332,17 +335,23 @@ def cmd_hook_script(agent: Agent, st: FileStorage, args) -> None:
 
 
 def cmd_status(agent: Agent, st: FileStorage, args) -> None:
+    all_contacts = agent.contacts()
     info = {
         "data_dir": str(st.home),
+        "client": "python",
+        "version": __version__,
         "hub": agent.hub.url,
         "identity": agent.keys.public_key().to_bech32() if agent.has_identity() else None,
         "alias": st.get("settings", {}).get("alias"),
         "registered": agent.is_registered(),
-        "contacts": len(agent.contacts()),
+        "contacts": len(all_contacts),
+        "contact_list": [{k: c[k] for k in ("alias", "npub", "status", "paired_at", "relationship", "sharing", "added_by")
+                          if c.get(k) is not None} for c in all_contacts.values()],
         "pending_pairings": _pending_summary(agent) if agent.has_identity() else [],
         "listener_running": vm.listener_healthy(st),
         "hook": st.get("settings", {}).get("on_message"),
         "unread": len(agent.unread(mark_read=False)),
+        "last_used": st.last_used(),
     }
     if args.json:
         print(json.dumps(info, indent=2))
@@ -368,6 +377,7 @@ def _context_options(p: argparse.ArgumentParser) -> None:
     from myous.contacts import RELATIONSHIPS
     p.add_argument("--relationship", choices=RELATIONSHIPS, help="how your owner knows this contact")
     p.add_argument("--sharing", metavar="TEXT", help="your owner's guidance on what you may share with this contact")
+    p.add_argument("--added-by", metavar="WHO", help="who made this pairing, when not you: 'owner' (through the myous desktop app)")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -382,6 +392,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = add("init", cmd_init, "create this agent's identity (once) and register with the hub")
     p.add_argument("--alias", help="friendly name shown to peers")
     p.add_argument("--hub", help=f"hub URL (default {DEFAULT_HUB})")
+    p.add_argument("--rename", action="store_true", help="rename this agent (the directory belongs to another alias)")
 
     p = add("invite", cmd_invite, "start a pairing: get a QR code, link and code to share")
     p.add_argument("--qr-out", metavar="SVG", help="where to write the QR image")

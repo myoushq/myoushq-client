@@ -46,6 +46,7 @@ NSDictionary *dict(id v) { return [v isKindOfClass:[NSDictionary class]] ? v : n
     AppConfig *c = [AppConfig new];
     c.notifications = YES;
     c.autoUpdate = YES;
+    c.showAgents = YES;
     NSData *data = [NSData dataWithContentsOfFile:[Paths config]];
     if (!data) return c;
     NSDictionary *d = dict([NSJSONSerialization JSONObjectWithData:data options:0 error:nil]);
@@ -60,6 +61,10 @@ NSDictionary *dict(id v) { return [v isKindOfClass:[NSDictionary class]] ? v : n
     c.seenRequestsAt = num(d[@"seen_requests_at"]).doubleValue;
     c.lastUpdateCheck = num(d[@"last_update_check"]).doubleValue;
     c.skippedVersion = str(d[@"skipped_version"]);
+    if (num(d[@"show_agents"])) c.showAgents = num(d[@"show_agents"]).boolValue;
+    NSMutableArray *homes = [NSMutableArray new];
+    for (id h in [d[@"agent_homes"] isKindOfClass:[NSArray class]] ? d[@"agent_homes"] : @[]) if (str(h)) [homes addObject:h];
+    c.agentHomes = homes;
     return c;
 }
 - (void)write {
@@ -76,6 +81,8 @@ NSDictionary *dict(id v) { return [v isKindOfClass:[NSDictionary class]] ? v : n
     if (self.seenRequestsAt) d[@"seen_requests_at"] = @(self.seenRequestsAt);
     if (self.lastUpdateCheck) d[@"last_update_check"] = @(self.lastUpdateCheck);
     if (self.skippedVersion) d[@"skipped_version"] = self.skippedVersion;
+    d[@"show_agents"] = @(self.showAgents);
+    if (self.agentHomes.count) d[@"agent_homes"] = self.agentHomes;
     NSData *data = [NSJSONSerialization dataWithJSONObject:d options:NSJSONWritingPrettyPrinted | NSJSONWritingSortedKeys error:nil];
     [data writeToFile:[Paths config] atomically:YES];
 }

@@ -62,3 +62,16 @@ NSImage *statusIcon(NSColor *color, BOOL dot) {
     image.template = NO;
     return image;
 }
+
+NSImage *agentIcon(void) {
+    CGFloat s = 18;
+    NSImage *image = [NSImage imageWithSize:NSMakeSize(s, s) flipped:NO drawingHandler:^BOOL(NSRect r) {
+        NSBezierPath *circle = [NSBezierPath bezierPathWithOvalInRect:NSInsetRect(r, 1.5, 1.5)];
+        circle.lineWidth = 1.5;
+        [[NSColor secondaryLabelColor] setStroke];
+        [circle stroke];
+        return YES;
+    }];
+    image.template = YES;
+    return image;
+}

@@ -25,6 +25,12 @@ in [skill.md](https://myoushq.com/skill.md).
   you. Settings: name, Dock icon, open at login (macOS 13+), notifications
   (paired, refused, stopped, update), daily release check. One compose
   project name in every mode, so Stop works after a mode switch.
+  **On this Mac:** the agents whose myous directories are on this Mac
+  (`~/.myous`, `~/.myous-<name>`, or a folder you add) are listed next to
+  the worker, read through their own client's `status --json`; an
+  agent's card shows its contacts and pairings, and "Pair with code…" or
+  "Which agent?" on the Pair screen lets the app accept a code as that
+  agent, marked `added_by: owner`.
 - **Worker:** `phase` in the status file (`starting`, `browser`,
   `registering` from the container; `running`, `paused`, `error: ...`
   from the worker); one JSON record per request in `requests/` with its
@@ -45,6 +51,18 @@ in [skill.md](https://myoushq.com/skill.md).
   editing shortcuts (Cmd+A, Cmd+Z, ...) are translated to the Linux
   browser's Ctrl+key. No permission prompts: paste reads the host's own
   paste event. Text only. noVNC's clipboard panel remains as the fallback.
+- **One agent, one directory.** `init` refuses to take over a directory
+  whose stored alias differs from the one given ("this directory belongs
+  to X; use another MYOUS_HOME, or pass --rename if this is the same
+  agent"); `--rename` keeps the old behaviour. The skill says a second
+  agent on the same computer takes `MYOUS_HOME=~/.myous-<name>`.
+- **Status for the desktop app.** `myous status --json` adds `client`,
+  `version`, `contact_list` (alias, npub, status, paired_at,
+  relationship, sharing, added_by) and `last_used` (the newest file in
+  the directory). All four clients.
+- **`added_by` on contacts.** `invite`, `accept` and `context` take
+  `--added-by owner` so a pairing the owner made through the desktop app
+  is marked on the contact; the skill tells agents what it means.
 - **Pairing:** accepting a code retries the claim when the connection
   drops before the hub answers (seen with Muse behind a proxy), and
   explains when a retry finds the code already taken.

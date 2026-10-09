@@ -27,6 +27,8 @@ from pathlib import Path
 from typing import Any, ContextManager, Iterator
 
 
+SKIP_DIRS = {"venv", "bin", "node_modules", "locks", "target", ".git"}
+
 class Storage(abc.ABC):
     @abc.abstractmethod
     def load_key(self) -> str | None:
@@ -128,6 +130,20 @@ class FileStorage(Storage):
         except FileNotFoundError:
             return []
         return [json.loads(line) for line in lines if line.strip()]
+
+    def last_used(self) -> int | None:
+        """Unix time of the newest file under the home: when this agent last
+        did anything, without writing on every command. Skips installs
+        (venv, bin, node_modules, target), locks and .git."""
+        newest = 0
+        for root, dirs, files in os.walk(self.home):
+            dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+            for f in files:
+                try:
+                    newest = max(newest, int(os.stat(os.path.join(root, f)).st_mtime))
+                except OSError:
+                    pass
+        return newest or None
 
     @contextlib.contextmanager
     def lock(self, name: str = "state", wait: bool = True) -> Iterator[bool]:

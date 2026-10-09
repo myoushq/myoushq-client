@@ -123,3 +123,21 @@ test("blob store rules", { skip: !available && "no hub source or Go" }, async ()
   const stranger = new Blobs(new Uint8Array(32).fill(7), api);
   await assert.rejects(stranger.upload(enc.ciphertext), /403/);
 }, { timeout: 60_000 });
+
+test("a pairing records added_by on both contacts", { skip: !available && "no hub source or Go" }, async () => {
+  const inv = await alice.invite({ added_by: "owner" });
+  const accepting = bob.accept(inv.code, 30, { added_by: "owner", relationship: "friend" });
+  let done = [];
+  for (let i = 0; i < 150 && !done.length; i++) {
+    done = await alice.advancePairings();
+    if (!done.length) await new Promise((r) => setTimeout(r, 200));
+  }
+  assert.equal(done[0]?.stage, "done", JSON.stringify(done));
+  assert.equal((await accepting).stage, "done");
+  const mine = (await alice.contacts())[await bob.pubkey()];
+  assert.equal(mine.added_by, "owner");
+  assert.equal(mine.relationship, undefined);
+  const theirs = (await bob.contacts())[await alice.pubkey()];
+  assert.equal(theirs.added_by, "owner");
+  assert.equal(theirs.relationship, "friend");
+}, { timeout: 60_000 });

@@ -4,13 +4,14 @@
 
 import { writeFile } from "node:fs/promises";
 import { parseArgs } from "node:util";
-import { Agent, IdentityError } from "./agent.js";
+import { Agent, IdentityError, VERSION } from "./agent.js";
 import type { Pending } from "./pairing.js";
-import { FileStorage, type HistoryEntry } from "./storage.js";
+import { FileStorage, lastUsed, type HistoryEntry } from "./storage.js";
 
 const USAGE = `usage: myous <command> [options]
 
   init --alias NAME [--hub URL]     create the identity (once) and register
+       [--rename]                   rename this agent (init only)
   invite [--json]                   start a pairing: link, code and QR image
   accept CODE_OR_LINK [--wait S]    join a pairing
   send NAME TEXT... | send NAME -   send a message to a contact (- reads it from stdin)
@@ -24,7 +25,9 @@ const USAGE = `usage: myous <command> [options]
   context NAME [--relationship R] [--sharing TEXT] [--json]
                                     show or set how your owner knows a contact and what you
                                     may share (R: family, friend, colleague, business,
-                                    service, other); invite and accept take the same options
+                                    service, other); invite and accept take the same options,
+                                    plus --added-by WHO: who made the pairing when not you
+                                    ("owner": through the myous desktop app)
   block NAME | unblock NAME         drop / accept a contact's messages
   status                            identity, hub and contacts`;
 
@@ -37,7 +40,7 @@ async function main(): Promise<void> {
       alias: { type: "string" }, hub: { type: "string" }, json: { type: "boolean" },
       wait: { type: "string" }, peek: { type: "boolean" }, local: { type: "boolean" }, with: { type: "string" },
       "qr-out": { type: "string" }, relationship: { type: "string" }, sharing: { type: "string" },
-      to: { type: "string" }, latest: { type: "boolean" },
+      to: { type: "string" }, latest: { type: "boolean" }, rename: { type: "boolean" }, "added-by": { type: "string" },
     },
   });
   if (!command || command === "--help" || command === "-h") {
@@ -52,6 +55,7 @@ async function main(): Promise<void> {
       const settings = await st.get<Record<string, string>>("settings", {});
       const alias = opts.alias ?? settings.alias;
       if (!alias) fail("give this agent a friendly name: myous init --alias NAME");
+      await agent.checkHome(alias, opts.rename);
       const created = !(await agent.hasIdentity());
       if (created) await agent.createIdentity();
       if (!(await agent.isRegistered())) console.log(`registering with ${agent.hub.url} (proof of work, a few seconds)...`);
@@ -61,7 +65,7 @@ async function main(): Promise<void> {
       break;
     }
     case "invite": {
-      const inv = await agent.invite({ relationship: opts.relationship, sharing: opts.sharing });
+      const inv = await agent.invite({ relationship: opts.relationship, sharing: opts.sharing, added_by: opts["added-by"] });
       let svg: string | null = opts["qr-out"] ?? st.path(`invite-${inv.nameplate}.svg`);
       try {
         // Optional dependency. SVG works wherever images do and needs no image library.
@@ -80,7 +84,7 @@ async function main(): Promise<void> {
     }
     case "accept": {
       if (!args[0]) fail("give the pairing link or code");
-      report(await agent.accept(args[0], Number(opts.wait ?? 60), { relationship: opts.relationship, sharing: opts.sharing }));
+      report(await agent.accept(args[0], Number(opts.wait ?? 60), { relationship: opts.relationship, sharing: opts.sharing, added_by: opts["added-by"] }));
       break;
     }
     case "send": {
@@ -140,12 +144,12 @@ async function main(): Promise<void> {
     case "contacts": {
       const all = await agent.contacts();
       if (opts.json) console.log(JSON.stringify(all, null, 2));
-      else for (const c of Object.values(all)) console.log(`${c.alias.padEnd(20)} ${c.status.padEnd(9)} ${(c.relationship ?? "-").padEnd(10)} ${c.npub}`);
+      else for (const c of Object.values(all)) console.log(`${c.alias.padEnd(20)} ${c.status.padEnd(9)} ${(c.relationship ?? "-").padEnd(10)} ${(c.added_by ?? "-").padEnd(7)} ${c.npub}`);
       break;
     }
     case "context": {
-      if (!args[0]) fail("usage: myous context NAME [--relationship R] [--sharing TEXT]");
-      const c = await agent.setContext(args[0], { relationship: opts.relationship, sharing: opts.sharing });
+      if (!args[0]) fail("usage: myous context NAME [--relationship R] [--sharing TEXT] [--added-by WHO]");
+      const c = await agent.setContext(args[0], { relationship: opts.relationship, sharing: opts.sharing, added_by: opts["added-by"] });
       if (opts.json) console.log(JSON.stringify({ alias: c.alias, relationship: c.relationship ?? null, sharing: c.sharing ?? null }));
       else console.log(`${c.alias}: relationship ${c.relationship ?? "(not set)"}; may share: ${c.sharing ?? "(not set: share nothing personal)"}`);
       break;
@@ -158,12 +162,16 @@ async function main(): Promise<void> {
       break;
     case "status": {
       const has = await agent.hasIdentity();
+      const all = Object.values(await agent.contacts());
       console.log(JSON.stringify({
-        data_dir: st.home, hub: agent.hub.url, identity: has ? await agent.npub() : null,
+        data_dir: st.home, client: "typescript", version: VERSION, hub: agent.hub.url, identity: has ? await agent.npub() : null,
         alias: await agent.alias(), registered: await agent.isRegistered(),
-        contacts: Object.keys(await agent.contacts()).length,
+        contacts: all.length,
+        contact_list: all.map(({ alias, npub, status, paired_at, relationship, sharing, added_by }) =>
+          ({ alias, npub, status, paired_at, relationship, sharing, added_by })),
         pending_pairings: has ? (await (await agent.pairing()).pending()).map(describePending) : [],
         unread: (await agent.unread(false)).length,
+        last_used: await lastUsed(st.home),
       }, null, 2));
       break;
     }

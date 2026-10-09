@@ -47,6 +47,8 @@ extern const NSTimeInterval kStaleAfter;
 @property (nonatomic) double seenRequestsAt;  // requests before this are not "new"
 @property (nonatomic) double lastUpdateCheck;
 @property (nonatomic, copy) NSString *skippedVersion;   // "Later" on an update banner
+@property (nonatomic) BOOL showAgents;        // list the agents on this Mac (default YES)
+@property (nonatomic, strong) NSArray<NSString *> *agentHomes;   // folders the owner added beyond ~/.myous*
 + (instancetype)read;
 - (void)write;
 - (BOOL)isDirect;

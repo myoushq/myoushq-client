@@ -96,13 +96,26 @@ clears anything older. The mode and checkout path are in
   got and opens it connected and sized to the tab.
 - A red line at the top asks for the one thing that needs you: the
   runtime is gone, the worker stopped on its own, a release is available.
+- **On this Mac:** when an agent lives on this Mac (a myous client
+  directory `~/.myous` or `~/.myous-<name>` with a key, or a folder added
+  with "Add an agent's folder…" in the Advanced menu), a list appears on
+  the left with the worker and the agents. An agent's card shows what its
+  own client reports (`myous status --json`, run in its directory: npub,
+  client and version, last used, contacts with relationship and date,
+  pairings in progress) and "Pair with code…", which runs the client's
+  `accept` as that agent with `--added-by owner`. The Pair screen gains
+  "Which agent?": choosing a local agent lets it accept the worker's code
+  the same way. The app never reads the agent's files or holds its key.
+  Settings: "Show the agents on this Mac" (on by default).
 
 Checking the layout without a worker: `build/myous.app/Contents/MacOS/myous
 --snapshot /tmp/window.png` renders the window (a PDF next to it carries
 the text) and exits; `MYOUS_FAKE_STATE=setup|noruntime|stoppedruntime|
-starting|pair|paired|running|paused|stopped` shows each screen with
-made-up data, `MYOUS_WORKER_HOME=<dir>` points at another worker's home,
-and `MYOUS_DOCKER_BIN=/nonexistent` simulates a Mac without Docker.
+starting|pair|paired|running|paused|stopped|approval|agents|agent|pairlocal`
+shows each screen with made-up data, `MYOUS_WORKER_HOME=<dir>` points at
+another worker's home, `MYOUS_AGENT_HOMES=<dir>:<dir>` replaces the search
+for agents' directories (`MYOUS_SNAPSHOT_AGENT=1` shows the first one's
+card), and `MYOUS_DOCKER_BIN=/nonexistent` simulates a Mac without Docker.
 `--render-icon DIR` writes the icon PNGs (make-app.sh uses it; the icon
 is drawn in code, no image files in the repo).
 

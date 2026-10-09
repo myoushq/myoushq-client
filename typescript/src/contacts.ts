@@ -14,6 +14,8 @@ export interface Contact {
   relationship?: string;
   /** The owner's guidance on what may be shared with this contact. */
   sharing?: string;
+  /** Who made the pairing when it wasn't the agent itself ("owner": through the myous desktop app). */
+  added_by?: string;
 }
 
 export const RELATIONSHIPS = ["family", "friend", "colleague", "business", "service", "other"];
@@ -23,11 +25,13 @@ const MAX_SHARING = 500;
 export interface ContactContext {
   relationship?: string;
   sharing?: string;
+  added_by?: string;
 }
 
 /** Validated fields to store (only what's given). Throws on bad input. */
 export function contextFields(cc: ContactContext = {}): Partial<Contact> {
   const fields: Partial<Contact> = {};
+  if (cc.added_by?.trim()) fields.added_by = cc.added_by.trim();
   if (cc.relationship !== undefined) {
     if (!RELATIONSHIPS.includes(cc.relationship)) throw new Error(`relationship must be one of: ${RELATIONSHIPS.join(", ")}`);
     fields.relationship = cc.relationship;
