@@ -109,9 +109,12 @@ clears anything older. The mode and checkout path are in
   `myous-worker-2`, …), browser and pairing; its Set up screen asks for
   the name. The list on the left and the menu bar menu show every worker
   (one row each, with its actions in a submenu); the menu bar icon shows
-  the worst state. "Remove <name>…" in Advanced stops a worker and moves
-  its folder to the Trash. The first worker's `app.json` holds the app's
-  settings. Stop stops one worker's containers only.
+  the worst state. "Remove this worker" is on a worker's Set up and
+  Stopped cards, in its submenu in the menu, and in Advanced: a worker
+  that was never set up goes at once; one with a key asks first, then is
+  stopped and its folder moved to the Trash. The first worker stays (its
+  `app.json` holds the app's settings). Stop stops one worker's
+  containers only.
 - **On this Mac:** when an agent lives on this Mac (a myous client
   directory `~/.myous` or `~/.myous-<name>` with a key, or a folder added
   with "Add an agent's folder…" in the Advanced menu), a list appears on
@@ -128,6 +131,7 @@ Checking the layout without a worker: `build/myous.app/Contents/MacOS/myous
 --snapshot /tmp/window.png` renders the window (a PDF next to it carries
 the text) and exits; `MYOUS_FAKE_STATE=setup|noruntime|stoppedruntime|
 starting|pair|paired|running|paused|stopping|stopped|approval|busy|agents|agent|pairlocal|workers`
+(`MYOUS_SNAPSHOT_WORKER=<n>` shows the n-th worker)
 shows each screen with made-up data, `MYOUS_WORKER_HOME=<dir>` points at
 another worker's home, `MYOUS_AGENT_HOMES=<dir>:<dir>` replaces the search
 for agents' directories (`MYOUS_SNAPSHOT_AGENT=1` shows the first one's

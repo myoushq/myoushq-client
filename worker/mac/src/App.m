@@ -56,6 +56,7 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
 @property (nonatomic, strong) NSButton *bannerButton;
 @property (nonatomic, strong) NSBox *setupCard, *runtimeCard, *startingCard, *pairCard, *pairedCard, *requestsCard, *browserCard, *stoppedCard;
 @property (nonatomic, strong) NSTextField *setupRuntime, *nameField, *runtimeText, *directWarning;
+@property (nonatomic, strong) NSButton *setupRemove, *stoppedRemove;
 @property (nonatomic, strong) NSButton *setupStart, *getDockerButton, *getOrbButton, *openRuntimeButton, *directToggle, *directStart;
 @property (nonatomic, strong) NSArray<NSTextField *> *startRows;
 @property (nonatomic, strong) NSTextField *startNote;
@@ -166,6 +167,9 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
             }
             // MYOUS_SNAPSHOT_AGENT=1: show the first local agent's card instead of the worker.
             if ([[NSProcessInfo processInfo] environment][@"MYOUS_SNAPSHOT_AGENT"] && weak.agents.count) weak.selectedAgent = weak.agents.firstObject;
+            // MYOUS_SNAPSHOT_WORKER=<n>: show the n-th worker (1-based) instead of the first.
+            NSInteger n = [[NSProcessInfo processInfo] environment][@"MYOUS_SNAPSHOT_WORKER"].integerValue;
+            if (n > 1 && (NSUInteger)n <= weak.workers.count) { weak.current = weak.workers[n - 1]; weak.nameField.stringValue = @""; }
             [weak refresh];
             NSView *v = weak.window.contentView;
             NSBitmapImageRep *rep = [v bitmapImageRepForCachingDisplayInRect:v.bounds];
@@ -320,6 +324,10 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
             } else {
                 [self menu:sub add:@"Set up…" worker:w sel:@selector(showWindow)];
             }
+            if (!w.isDefault) {
+                [sub addItem:[NSMenuItem separatorItem]];
+                [self menu:sub add:[self isSetUp:w] ? @"Remove…" : @"Remove" worker:w sel:@selector(removeWorker)];
+            }
             state.submenu = sub;
         }
     }
@@ -370,7 +378,7 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
         [sub addItemWithTitle:@"Remove stale containers" action:@selector(removeContainers) keyEquivalent:@""];
         [sub addItem:[NSMenuItem separatorItem]];
         [sub addItemWithTitle:@"Add a worker…" action:@selector(addWorker) keyEquivalent:@""];
-        if (!self.current.isDefault) [sub addItemWithTitle:[NSString stringWithFormat:@"Remove %@…", self.current.name] action:@selector(removeWorker) keyEquivalent:@""];
+        if (!self.current.isDefault) [sub addItemWithTitle:[NSString stringWithFormat:@"Remove %@%@", self.current.name, [self isSetUp:self.current] ? @"…" : @""] action:@selector(removeWorker) keyEquivalent:@""];
         [sub addItemWithTitle:@"Add an agent's folder…" action:@selector(addAgentHome) keyEquivalent:@""];
         adv.submenu = sub;
     }
@@ -510,7 +518,8 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
     hint.font = [NSFont systemFontOfSize:12];
     self.setupStart = [self button:@"Start the worker" action:@selector(setupStart:)];
     self.setupStart.keyEquivalent = @"\r";
-    NSStackView *col = [self column:@[self.setupRuntime, q, self.nameField, hint, [self buttons:@[self.setupStart]]]];
+    self.setupRemove = [self button:@"Remove this worker" action:@selector(removeWorker)];
+    NSStackView *col = [self column:@[self.setupRuntime, q, self.nameField, hint, [self buttons:@[self.setupRemove, self.setupStart]]]];
     self.setupCard = [self card:@"Set up" content:col];
 }
 
@@ -741,23 +750,42 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
     [self showWindow];
 }
 
+/// A worker is set up once it has a name or a key: removing it then loses
+/// something (its identity, logins, files, the agent's access), so it asks.
+- (BOOL)isSetUp:(Worker *)w {
+    return w.config.name != nil || [[NSFileManager defaultManager] fileExistsAtPath:[w.paths.home stringByAppendingPathComponent:@"key"]];
+}
+
+/// Remove the current worker: the first worker stays (its folder holds the
+/// app's settings). A worker never set up goes without a question.
 - (void)removeWorker {
     Worker *w = self.current;
     if (w.isDefault) return;
-    NSAlert *a = [NSAlert new];
-    a.messageText = [NSString stringWithFormat:@"Remove %@?", w.name];
-    a.informativeText = @"Stops it, removes its container and moves its folder (key, logins, files) to the Trash. Agents paired with it lose it.";
-    [a addButtonWithTitle:@"Remove"];
-    [a addButtonWithTitle:@"Cancel"];
-    if ([a runModal] != NSAlertFirstButtonReturn) return;
+    BOOL setUp = [self isSetUp:w];
+    BOOL running = w.screen == ScreenRunning || w.screen == ScreenPair || w.screen == ScreenPaired || w.screen == ScreenStarting || w.screen == ScreenStopping;
+    if (setUp) {
+        NSAlert *a = [NSAlert new];
+        a.messageText = [NSString stringWithFormat:@"Remove %@?", w.name];
+        a.informativeText = [NSString stringWithFormat:@"%@Its folder (key, logins, files) goes to the Trash. The agent paired with it loses it; pairing again means a new code.",
+                             running ? @"Stops it and removes its container. " : @""];
+        [a addButtonWithTitle:@"Remove"];
+        [a addButtonWithTitle:@"Cancel"];
+        if ([a runModal] != NSAlertFirstButtonReturn) return;
+    }
     NSString *home = w.paths.home;
     void (^trash)(void) = ^{
         [[NSFileManager defaultManager] trashItemAtURL:[NSURL fileURLWithPath:home] resultingItemURL:nil error:nil];
     };
-    if ([w.config isDirect]) { [self stopDirect]; dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), dispatch_get_main_queue(), trash); }
-    else [self runLogged:[[self composePrefix] stringByAppendingString:@" down --remove-orphans"] in:home line:nil done:^(int status) { trash(); }];
+    [self append:[NSString stringWithFormat:@"removing worker %@ (%@)", w.name, home]];
+    if (!setUp || ![w.config usesDocker]) {
+        if (w.direct) [self stopDirect];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((w.direct ? 2 : 0) * NSEC_PER_SEC)), dispatch_get_main_queue(), trash);
+    } else {
+        [self runLogged:[[self composePrefix] stringByAppendingString:@" down --remove-orphans"] in:home line:nil done:^(int status) { trash(); }];
+    }
     [self.workers removeObject:w];
     self.current = self.workers.firstObject;
+    self.nameField.stringValue = @"";
     [self refresh];
 }
 
@@ -873,7 +901,8 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
     self.stoppedText = [self wrap:@"The worker is stopped. Your agent can't reach this Mac until you start it."];
     NSButton *start = [self button:@"Start" action:@selector(start)];
     start.keyEquivalent = @"\r";
-    NSStackView *col = [self column:@[self.stoppedText, [self buttons:@[start]]]];
+    self.stoppedRemove = [self button:@"Remove this worker…" action:@selector(removeWorker)];
+    NSStackView *col = [self column:@[self.stoppedText, [self buttons:@[self.stoppedRemove, start]]]];
     self.stoppedCard = [self card:@"Stopped" content:col];
 }
 
@@ -1071,6 +1100,7 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
     self.pairedCard.hidden = screen != ScreenPaired;
     self.stoppedCard.hidden = screen != ScreenStopped;
     self.stoppingCard.hidden = screen != ScreenStopping;
+    self.setupRemove.hidden = self.stoppedRemove.hidden = self.current.isDefault;
     if (screen == ScreenStopping) self.stoppingText.stringValue = [self.config isDirect]
         ? @"Stopping the worker. Your agent's requests are refused from now on."
         : @"Stopping the worker. Its container shuts down in a few seconds; your agent's requests are refused meanwhile.";
