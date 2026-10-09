@@ -12,7 +12,7 @@ Xvfb :99 -screen 0 1440x900x24 -nolisten tcp >/dev/null 2>&1 &
 sleep 1
 # No VNC password: the port is published on the host's loopback only
 # (compose.yml), so only someone already on this machine can reach it.
-x11vnc -display :99 -forever -shared -nopw -localhost -quiet >/dev/null 2>&1 &
+x11vnc -display :99 -forever -shared -nopw -localhost -quiet -desktop myous >/dev/null 2>&1 &
 # noVNC: the VNC view in a browser tab. Serve a copy of the client with an
 # index page that goes straight to it, connected and scaled, so the bare
 # port never shows a directory listing.
@@ -22,6 +22,39 @@ cat > "$NOVNC/index.html" <<'HTML'
 <!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0; url=vnc.html?autoconnect=1&reconnect=1&resize=scale">
 <title>Myous Worker browser</title><a href="vnc.html?autoconnect=1&reconnect=1&resize=scale">Open the worker's browser</a>
 HTML
+# The tab's title: "myous - <paired agent>" (the worker's own alias until
+# it is paired). A small script in the page reads title.json, which the
+# loop below refreshes from the worker's contacts.
+sed -i 's/const PAGE_TITLE = "noVNC";/const PAGE_TITLE = "myous";/' "$NOVNC/app/ui.js"
+cat > "$NOVNC/title.js" <<'JS'
+(function () {
+  async function refresh() {
+    try {
+      const r = await fetch("title.json", { cache: "no-store" });
+      if (r.ok) { const t = (await r.json()).title; if (t && document.title !== t) document.title = t; }
+    } catch (e) { /* worker not up yet */ }
+  }
+  // noVNC sets its own title when the connection comes up, so keep ours
+  // winning: often at first, then every 10 s.
+  refresh(); setInterval(refresh, 2000); setTimeout(() => setInterval(refresh, 10000), 30000);
+})();
+JS
+sed -i 's#</body>#<script src="title.js"></script></body>#' "$NOVNC/vnc.html"
+(
+	while true; do
+		python3 - > "$NOVNC/title.json.tmp" 2>/dev/null <<'PY' && mv "$NOVNC/title.json.tmp" "$NOVNC/title.json"
+import json, os, subprocess
+def run(*a):
+    try: return json.loads(subprocess.run(["myous", *a], capture_output=True, text=True, timeout=10).stdout or "null")
+    except Exception: return None
+contacts = run("contacts", "--json") or {}
+paired = [c.get("alias") for c in contacts.values() if c.get("status") == "approved" and c.get("alias")]
+alias = paired[0] if paired else ((run("status", "--json") or {}).get("alias") or "worker")
+print(json.dumps({"title": "myous - " + alias}))
+PY
+		sleep 10
+	done
+) &
 websockify --web "$NOVNC" 6080 localhost:5900 >/dev/null 2>&1 &
 
 python3 /opt/worker/browser.py &
