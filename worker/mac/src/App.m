@@ -523,7 +523,8 @@ static const double kInviteSeconds = 900;
     NSDictionary *s = self.status.status;
     NSString *phase = [self.status phase] ?: @"";
     BOOL fresh = [self.status fresh];
-    BOOL alive = fresh && ([phase isEqualToString:@"running"] || [phase isEqualToString:@"paused"] || (![self.config usesDocker] && !phase.length));
+    // No phase: a worker from before v0.6.0, which is running if it writes.
+    BOOL alive = fresh && ([phase isEqualToString:@"running"] || [phase isEqualToString:@"paused"] || !phase.length);
     BOOL booting = fresh && ([phase isEqualToString:@"starting"] || [phase isEqualToString:@"browser"] || [phase isEqualToString:@"registering"]);
     double now = [[NSDate date] timeIntervalSince1970];
     BOOL launching = self.launchStage != nil || (self.launchedAt && now - self.launchedAt < 90 && !alive);
