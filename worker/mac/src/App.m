@@ -30,6 +30,7 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
 @property (nonatomic, copy) NSString *launchStage;
 @property (nonatomic) double launchedAt;
 @property (nonatomic) BOOL stopping;
+@property (nonatomic) double stoppedAt;
 @property (nonatomic) BOOL wasRunning;
 @property (nonatomic, strong) NSTask *direct;
 @property (nonatomic, strong) NSArray<NSDictionary *> *approvals;
@@ -70,7 +71,8 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
 @property (nonatomic, strong) NSStackView *approvalRow;
 @property (nonatomic, copy) NSString *fakeApprovalId;
 @property (nonatomic, strong) NSTableView *table;
-@property (nonatomic, strong) NSTextField *stoppedText;
+@property (nonatomic, strong) NSTextField *stoppedText, *stoppingText;
+@property (nonatomic, strong) NSBox *stoppingCard;
 @property (nonatomic, strong) NSWindow *logWindow, *detailWindow, *settingsWindow;
 @property (nonatomic, strong) NSTextView *logView, *detailView;
 @property (nonatomic, strong) NSTextField *settingsName;
@@ -91,7 +93,7 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
 @end
 
 @implementation AppDelegate
-@dynamic config, status, requests, requestsDirDate, screen, launchStage, launchedAt, stopping, wasRunning, direct, approvals, paths, appConfig;
+@dynamic config, status, requests, requestsDirDate, screen, launchStage, launchedAt, stopping, stoppedAt, wasRunning, direct, approvals, paths, appConfig;
 
 - (AppConfig *)config { return self.current.config; }
 - (void)setConfig:(AppConfig *)c { self.current.config = c; }
@@ -108,6 +110,8 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
 - (double)launchedAt { return self.current.launchedAt; }
 - (void)setLaunchedAt:(double)v { self.current.launchedAt = v; }
 - (BOOL)stopping { return self.current.stopping; }
+- (double)stoppedAt { return self.current.stoppedAt; }
+- (void)setStoppedAt:(double)v { self.current.stoppedAt = v; }
 - (void)setStopping:(BOOL)v { self.current.stopping = v; }
 - (BOOL)wasRunning { return self.current.wasRunning; }
 - (void)setWasRunning:(BOOL)v { self.current.wasRunning = v; }
@@ -307,6 +311,8 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
                 [self menu:sub add:[self isPausedFor:w] ? @"Resume" : @"Pause" worker:w sel:@selector(togglePaused)];
                 [self menu:sub add:@"Show requests…" worker:w sel:@selector(showWindow)];
                 [self menu:sub add:@"Stop" worker:w sel:@selector(stop)];
+            } else if (w.screen == ScreenStopping) {
+                [sub addItemWithTitle:@"Stopping…" action:nil keyEquivalent:@""].enabled = NO;
             } else if (w.screen == ScreenStarting) {
                 [self menu:sub add:@"Stop" worker:w sel:@selector(stop)];
             } else if (w.screen == ScreenStopped) {
@@ -334,6 +340,8 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
         [menu addItemWithTitle:@"Show requests…" action:@selector(showWindow) keyEquivalent:@""];
         [menu addItem:[NSMenuItem separatorItem]];
         [menu addItemWithTitle:@"Stop" action:@selector(stop) keyEquivalent:@""];
+    } else if (self.screen == ScreenStopping) {
+        [menu addItemWithTitle:@"Stopping…" action:nil keyEquivalent:@""].enabled = NO;
     } else if (self.screen == ScreenStarting) {
         [menu addItemWithTitle:@"Starting…" action:nil keyEquivalent:@""].enabled = NO;
         [menu addItemWithTitle:@"Stop" action:@selector(stop) keyEquivalent:@""];
@@ -408,12 +416,13 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
     [self buildRequestsCard];
     [self buildBrowserCard];
     [self buildStoppedCard];
+    [self buildStoppingCard];
 
     [self buildAgentCard];
     [self buildSidebar];
 
     self.root = [self column:@[headRow, self.headFacts, bannerRow, self.setupCard, self.runtimeCard, self.startingCard, self.pairCard,
-                               self.pairedCard, self.stoppedCard, self.requestsCard, self.browserCard, self.agentCard]];
+                               self.pairedCard, self.stoppingCard, self.stoppedCard, self.requestsCard, self.browserCard, self.agentCard]];
     self.root.spacing = 12;
     self.root.edgeInsets = NSEdgeInsetsMake(16, 20, 20, 20);
     // The list of identities on the left appears once there is more than one (On this Mac).
@@ -851,6 +860,15 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
     self.browserCard = [self card:@"Browser" content:col];
 }
 
+- (void)buildStoppingCard {
+    NSProgressIndicator *spin = [NSProgressIndicator new];
+    spin.style = NSProgressIndicatorStyleSpinning;
+    spin.controlSize = NSControlSizeSmall;
+    [spin startAnimation:nil];
+    self.stoppingText = [self wrap:@"Stopping the worker. Its container shuts down in a few seconds; your agent's requests are refused meanwhile."];
+    self.stoppingCard = [self card:@"Stopping" content:[self row:@[spin, self.stoppingText]]];
+}
+
 - (void)buildStoppedCard {
     self.stoppedText = [self wrap:@"The worker is stopped. Your agent can't reach this Mac until you start it."];
     NSButton *start = [self button:@"Start" action:@selector(start)];
@@ -897,6 +915,7 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
         case ScreenStarting: return @"Starting…";
         case ScreenPair: return @"Running · not paired";
         case ScreenPaired: case ScreenRunning: return [self isPausedFor:w] ? @"Paused" : @"Running";
+        case ScreenStopping: return @"Stopping…";
         case ScreenStopped: return @"Stopped";
     }
     return @"";
@@ -905,7 +924,7 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
 - (NSColor *)stateColorFor:(Worker *)w {
     if (w.attention || w.approvals.count) return [NSColor systemRedColor];
     switch (w.screen) {
-        case ScreenStarting: return [NSColor systemBlueColor];
+        case ScreenStarting: case ScreenStopping: return [NSColor systemBlueColor];
         case ScreenPair: case ScreenPaired: case ScreenRunning: return [self isPausedFor:w] ? [NSColor systemOrangeColor] : [NSColor systemGreenColor];
         default: return [NSColor systemGrayColor];
     }
@@ -941,13 +960,18 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
     NSDictionary *s = self.status.status;
     NSString *phase = [self.status phase] ?: @"";
     BOOL fresh = [self.status fresh];
+    // Stop finished and the worker has written nothing since: it is gone,
+    // no need to wait for its last status to go stale.
+    if (fresh && self.stopping && self.current.stopDoneAt && [self.status.modified timeIntervalSince1970] < self.current.stopDoneAt) fresh = NO;
     // No phase: a worker from before v0.6.0, which is running if it writes.
     BOOL alive = fresh && ([phase isEqualToString:@"running"] || [phase isEqualToString:@"paused"] || !phase.length);
     BOOL booting = fresh && ([phase isEqualToString:@"starting"] || [phase isEqualToString:@"browser"] || [phase isEqualToString:@"registering"]);
     double now = [[NSDate date] timeIntervalSince1970];
     BOOL launching = self.launchStage != nil || (self.launchedAt && now - self.launchedAt < 90 && !alive);
     BOOL runtimeProblem = [self.config usesDocker] && self.runtimeState && ![self.runtimeState isEqualToString:@"ok"];
-    if (alive) { self.launchedAt = 0; self.stopping = NO; }
+    double stoppingFor = self.stopping && self.stoppedAt ? now - self.stoppedAt : 0;
+    if (alive && !self.stopping) self.launchedAt = 0;
+    if (alive && stoppingFor > 90) { self.stopping = NO; self.stoppedAt = 0; }   // it didn't stop; say so below
 
     // An existing install from before names were a setting: take the worker's.
     if (!self.config.name && str(s[@"alias"]) && !self.fake) { self.config.name = str(s[@"alias"]); [self.config write]; }
@@ -959,6 +983,8 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
         if ([self.runtimeState isEqualToString:@"stopped"]) screen = ScreenNoRuntime;
     } else if (runtimeProblem) {
         screen = ScreenNoRuntime;
+    } else if (self.stopping && (alive || booting)) {
+        screen = ScreenStopping;
     } else if (launching || booting) {
         screen = ScreenStarting;
     } else if (alive) {
@@ -967,13 +993,15 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
         if (num(s[@"contacts"]).integerValue == 0 && str(invite[@"code"])) screen = ScreenPair;
         else if (paired && num(paired[@"at"]).doubleValue > self.config.seenPairedAt) screen = ScreenPaired;
         else screen = ScreenRunning;
+        if (self.stoppedAt && now - self.stoppedAt > 90 && now - self.stoppedAt < 120) { attention = @"The worker didn't stop. The log says why."; attentionButton = @"Show log"; }
     } else {
         screen = ScreenStopped;
+        if (self.stopping) { self.stopping = NO; self.stoppedAt = 0; self.current.stopDoneAt = 0; self.current.stoppedByUs = YES; }
         if ([phase hasPrefix:@"error"] && fresh) { attention = [phase substringFromIndex:MIN(phase.length, 7)]; attentionButton = @"Show log"; }
-        else if (self.wasRunning && !self.stopping) { attention = @"The worker stopped on its own."; attentionButton = @"Start"; [self notifyOnce:@"stopped" title:@"myous worker stopped" body:@"The worker stopped on its own. Open myous to start it again."]; }
+        else if (self.wasRunning && !self.current.stoppedByUs) { attention = @"The worker stopped on its own."; attentionButton = @"Start"; [self notifyOnce:@"stopped" title:@"myous worker stopped" body:@"The worker stopped on its own. Open myous to start it again."]; }
         else if (self.launchedAt && !launching) { attention = @"The worker didn't start. The log says why."; attentionButton = @"Show log"; }
     }
-    if (alive) self.wasRunning = YES;
+    if (alive) { self.wasRunning = YES; self.current.stoppedByUs = NO; }
     if (screen != ScreenStopped) self.wasRunning = alive;
     self.screen = screen;
     self.current.alive = alive;
@@ -1042,6 +1070,10 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
     self.pairCard.hidden = screen != ScreenPair;
     self.pairedCard.hidden = screen != ScreenPaired;
     self.stoppedCard.hidden = screen != ScreenStopped;
+    self.stoppingCard.hidden = screen != ScreenStopping;
+    if (screen == ScreenStopping) self.stoppingText.stringValue = [self.config isDirect]
+        ? @"Stopping the worker. Your agent's requests are refused from now on."
+        : @"Stopping the worker. Its container shuts down in a few seconds; your agent's requests are refused meanwhile.";
     self.requestsCard.hidden = !(screen == ScreenRunning || screen == ScreenPaired);
     self.browserCard.hidden = self.requestsCard.hidden || [self.config isDirect];
     self.stoppedCard.hidden = screen != ScreenStopped || attention != nil || !self.config.name;
@@ -1060,7 +1092,7 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
     [self fillSidebar];
     if (self.selectedAgent) {
         // An agent's card replaces the worker's step; the header describes the agent.
-        for (NSBox *c in @[self.setupCard, self.runtimeCard, self.startingCard, self.pairCard, self.pairedCard, self.stoppedCard, self.requestsCard, self.browserCard]) c.hidden = YES;
+        for (NSBox *c in @[self.setupCard, self.runtimeCard, self.startingCard, self.pairCard, self.pairedCard, self.stoppingCard, self.stoppedCard, self.requestsCard, self.browserCard]) c.hidden = YES;
         self.agentCard.hidden = NO;
         [self fillAgent];
         LocalAgent *a = self.selectedAgent;
@@ -1331,6 +1363,7 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
     else if ([f isEqualToString:@"busy"]) { /* a command in progress: the requests below get one */ }
     else if ([f isEqualToString:@"approval"]) { self.approvals = @[@{@"id": @"q1", @"op": @"exec", @"alias": @"Max's Muse", @"cmd": @"rm -rf /work/old", @"asked_at": @(now - 20), @"wait": @120}]; }
     else if ([f isEqualToString:@"stopped"]) { st.modified = [NSDate dateWithTimeIntervalSinceNow:-3600]; }
+    else if ([f isEqualToString:@"stopping"]) { self.current.stopping = YES; self.current.stoppedAt = now - 3; }
     else if ([f isEqualToString:@"agents"] || [f isEqualToString:@"agent"] || [f isEqualToString:@"pairlocal"]) {
         if (!self.agents.count) {
             LocalAgent *a = [LocalAgent new];
@@ -1597,13 +1630,21 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
 
 - (void)stop {
     self.stopping = YES;
+    self.stoppedAt = [[NSDate date] timeIntervalSince1970];
+    self.current.stopDoneAt = 0;
     self.launchedAt = 0;
-    if ([self.config isDirect]) { [self stopDirect]; return; }
+    self.launchStage = nil;
+    Worker *w = self.current;
+    if ([self.config isDirect]) { [self stopDirect]; [self refresh]; return; }
     // `down` for this worker's project only; other workers keep running.
     // "Remove stale containers" in Advanced clears anything older.
     NSString *cmd = [[self composePrefix] stringByAppendingString:@" down --remove-orphans"];
     __weak typeof(self) weak = self;
-    [self runLogged:cmd in:[self.paths home] line:nil done:^(int status) { [weak refresh]; }];
+    [self runLogged:cmd in:[self.paths home] line:nil done:^(int status) {
+        if (status == 0) w.stopDoneAt = [[NSDate date] timeIntervalSince1970];
+        [weak refresh];
+    }];
+    [self refresh];
 }
 
 - (void)rebuild {
@@ -1649,10 +1690,12 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
     env[@"MYOUS_HOME"] = [self.paths home];
     t.environment = env;
     __weak typeof(self) weak = self;
+    Worker *w = self.current;
     t.terminationHandler = ^(NSTask *task) {
         dispatch_async(dispatch_get_main_queue(), ^{
             [weak append:[NSString stringWithFormat:@"myous worker exited with status %d", task.terminationStatus]];
-            weak.direct = nil;
+            w.direct = nil;
+            if (w.stopping) w.stopDoneAt = [[NSDate date] timeIntervalSince1970];
             [weak refresh];
         });
     };

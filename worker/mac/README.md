@@ -96,6 +96,11 @@ clears anything older. The mode and checkout path are in
   Pause / Resume creates or removes `~/.myous-worker/worker.paused`.
 - **Browser:** "Open browser" asks Docker which port the browser view
   got and opens it connected and sized to the tab.
+- **Stopping:** the moment you press Stop, the header, the menu and the
+  icon say "Stopping…" (blue) and the card explains; the worker counts
+  as stopped as soon as the stop command has finished, without waiting
+  for its last status to go stale. If it is still running after 90 s, a
+  red line says so.
 - A red line at the top asks for the one thing that needs you: the
   runtime is gone, the worker stopped on its own, a release is available.
 - **Several workers:** "Add a worker…" (the list on the left, the menu, or
@@ -122,7 +127,7 @@ clears anything older. The mode and checkout path are in
 Checking the layout without a worker: `build/myous.app/Contents/MacOS/myous
 --snapshot /tmp/window.png` renders the window (a PDF next to it carries
 the text) and exits; `MYOUS_FAKE_STATE=setup|noruntime|stoppedruntime|
-starting|pair|paired|running|paused|stopped|approval|busy|agents|agent|pairlocal|workers`
+starting|pair|paired|running|paused|stopping|stopped|approval|busy|agents|agent|pairlocal|workers`
 shows each screen with made-up data, `MYOUS_WORKER_HOME=<dir>` points at
 another worker's home, `MYOUS_AGENT_HOMES=<dir>:<dir>` replaces the search
 for agents' directories (`MYOUS_SNAPSHOT_AGENT=1` shows the first one's

@@ -4,7 +4,7 @@
 #import <Foundation/Foundation.h>
 #import "Status.h"
 
-typedef NS_ENUM(NSInteger, Screen) { ScreenSetup, ScreenNoRuntime, ScreenStarting, ScreenPair, ScreenPaired, ScreenRunning, ScreenStopped };
+typedef NS_ENUM(NSInteger, Screen) { ScreenSetup, ScreenNoRuntime, ScreenStarting, ScreenPair, ScreenPaired, ScreenRunning, ScreenStopping, ScreenStopped };
 
 @interface Worker : NSObject
 @property (nonatomic, strong, readonly) Paths *paths;
@@ -17,7 +17,10 @@ typedef NS_ENUM(NSInteger, Screen) { ScreenSetup, ScreenNoRuntime, ScreenStartin
 @property (nonatomic, copy) NSString *launchStage;    // "pulling" or "creating" while compose up runs
 @property (nonatomic) double launchedAt;              // when Start was pressed (0: not by us)
 @property (nonatomic) BOOL stopping;                  // Stop pressed: a stale status is expected
+@property (nonatomic) double stoppedAt;               // when Stop was pressed (0: not stopping)
+@property (nonatomic) double stopDoneAt;              // when the stop command finished; a status older than this is dead
 @property (nonatomic) BOOL wasRunning;
+@property (nonatomic) BOOL stoppedByUs;               // the last stop was the owner's: no "stopped on its own"
 @property (nonatomic, strong) NSTask *direct;         // the `myous worker` child in direct mode
 @property (nonatomic, copy) NSString *attention, *attentionButton;   // the one thing that needs the owner
 @property (nonatomic) BOOL alive;

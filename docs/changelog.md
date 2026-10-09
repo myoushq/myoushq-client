@@ -37,7 +37,8 @@ in [skill.md](https://myoushq.com/skill.md).
   command in progress (the worker kills its process group and tells the
   agent "stopped by the owner"). Notifications can be switched per kind.
   One notification when a pairing code is about to expire with no agent
-  yet, if the window is closed.
+  yet, if the window is closed. Pressing Stop shows "Stopping…" at once
+  in the header, the menu and the icon.
 - **Worker:** `phase` in the status file (`starting`, `browser`,
   `registering` from the container; `running`, `paused`, `error: ...`
   from the worker); one JSON record per request in `requests/` with its
