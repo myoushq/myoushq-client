@@ -37,7 +37,25 @@ def log(msg: str) -> None:
     print(f"browser: {msg}", file=sys.stderr, flush=True)
 
 
+def clear_stale_lock() -> None:
+    """Chromium leaves SingletonLock (a symlink to "<hostname>-<pid>") in the
+    profile when it's killed rather than closed, for instance when the
+    container is stopped hard. A new container has a new hostname, so
+    Chromium then thinks the profile is in use on another computer and
+    refuses to start. Only one browser ever runs on this profile, so at
+    start the lock is stale by definition."""
+    for name in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
+        path = os.path.join(PROFILE, name)
+        if os.path.islink(path) or os.path.exists(path):
+            try:
+                os.unlink(path)
+                log(f"removed stale {name}")
+            except OSError as e:
+                log(f"could not remove {name}: {e}")
+
+
 def run_once() -> None:
+    clear_stale_lock()
     args = [f"--remote-debugging-port={PORT}", "--remote-debugging-address=127.0.0.1"]
     if os.environ.get("MYOUS_BROWSER_NO_SANDBOX") == "1":
         args.append("--no-sandbox")

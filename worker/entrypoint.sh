@@ -3,7 +3,9 @@
 # worker's browser, then the worker itself. Everything logs to stdout, so
 # `docker compose logs` shows all of it.
 set -u
-trap 'kill 0' TERM INT
+# On stop: end the children (Chromium closes its profile cleanly on TERM),
+# give them a moment, then exit.
+trap 'kill 0 2>/dev/null; sleep 2; exit 0' TERM INT
 
 export DISPLAY=:99
 Xvfb :99 -screen 0 1440x900x24 -nolisten tcp >/dev/null 2>&1 &
@@ -41,9 +43,15 @@ until registered; do
 done
 
 # The worker loop. If it exits (crash, hub unreachable for long), start it
-# again rather than taking the browser down with it.
-while true; do
-	myous worker --work /work --review /opt/worker/review.py
-	echo "worker: exited with status $?; restarting in 10 s"
-	sleep 10
-done
+# again rather than taking the browser down with it. It runs in the
+# background and the script waits: a trap only fires while the shell is
+# waiting, so with the loop in the foreground `docker stop` would time
+# out and kill everything, leaving Chromium's profile lock behind.
+(
+	while true; do
+		myous worker --work /work --review /opt/worker/review.py
+		echo "worker: exited with status $?; restarting in 10 s"
+		sleep 10
+	done
+) &
+wait

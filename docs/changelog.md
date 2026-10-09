@@ -22,6 +22,10 @@ in [skill.md](https://myoushq.com/skill.md).
 - **Browser view:** the container's port 6080 now opens the browser
   directly (connected, scaled to the tab) instead of a file listing; the
   app's button is "Open browser".
+- **Worker browser survives a hard stop.** A profile lock left by a killed
+  container stopped Chromium from starting in the next one (black VNC
+  screen); the launcher clears it, and the container now shuts down
+  cleanly on stop.
 
 ## v0.5.2
 
