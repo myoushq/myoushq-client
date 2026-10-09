@@ -63,7 +63,78 @@ cat > "$NOVNC/title.js" <<'JS'
   refresh(); setInterval(refresh, 2000); setTimeout(() => setInterval(refresh, 10000), 30000);
 })();
 JS
-sed -i 's#</body>#<script src="title.js"></script></body>#' "$NOVNC/vnc.html"
+# Clipboard and shortcuts between the host and the worker's browser. The
+# worker's browser is Linux Chromium, so its shortcuts are Ctrl+key; the
+# page translates from what the host uses (Cmd on a Mac, Ctrl elsewhere).
+# Paste reads the host's own paste event (no permission needed anywhere),
+# copy writes what the worker's browser copied to the host clipboard (the
+# next Cmd+C / Ctrl+C in the tab offers it too, for browsers that only
+# write during a user gesture). Text only; files go through `myous cp`.
+cat > "$NOVNC/clip.js" <<'JS'
+import UI from "./app/ui.js";
+import KeyTable from "./core/input/keysym.js";
+import { getKeysym } from "./core/input/util.js";
+
+const mac = /Mac|iPhone|iPad/.test(navigator.platform);
+// Shortcuts the host browser keeps for itself; never translated.
+const reserved = new Set(["w", "q", "n", "t", "h", "m", "tab", ",", "`", " "]);
+let rfb = null, lastRemote = "", pending = false;
+
+function attach() {
+  if (UI.rfb === rfb) return;
+  rfb = UI.rfb;
+  if (!rfb) return;
+  rfb.addEventListener("clipboard", (e) => {
+    lastRemote = e.detail.text || "";
+    if (lastRemote && navigator.clipboard && navigator.clipboard.writeText)
+      navigator.clipboard.writeText(lastRemote).catch(() => {});
+  });
+}
+setInterval(attach, 500);
+
+function key(keysym, code, down) { if (rfb) rfb.sendKey(keysym, code, down); }
+function ctrl(down) { key(KeyTable.XK_Control_L, "ControlLeft", down); }
+function tap(e) { const ks = getKeysym(e); if (!ks) return; key(ks, e.code, true); key(ks, e.code, false); }
+
+window.addEventListener("keydown", (e) => {
+  if (!rfb) return;
+  const k = e.key.toLowerCase();
+  if (mac) {
+    if (e.key === "Meta") { e.stopPropagation(); return; }   // the worker never sees Cmd
+    if (!e.metaKey) return;
+    if (reserved.has(k)) return;
+    e.stopPropagation();
+    if (k === "v") { pending = true; return; }               // the paste event follows
+    ctrl(true); tap(e); ctrl(false);
+    if (k !== "c") e.preventDefault();                        // Cmd+C: let the copy event fire
+  } else {
+    if (!e.ctrlKey || e.altKey) return;
+    if (k === "v") { pending = true; e.stopPropagation(); }  // Ctrl is already held on the worker
+  }
+}, true);
+window.addEventListener("keyup", (e) => {
+  if (mac && e.key === "Meta") e.stopPropagation();
+}, true);
+
+window.addEventListener("paste", (e) => {
+  if (!rfb) return;
+  const text = e.clipboardData ? e.clipboardData.getData("text/plain") : "";
+  e.preventDefault();
+  if (text) rfb.clipboardPasteFrom(text);
+  if (!pending) return;
+  pending = false;
+  // The worker has the text now; press paste there (Ctrl is held by the
+  // real key on Windows and Linux, so only the letter is needed).
+  setTimeout(() => { if (mac) ctrl(true); key(KeyTable.XK_v, "KeyV", true); key(KeyTable.XK_v, "KeyV", false); if (mac) ctrl(false); }, 50);
+}, true);
+
+window.addEventListener("copy", (e) => {
+  if (!rfb || !lastRemote) return;
+  e.clipboardData.setData("text/plain", lastRemote);
+  e.preventDefault();
+}, true);
+JS
+sed -i 's#</body>#<script src="title.js"></script><script type="module" src="clip.js"></script></body>#' "$NOVNC/vnc.html"
 # The client is the site's index, so the address is just
 # http://localhost:<port>/?autoconnect=1&reconnect=1&resize=remote
 cp "$NOVNC/vnc.html" "$NOVNC/index.html"

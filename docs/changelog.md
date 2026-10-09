@@ -31,6 +31,12 @@ in [skill.md](https://myoushq.com/skill.md).
   decision, outcome, duration and output (newest 200); command files in
   `commands/` (`new-code`, `unpair`); `paired` and `unpair` entries in
   the log; a changed name re-registers at the next start.
+- **Clipboard and shortcuts in the browser view.** Cmd+V on a Mac (Ctrl+V
+  on Windows and Linux) pastes the host's clipboard into the worker's
+  browser, Cmd+C / Ctrl+C copies from it to the host, and the other
+  editing shortcuts (Cmd+A, Cmd+Z, ...) are translated to the Linux
+  browser's Ctrl+key. No permission prompts: paste reads the host's own
+  paste event. Text only. noVNC's clipboard panel remains as the fallback.
 - **Hub:** `/download/mac` (the old `/download/worker-mac` still works).
 
 - **Docs:** the skill has a "Workers" section saying what a worker is

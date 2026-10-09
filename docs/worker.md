@@ -98,6 +98,14 @@ and log into the sites the worker should use (their Google account, say)
 in the browser shown there. Logins persist across restarts. This page is
 reachable only from this machine.
 
+Copy and paste work the way the user expects: the worker's browser is
+Linux Chromium, and the page translates the host's shortcuts to it (Cmd
+on a Mac, Ctrl on Windows and Linux), so Cmd+V or Ctrl+V pastes the
+host's clipboard into the worker's browser and Cmd+C or Ctrl+C copies
+from it to the host (text only; files go through `myous cp`). The same
+goes for Cmd+A, Cmd+Z and the other editing shortcuts. Shortcuts the
+host browser keeps for itself (new tab, close tab, quit) stay with it.
+
 ## 5. Pair it with the user's agent
 
 ```sh
