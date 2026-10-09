@@ -93,6 +93,11 @@ class WorkerTest(unittest.TestCase):
         status = json.loads((self.home / "worker.json").read_text())
         self.assertEqual((status["requests"], status["last"]["op"], status["contacts"], status["invite"]), (1, "exec", 1, None))
 
+    def test_status_carries_a_pairing_message_while_unpaired(self):
+        from myous.worker import pairing_message
+        self.assertIn("1234-ABCDE", pairing_message("1234-ABCDE", "Sam's Mac"))
+        self.assertIn("not something to run yourself", pairing_message("1234-ABCDE", "Sam's Mac"))
+
     def test_exec_runs_in_work_dir_and_truncates(self):
         self.run_(self.w.handle(message(json.dumps({"myous": "exec", "id": RID, "cmd": "pwd; head -c 200000 /dev/zero | tr '\\0' x"}))))
         r = self.replies()[-1]

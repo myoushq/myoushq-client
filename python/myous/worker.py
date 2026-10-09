@@ -105,8 +105,8 @@ class Worker:
         if self.invite and self.invite["expires_at"] > time.time() + 30:
             return
         self.invite = self.agent.invite()
-        self.say(f"pair your agent with this worker: code {self.invite['code']} or link {self.invite['link']} "
-                 f"(valid 15 minutes; a new one is issued when it expires)")
+        self.say(f"pairing code {self.invite['code']} (link {self.invite['link']}; valid 15 minutes, renewed when it expires). "
+                 f"Tell your agent: {pairing_message(self.invite['code'], self.agent.alias)}")
         self.write_status()
 
     async def on_new(self, entries: list[dict]) -> None:
@@ -294,7 +294,8 @@ class Worker:
         self.st.put("worker", {
             "pid": os.getpid(), "started": self.started, "alias": self.agent.alias, "npub": npub,
             "contacts": len(self.agent.contacts()),
-            "invite": ({"code": self.invite["code"], "link": self.invite["link"], "expires_at": self.invite["expires_at"]}
+            "invite": ({"code": self.invite["code"], "link": self.invite["link"], "expires_at": self.invite["expires_at"],
+                        "message": pairing_message(self.invite["code"], self.agent.alias)}
                        if self.invite else None),
             "paused": self.paused(), "requests": self.requests, "last": self.last, "work": str(self.work),
             "updated": int(time.time()),
@@ -347,3 +348,14 @@ def _cut(data: bytes, limit: int) -> tuple[str, bool]:
     if len(data) <= limit:
         return data.decode("utf-8", "replace"), False
     return data[:limit].decode("utf-8", "replace") + f"\n[myous: output cut at {limit} bytes]", True
+
+
+def pairing_message(code: str, alias: str) -> str:
+    """One sentence the owner pastes to their agent along with the code, so
+    the agent knows what it is pairing with and what to do next (an agent
+    that only gets a code may guess, for instance that it should become a
+    worker itself)."""
+    return (f"Pair with my worker \"{alias}\" (an environment I set up for you, not something to run yourself): "
+            f"accept the pairing code {code} with relationship other and sharing \"my own worker; run commands "
+            f"there for me\". Then send it the message help, and read the Workers section of "
+            f"https://myoushq.com/skill.md before using it.")

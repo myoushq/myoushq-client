@@ -100,7 +100,12 @@ reachable only from this machine.
 cat ~/.myous-worker/worker.json
 ```
 
-`invite.code` is a pairing code like `4821-K7F3QX` (also `invite.link`).
+`invite.code` is a pairing code like `4821-K7F3QX` (also `invite.link`),
+and `invite.message` is a sentence for the user to paste to their agent:
+it names the worker, gives the code, and says what to do with it, so the
+agent doesn't guess (one that was only given a code made itself a worker
+instead). The Dock app shows the same sentence with a copy button; the
+container's log prints it too.
 The worker makes one as long as it has no contacts, renewing it every 15
 minutes. Give it to the user and say: "Tell your Muse to accept this
 code; it's your desktop worker. Your Muse will ask how it knows this

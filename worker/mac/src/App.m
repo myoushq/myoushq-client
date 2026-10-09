@@ -4,7 +4,7 @@
 
 @interface AppDelegate ()
 @property (nonatomic, strong) NSWindow *window;
-@property (nonatomic, strong) NSTextField *statusLabel, *detailLabel, *inviteTitle, *codeLabel;
+@property (nonatomic, strong) NSTextField *statusLabel, *detailLabel, *inviteTitle, *codeLabel, *messageLabel;
 @property (nonatomic, strong) NSImageView *qrView;
 @property (nonatomic, strong) NSButton *clipButton, *startStop, *pauseResume, *browserButton, *logButton, *repoButton, *imageButton, *dockerButton;
 @property (nonatomic, copy) NSString *dockerState;   // nil (unknown), "ok", "missing", "stopped"
@@ -84,7 +84,7 @@
     self.detailLabel = [NSTextField wrappingLabelWithString:@""];
     self.detailLabel.font = [NSFont systemFontOfSize:13];
     self.detailLabel.preferredMaxLayoutWidth = 420;
-    self.inviteTitle = [NSTextField labelWithString:@"Pairing code (tell your other agent to accept it)"];
+    self.inviteTitle = [NSTextField labelWithString:@"Pairing code: paste the message below to your agent"];
     self.inviteTitle.font = [NSFont systemFontOfSize:13 weight:NSFontWeightSemibold];
     self.codeLabel = [NSTextField labelWithString:@""];
     self.codeLabel.font = [NSFont monospacedSystemFontOfSize:28 weight:NSFontWeightBold];
@@ -95,7 +95,14 @@
     [self.qrView.widthAnchor constraintEqualToConstant:160].active = YES;
     [self.qrView.heightAnchor constraintEqualToConstant:160].active = YES;
 
-    self.clipButton = [self button:@"Copy code" action:@selector(copyCode)];
+    // The sentence the owner pastes to their agent with the code: an agent
+    // handed a bare code may guess what it is (one made itself a worker).
+    self.messageLabel = [NSTextField wrappingLabelWithString:@""];
+    self.messageLabel.font = [NSFont systemFontOfSize:12];
+    self.messageLabel.textColor = [NSColor secondaryLabelColor];
+    self.messageLabel.selectable = YES;
+    self.messageLabel.preferredMaxLayoutWidth = 440;
+    self.clipButton = [self button:@"Copy message for your agent" action:@selector(copyCode)];
     self.startStop = [self button:@"Start" action:@selector(toggleRunning)];
     self.pauseResume = [self button:@"Pause" action:@selector(togglePaused)];
     self.browserButton = [self button:@"Open browser view" action:@selector(openBrowserView)];
@@ -123,7 +130,7 @@
     inviteRow.orientation = NSUserInterfaceLayoutOrientationHorizontal;
     inviteRow.alignment = NSLayoutAttributeCenterY;
     inviteRow.spacing = 16;
-    NSStackView *inviteBox = [NSStackView stackViewWithViews:@[self.inviteTitle, inviteRow, self.clipButton]];
+    NSStackView *inviteBox = [NSStackView stackViewWithViews:@[self.inviteTitle, inviteRow, self.messageLabel, self.clipButton]];
     inviteBox.orientation = NSUserInterfaceLayoutOrientationVertical;
     inviteBox.alignment = NSLayoutAttributeLeading;
     inviteBox.spacing = 6;
@@ -209,9 +216,14 @@ static NSDictionary *dict(id v) { return [v isKindOfClass:[NSDictionary class]] 
     NSNumber *exp = num(invite[@"expires_at"]);
     if (exp && exp.doubleValue < [[NSDate date] timeIntervalSince1970]) invite = nil;
     BOOL showInvite = running && str(invite[@"code"]) != nil;
-    self.inviteTitle.hidden = self.codeLabel.hidden = self.qrView.hidden = self.clipButton.hidden = !showInvite;
+    self.inviteTitle.hidden = self.codeLabel.hidden = self.qrView.hidden = self.clipButton.hidden = self.messageLabel.hidden = !showInvite;
     if (showInvite) {
         self.codeLabel.stringValue = str(invite[@"code"]);
+        NSString *alias = str(s[@"alias"]) ?: @"worker";
+        self.messageLabel.stringValue = str(invite[@"message"]) ?: [NSString stringWithFormat:
+            @"Pair with my worker \"%@\" (an environment I set up for you, not something to run yourself): accept the pairing code %@ "
+            @"with relationship other and sharing \"my own worker; run commands there for me\". Then send it the message help, "
+            @"and read the Workers section of https://myoushq.com/skill.md before using it.", alias, str(invite[@"code"])];
         NSString *link = str(invite[@"link"]) ?: str(invite[@"code"]);
         if (![link isEqualToString:self.lastQRLink]) {
             self.qrView.image = [self makeQR:link side:160];
@@ -295,8 +307,8 @@ static NSDictionary *dict(id v) { return [v isKindOfClass:[NSDictionary class]] 
 - (void)copyCode {
     NSPasteboard *pb = [NSPasteboard generalPasteboard];
     [pb clearContents];
-    [pb setString:self.codeLabel.stringValue forType:NSPasteboardTypeString];
-    [self append:[NSString stringWithFormat:@"copied %@", self.codeLabel.stringValue]];
+    [pb setString:self.messageLabel.stringValue forType:NSPasteboardTypeString];
+    [self append:[NSString stringWithFormat:@"copied the pairing message (code %@)", self.codeLabel.stringValue]];
 }
 
 - (void)togglePaused {

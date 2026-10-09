@@ -11,7 +11,11 @@ in [skill.md](https://myoushq.com/skill.md).
   (an environment your owner offers you, usually on their computer; the
   agents paired with it are the brains) and that an agent running
   `myous worker` itself is possible but not what an owner usually means.
-  The Muse guide says the same. No code change.
+  The Muse guide says the same.
+- **Pairing message.** The worker's status file, its log and the Mac app
+  now carry a one-sentence message for the owner to paste to their
+  agent along with the code: what the worker is, how to accept, what to
+  do next. The app's button copies that message.
 
 ## v0.5.2
 
