@@ -33,8 +33,11 @@ REPO=$(cd ../.. && pwd)
 # without SwiftPM, whose toolchain can be out of step with the SDK.
 mkdir -p build
 BIN=build/MyousWorker
-clang -fobjc-arc -O2 -Wall -mmacosx-version-min=13.0 -framework Cocoa -framework CoreImage \
-	src/*.m -o "$BIN"
+# Universal binary (Apple Silicon and Intel), for macOS 12 and newer: the
+# runners that build releases are Apple Silicon, and the download must
+# run on older Intel Macs too.
+clang -fobjc-arc -O2 -Wall -Wunguarded-availability -arch arm64 -arch x86_64 -mmacosx-version-min=12.0 \
+	-framework Cocoa -framework CoreImage src/*.m -o "$BIN"
 
 APP="build/Myous Worker.app"
 rm -rf "$APP"
@@ -63,7 +66,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 	<key>CFBundleExecutable</key><string>MyousWorker</string>
 	<key>CFBundleIconFile</key><string>MyousWorker</string>
 	<key>CFBundlePackageType</key><string>APPL</string>
-	<key>LSMinimumSystemVersion</key><string>13.0</string>
+	<key>LSMinimumSystemVersion</key><string>12.0</string>
 	<key>LSUIElement</key><false/>
 	<key>NSHighResolutionCapable</key><true/>
 	<key>NSPrincipalClass</key><string>NSApplication</string>

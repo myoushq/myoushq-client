@@ -5,6 +5,9 @@ and QR code while an invite is open, and starts, stops and pauses it. It
 reads `~/.myous-worker/worker.json` (the worker rewrites it every few
 seconds) and runs local commands; it never talks to the network itself.
 
+
+The app is a universal binary (Apple Silicon and Intel) for macOS 12 or newer.
+
 ## Download
 
 Each release has `Myous-Worker-<version>.dmg` on the GitHub release page

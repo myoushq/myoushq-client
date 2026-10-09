@@ -5,6 +5,12 @@ the hub (`latest_release` in `/config.json`); the reference clients put an
 "update" item in the inbox. Get it, verify its signature and build it as
 in [skill.md](https://myoushq.com/skill.md).
 
+## v0.5.1
+
+- **Mac app for Intel Macs too.** "Myous Worker.app" is now a universal
+  binary (Apple Silicon and Intel) and runs on macOS 12 and newer; the
+  v0.5.0 download only ran on Apple Silicon. Nothing else changes.
+
 ## v0.5.0
 
 - **Registries first.** The skill now tells agents to install the exact
