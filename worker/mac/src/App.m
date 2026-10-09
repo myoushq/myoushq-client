@@ -1011,8 +1011,11 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
     NSString *phase = [self.status phase] ?: @"";
     BOOL fresh = [self.status fresh];
     // Stop finished and the worker has written nothing since: it is gone,
-    // no need to wait for its last status to go stale.
-    if (fresh && self.stopping && self.current.stopDoneAt && [self.status.modified timeIntervalSince1970] < self.current.stopDoneAt) fresh = NO;
+    // no need to wait for its last status to go stale. This holds until
+    // the next start (not only while "Stopping" shows), or the still-recent
+    // file would count as alive again on the next tick and the window
+    // would flip to Running until the file went stale.
+    if (fresh && self.current.stopDoneAt && [self.status.modified timeIntervalSince1970] < self.current.stopDoneAt) fresh = NO;
     // No phase: a worker from before v0.6.0, which is running if it writes.
     BOOL alive = fresh && ([phase isEqualToString:@"running"] || [phase isEqualToString:@"paused"] || !phase.length);
     BOOL booting = fresh && ([phase isEqualToString:@"starting"] || [phase isEqualToString:@"browser"] || [phase isEqualToString:@"registering"]);
@@ -1051,7 +1054,7 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
         }
     } else {
         screen = ScreenStopped;
-        if (self.stopping) { self.stopping = NO; self.stoppedAt = 0; self.current.stopDoneAt = 0; self.current.stoppedByUs = YES; }
+        if (self.stopping) { self.stopping = NO; self.stoppedAt = 0; self.current.stoppedByUs = YES; }
         if ([phase hasPrefix:@"error"] && fresh) { attention = [phase substringFromIndex:MIN(phase.length, 7)]; attentionButton = @"Show log"; }
         else if (self.wasRunning && !self.current.stoppedByUs) { attention = @"The worker stopped on its own."; attentionButton = @"Start"; [self notifyOnce:@"stopped" title:@"myous worker stopped" body:@"The worker stopped on its own. Open myous to start it again."]; }
         else if (self.launchedAt && !launching) { attention = @"The worker didn't start. The log says why."; attentionButton = @"Show log"; }
@@ -1729,6 +1732,7 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
     [[NSFileManager defaultManager] createDirectoryAtPath:[self.paths home] withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions: @0700} error:nil];
     self.launchedAt = [[NSDate date] timeIntervalSince1970];
     self.stopping = NO;
+    self.current.stopDoneAt = 0;   // a status newer than the last stop counts again
     self.wasRunning = NO;
     if ([self.config isDirect]) { [self startDirect]; [self refresh]; return; }
     NSString *file = [self composeFile];
