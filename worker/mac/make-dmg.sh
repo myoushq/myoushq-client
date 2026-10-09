@@ -1,7 +1,7 @@
 #!/bin/sh
-# Pack "Myous Worker.app" into a disk image with an Applications shortcut,
+# Pack "myous.app" (myous for Mac) into a disk image with an Applications shortcut,
 # and record its checksum.
-#   worker/mac/make-dmg.sh "build/Myous Worker.app" "build/Myous-Worker-0.4.0.dmg" [--sign "Developer ID Application: ..."]
+#   worker/mac/make-dmg.sh build/myous.app build/myous-0.6.0.dmg [--sign "Developer ID Application: ..."]
 # Writes OUT.dmg and appends "<sha256>  <file name>" to SHA256SUMS next to
 # it. With --sign the image itself is signed too (a notarized app inside an
 # unsigned image still opens; signing the image is tidier).
@@ -36,7 +36,7 @@ with_timeout() {
 	return $rc
 }
 attempt=1
-until with_timeout 300 hdiutil create -volname "Myous Worker" -srcfolder "$STAGE" -ov -format UDZO -quiet "$OUT"; do
+until with_timeout 300 hdiutil create -volname "myous" -srcfolder "$STAGE" -ov -format UDZO -quiet "$OUT"; do
 	[ $attempt -lt 5 ] || { echo "hdiutil failed $attempt times" >&2; exit 1; }
 	echo "hdiutil attempt $attempt failed; retrying" >&2
 	attempt=$((attempt + 1))

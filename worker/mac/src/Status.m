@@ -2,13 +2,22 @@
 
 const NSTimeInterval kStaleAfter = 15;
 
+NSString *str(id v) { return [v isKindOfClass:[NSString class]] ? v : nil; }
+NSNumber *num(id v) { return [v isKindOfClass:[NSNumber class]] ? v : nil; }
+NSDictionary *dict(id v) { return [v isKindOfClass:[NSDictionary class]] ? v : nil; }
+
 @implementation Paths
-+ (NSString *)home { return [NSHomeDirectory() stringByAppendingPathComponent:@".myous-worker"]; }
++ (NSString *)home {
+    NSString *env = [[NSProcessInfo processInfo] environment][@"MYOUS_WORKER_HOME"];
+    return env.length ? [env stringByExpandingTildeInPath] : [NSHomeDirectory() stringByAppendingPathComponent:@".myous-worker"];
+}
 + (NSString *)status { return [[self home] stringByAppendingPathComponent:@"worker.json"]; }
 + (NSString *)config { return [[self home] stringByAppendingPathComponent:@"app.json"]; }
 + (NSString *)paused { return [[self home] stringByAppendingPathComponent:@"worker.paused"]; }
 + (NSString *)log { return [[self home] stringByAppendingPathComponent:@"worker.log"]; }
 + (NSString *)work { return [[self home] stringByAppendingPathComponent:@"work"]; }
++ (NSString *)commands { return [[self home] stringByAppendingPathComponent:@"commands"]; }
++ (NSString *)requests { return [[self home] stringByAppendingPathComponent:@"requests"]; }
 + (NSString *)bundledCompose { return [[NSBundle mainBundle] pathForResource:@"compose" ofType:@"yml"]; }
 @end
 
@@ -26,18 +35,28 @@ const NSTimeInterval kStaleAfter = 15;
 - (BOOL)fresh {
     return self.modified && [[NSDate date] timeIntervalSinceDate:self.modified] < kStaleAfter;
 }
+- (NSString *)phase { return str(self.status[@"phase"]); }
 @end
 
 @implementation AppConfig
 + (instancetype)read {
     AppConfig *c = [AppConfig new];
+    c.notifications = YES;
+    c.autoUpdate = YES;
     NSData *data = [NSData dataWithContentsOfFile:[Paths config]];
     if (!data) return c;
-    id parsed = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
-    if ([parsed isKindOfClass:[NSDictionary class]]) {
-        if ([parsed[@"repo"] isKindOfClass:[NSString class]]) c.repo = parsed[@"repo"];
-        if ([parsed[@"mode"] isKindOfClass:[NSString class]]) c.mode = parsed[@"mode"];
-    }
+    NSDictionary *d = dict([NSJSONSerialization JSONObjectWithData:data options:0 error:nil]);
+    if (!d) return c;
+    c.repo = str(d[@"repo"]);
+    c.mode = str(d[@"mode"]);
+    c.name = str(d[@"name"]);
+    if (num(d[@"dock"])) c.dock = num(d[@"dock"]).boolValue;
+    if (num(d[@"notifications"])) c.notifications = num(d[@"notifications"]).boolValue;
+    if (num(d[@"auto_update"])) c.autoUpdate = num(d[@"auto_update"]).boolValue;
+    c.seenPairedAt = num(d[@"seen_paired_at"]).doubleValue;
+    c.seenRequestsAt = num(d[@"seen_requests_at"]).doubleValue;
+    c.lastUpdateCheck = num(d[@"last_update_check"]).doubleValue;
+    c.skippedVersion = str(d[@"skipped_version"]);
     return c;
 }
 - (void)write {
@@ -46,6 +65,14 @@ const NSTimeInterval kStaleAfter = 15;
     NSMutableDictionary *d = [NSMutableDictionary new];
     if (self.repo) d[@"repo"] = self.repo;
     if (self.mode) d[@"mode"] = self.mode;
+    if (self.name) d[@"name"] = self.name;
+    d[@"dock"] = @(self.dock);
+    d[@"notifications"] = @(self.notifications);
+    d[@"auto_update"] = @(self.autoUpdate);
+    if (self.seenPairedAt) d[@"seen_paired_at"] = @(self.seenPairedAt);
+    if (self.seenRequestsAt) d[@"seen_requests_at"] = @(self.seenRequestsAt);
+    if (self.lastUpdateCheck) d[@"last_update_check"] = @(self.lastUpdateCheck);
+    if (self.skippedVersion) d[@"skipped_version"] = self.skippedVersion;
     NSData *data = [NSJSONSerialization dataWithJSONObject:d options:NSJSONWritingPrettyPrinted | NSJSONWritingSortedKeys error:nil];
     [data writeToFile:[Paths config] atomically:YES];
 }
@@ -57,6 +84,30 @@ const NSTimeInterval kStaleAfter = 15;
 }
 - (BOOL)usesDocker { return !self.isDirect; }
 @end
+
+NSArray<NSDictionary *> *loadRequests(NSUInteger limit) {
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSArray *names = [fm contentsOfDirectoryAtPath:[Paths requests] error:nil];
+    NSMutableArray *out = [NSMutableArray new];
+    for (NSString *name in names) {
+        if (![name hasSuffix:@".json"]) continue;
+        NSData *data = [NSData dataWithContentsOfFile:[[Paths requests] stringByAppendingPathComponent:name]];
+        NSDictionary *d = data ? dict([NSJSONSerialization JSONObjectWithData:data options:0 error:nil]) : nil;
+        if (d) [out addObject:d];
+    }
+    [out sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+        double ta = num(a[@"at"]).doubleValue, tb = num(b[@"at"]).doubleValue;
+        return ta > tb ? NSOrderedAscending : ta < tb ? NSOrderedDescending : NSOrderedSame;
+    }];
+    if (out.count > limit) [out removeObjectsInRange:NSMakeRange(limit, out.count - limit)];
+    return out;
+}
+
+void sendWorkerCommand(NSString *name) {
+    NSFileManager *fm = [NSFileManager defaultManager];
+    [fm createDirectoryAtPath:[Paths commands] withIntermediateDirectories:YES attributes:nil error:nil];
+    [fm createFileAtPath:[[Paths commands] stringByAppendingPathComponent:name] contents:[NSData data] attributes:nil];
+}
 
 NSString *appVersion(void) {
     NSString *v = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleShortVersionString"];
@@ -70,4 +121,20 @@ NSString *timeAgo(double unixSeconds) {
     if (d < 3600) return [NSString stringWithFormat:@"%d min ago", (int)(d / 60)];
     if (d < 86400) return [NSString stringWithFormat:@"%d h ago", (int)(d / 3600)];
     return [NSString stringWithFormat:@"%d d ago", (int)(d / 86400)];
+}
+
+NSString *clockTime(double unixSeconds) {
+    static NSDateFormatter *f;
+    if (!f) { f = [NSDateFormatter new]; f.dateFormat = @"HH:mm"; }
+    return [f stringFromDate:[NSDate dateWithTimeIntervalSince1970:unixSeconds]];
+}
+
+NSString *dayLabel(double unixSeconds) {
+    NSCalendar *cal = [NSCalendar currentCalendar];
+    NSDate *d = [NSDate dateWithTimeIntervalSince1970:unixSeconds];
+    if ([cal isDateInToday:d]) return @"Today";
+    if ([cal isDateInYesterday:d]) return @"Yesterday";
+    static NSDateFormatter *f;
+    if (!f) { f = [NSDateFormatter new]; f.dateFormat = @"d MMM"; }
+    return [f stringFromDate:d];
 }

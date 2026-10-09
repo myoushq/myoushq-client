@@ -250,6 +250,60 @@ class WorkerTest(unittest.TestCase):
         asyncio.run(self.w.on_new([{"type": "paired", "alias": "muse", "peer": PEER, "verify": "358806", "text": "paired"}]))
         status = json.loads((self.home / "worker.json").read_text())
         self.assertEqual((status["paired"]["alias"], status["paired"]["verify"]), ("muse", "358806"))
+        log = [json.loads(line) for line in (self.home / "worker.log").read_text().splitlines()]
+        self.assertEqual((log[-1]["op"], log[-1]["verify"]), ("paired", "358806"))
+
+    def test_status_has_a_phase(self):
+        self.w.write_status()
+        self.assertEqual(json.loads((self.home / "worker.json").read_text())["phase"], "running")
+        self.w.pause_file.touch()
+        self.w.write_status()
+        self.assertEqual(json.loads((self.home / "worker.json").read_text())["phase"], "paused")
+
+    def test_request_records_for_the_owner(self):
+        self.run_(self.w.handle(message(json.dumps({"myous": "exec", "id": RID, "cmd": "echo hi"}))))
+        rec = json.loads((self.home / "requests" / f"{RID}.json").read_text())
+        self.assertEqual((rec["op"], rec["alias"], rec["cmd"], rec["decision"], rec["exit"], rec["stdout"]),
+                         ("exec", "muse", "echo hi", "allow", 0, "hi\n"))
+        self.assertIn("duration", rec)
+        self.assertGreaterEqual(rec["done_at"], rec["at"])
+        self.w.pause_file.touch()
+        self.run_(self.w.handle(message(json.dumps({"myous": "exec", "id": "cd" * 16, "cmd": "echo no"}))))
+        rec = json.loads((self.home / "requests" / ("cd" * 16 + ".json")).read_text())
+        self.assertEqual((rec["decision"], rec["reason"]), ("refuse", "worker is paused"))
+        # Odd ids can't escape the directory.
+        self.run_(self.w.handle(message(json.dumps({"myous": "exec", "id": "../x", "cmd": "echo"}))))
+        self.assertEqual(sorted(p.name for p in (self.home / "requests").iterdir()), sorted([f"{RID}.json", "cd" * 16 + ".json", "x.json"]))
+
+    def test_request_records_are_pruned(self):
+        for i in range(worker.REQUESTS_KEEP + 5):
+            self.w.record(f"r{i:04d}", op="exec")
+        kept = sorted(p.name for p in (self.home / "requests").glob("*.json"))
+        self.assertEqual(len(kept), worker.REQUESTS_KEEP)
+        self.assertNotIn("r0000.json", kept)
+
+    def test_owner_commands(self):
+        self.agent._contacts = {}
+        self.w.ensure_invite()
+        self.assertEqual(self.agent.invites, 1)
+        (self.home / "commands").mkdir()
+        (self.home / "commands" / "new-code").touch()
+        self.w.tick()
+        self.assertEqual(self.agent.invites, 2)
+        self.assertFalse((self.home / "commands" / "new-code").exists())
+        # Paired: new-code does nothing; unpair drops the contacts and re-invites.
+        self.agent._contacts = {"k": {"alias": "muse", "npub": PEER, "status": "approved"}}
+        self.st.put("contacts", self.agent._contacts)
+        self.w.paired = {"alias": "muse", "verify": "1", "at": 1}
+        (self.home / "commands" / "new-code").touch()
+        self.w.tick()
+        self.assertEqual(self.agent.invites, 2)
+        (self.home / "commands" / "unpair").touch()
+        self.w.tick()
+        self.assertEqual(self.st.get("contacts"), {})
+        self.assertIsNone(self.w.paired)
+        log = [json.loads(line) for line in (self.home / "worker.log").read_text().splitlines()]
+        self.assertEqual(log[-1]["op"], "unpair")
 
 
 if __name__ == "__main__":

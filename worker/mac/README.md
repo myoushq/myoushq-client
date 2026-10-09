@@ -1,82 +1,110 @@
-# Myous Worker, the Dock app
+# myous for Mac
 
-A small macOS app that shows the worker is running, shows its pairing code
-and QR code while an invite is open, and starts, stops and pauses it. It
-reads `~/.myous-worker/worker.json` (the worker rewrites it every few
-seconds) and runs local commands; it never talks to the network itself.
+`myous.app` is the human's side of a worker on a Mac. It lives in the menu
+bar (a coloured dot shows the state), and its window walks through the
+steps: find a container runtime, name the worker, start it (with the
+phases shown while it downloads, starts the browser and registers), hand
+the pairing message to an agent, confirm the verification code, then the
+everyday view: every request the agent made with its outcome (double-click
+for the command and its output), Pause, and "Open browser". Settings cover
+the worker's name, a Dock icon, launch at login, notifications and the
+daily release check. It reads `~/.myous-worker/worker.json` and
+`requests/` (the worker writes them), drops command files in `commands/`
+(`new-code`, `unpair`), runs `docker compose` (or `myous worker` in direct
+mode) as a child process, and only talks to the network to ask the hub
+for the latest release.
 
-
-The app is a universal binary (Apple Silicon and Intel) for macOS 12 or newer.
+The app is a universal binary (Apple Silicon and Intel) for macOS 12 or
+newer. Notifications need the app to be a signed bundle (any build here
+is), and launch at login needs macOS 13.
 
 ## Download
 
-Each release has `Myous-Worker-<version>.dmg` on the GitHub release page
-(and its SHA-256 in `SHA256SUMS`), signed with a Developer ID and
-notarized by Apple, so it opens like any other app. Open the image, drag
-"Myous Worker" to Applications, launch it. You need Docker Desktop; the
-app says so, with a button to get it, if it isn't installed or running.
+Each release has `myous-<version>.dmg` on the GitHub release page (and at
+https://myoushq.com/download/mac; its SHA-256 is in `SHA256SUMS`), signed
+with a Developer ID and notarized by Apple, so it opens like any other
+app. Open the image, drag myous to Applications, launch it. You need a
+container runtime with a `docker` command: Docker Desktop, OrbStack,
+Colima or Rancher Desktop; the app says so, with buttons to get one, if
+none is installed or it isn't running.
 
 A downloaded app runs the published container image
 `ghcr.io/myoushq/worker:<version>` (the same version as the app) from the
-compose file inside its bundle: no checkout, no developer tools. Press
-Start: the first start pulls the image, then the status line turns green
-and the pairing code appears. Everything the worker keeps (its identity,
-contacts, status, log, pause file) lives in `~/.myous-worker`; the
-browser's logins and the work directory are Docker volumes named
-`myous-worker_browser-profile` and `myous-worker_work`.
+compose file inside its bundle: no checkout, no developer tools. Name the
+worker and press "Start the worker": the first start pulls the image
+(about 2 GB), then the pairing message appears. Everything the worker
+keeps (its identity, contacts, status, request records, log, pause file)
+lives in `~/.myous-worker`; the browser's logins and the work directory
+are Docker volumes named `myous-worker_browser-profile` and
+`myous-worker_work`.
 
 ## Building it yourself
 
 Written in Objective-C (AppKit, no dependencies) so that the Command Line
 Tools' clang builds it on its own: no Xcode, and no SwiftPM, whose Swift
-toolchain can be out of step with the SDK it ships with (it was on the
-first Mac this was built on). Build:
+toolchain can be out of step with the SDK it ships with. Build:
 
 ```sh
 cd worker/mac
-./make-app.sh            # Docker in this checkout: Start runs `docker compose up -d` in worker/
+./make-app.sh            # checkout mode: Start builds and runs the image from this checkout
 ./make-app.sh --direct   # the worker runs on this Mac: Start runs `myous worker`
-open "build/Myous Worker.app"
+open build/myous.app
 ```
 
 A locally built app is ad-hoc signed, so Gatekeeper may ask on first
 launch: right-click the app, Open. Drag it to /Applications if you want it
 in Launchpad.
 
-## Modes
+## Modes (the Advanced menu)
 
-- **Built-in image** (a downloaded app, or `make-app.sh --no-config`):
+Hold Option while opening the menu bar menu to see "Advanced" (it is
+always there once a checkout or direct mode is configured):
+
+- **Published image** (a downloaded app, or `make-app.sh --no-config`):
   `docker compose -f <bundle>/compose.yml -p myous-worker up -d`. The
-  project name is fixed, so Stop still finds the containers after an
-  update. The compose file is `compose-image.yml` here with the version
-  filled in.
-- **Docker in a checkout** (`make-app.sh` default): `docker compose up -d`
-  / `down` in the checkout's `worker/`, building the image from source.
-  "Choose repo…" switches to this mode; "Use the built-in image" switches
-  back.
-- **Direct** (`make-app.sh --direct`): a `myous worker` child process on
-  this Mac, output in `~/.myous-worker/worker.log`.
+  compose file is `compose-image.yml` here with the version filled in.
+- **Checkout** (`make-app.sh` default, or "Use a checkout…"): the same
+  command with the checkout's `worker/compose.yml` (`--build`), so the
+  image is built from source. "Rebuild the image" restarts with a build.
+- **Direct** (`make-app.sh --direct`, or "Run without a container"): a
+  `myous worker` child process on this Mac, output in
+  `~/.myous-worker/worker.log`. The window warns what this means.
 
-The mode and checkout path are in `~/.myous-worker/app.json`
-(`{"mode": "image" | "docker" | "direct", "repo": "<checkout>"}`); no
-file means the built-in image.
+The project name is `myous-worker` in every mode, so Stop finds the
+containers after a mode switch or an app update; "Remove stale containers"
+clears anything older. The mode and checkout path are in
+`~/.myous-worker/app.json` with the app's settings (`name`, `dock`,
+`notifications`, `auto_update`, and what the owner has already seen).
 
-What it shows: Running or Stopped (the status file is treated as stale after
-15 seconds), the alias, contacts, requests and the last request, the work
-directory, and, while an invite is open, the pairing code with a Copy
-button and a QR code of the link. The Dock badge counts requests handled
-since the app started. Buttons: Start / Stop, Pause / Resume (creates or
-removes `~/.myous-worker/worker.paused`, which the default review hook
-honours), Open browser (asks Docker which port the browser view got,
-then opens it connected and sized to the tab; not in direct mode),
-Show log, Get Docker Desktop (when Docker is missing or stopped), and the
-mode switches above.
+## What the window shows, screen by screen
 
-Checking the layout without launching it: `build/Myous
-Worker.app/Contents/MacOS/MyousWorker --snapshot /tmp/window.png` renders
-the window to a PNG and exits; `MYOUS_DOCKER_BIN=/nonexistent` simulates a
-Mac without Docker. `--render-icon DIR` writes the icon PNGs (make-app.sh
-uses it; the icon is drawn in code, no image files in the repo).
+- **Set up:** the runtime found (or buttons to get Docker Desktop or
+  OrbStack, and the not-recommended no-container option), and the
+  worker's name.
+- **Starting:** four phases with ticks: runtime, download, browser,
+  registration. The worker writes `phase` in `worker.json`; the app
+  writes the download phase itself. Slow phases turn orange; a failure
+  shows the reason.
+- **Pair with your agent:** the message to paste (Copy message), the code
+  with a validity bar and "New code", a QR code behind a button.
+- **Paired:** the verification code; Unpair if the numbers differ.
+- **Requests:** newest first, with the agent, what ran or moved, and the
+  outcome (ok, exit N, refused with the reason, running…). New rows are
+  bold until the window has been in front; the menu bar shows their count.
+  Pause / Resume creates or removes `~/.myous-worker/worker.paused`.
+- **Browser:** "Open browser" asks Docker which port the browser view
+  got and opens it connected and sized to the tab.
+- A red line at the top asks for the one thing that needs you: the
+  runtime is gone, the worker stopped on its own, a release is available.
+
+Checking the layout without a worker: `build/myous.app/Contents/MacOS/myous
+--snapshot /tmp/window.png` renders the window (a PDF next to it carries
+the text) and exits; `MYOUS_FAKE_STATE=setup|noruntime|stoppedruntime|
+starting|pair|paired|running|paused|stopped` shows each screen with
+made-up data, `MYOUS_WORKER_HOME=<dir>` points at another worker's home,
+and `MYOUS_DOCKER_BIN=/nonexistent` simulates a Mac without Docker.
+`--render-icon DIR` writes the icon PNGs (make-app.sh uses it; the icon
+is drawn in code, no image files in the repo).
 
 ## Releasing (maintainers)
 
@@ -84,9 +112,9 @@ The release workflow builds the app on a macOS runner from the signed tag
 and runs, in this order:
 
 ```sh
-worker/mac/make-app.sh --no-config --version 0.4.0 --sign "Developer ID Application: <name> (<team>)"
-worker/mac/notarize.sh "worker/mac/build/Myous Worker.app" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" --key AuthKey.p8
-worker/mac/make-dmg.sh "worker/mac/build/Myous Worker.app" "worker/mac/build/Myous-Worker-0.4.0.dmg" --sign "Developer ID Application: <name> (<team>)"
+worker/mac/make-app.sh --no-config --version 0.6.0 --sign "Developer ID Application: <name> (<team>)"
+worker/mac/notarize.sh worker/mac/build/myous.app --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" --key AuthKey.p8
+worker/mac/make-dmg.sh worker/mac/build/myous.app worker/mac/build/myous-v0.6.0.dmg --sign "Developer ID Application: <name> (<team>)"
 ```
 
 `--sign` uses the hardened runtime and a timestamp (what notarization
@@ -104,8 +132,3 @@ Inputs the workflow needs, as repository secrets:
 | `NOTARY_KEY_ID` | App Store Connect API key ID |
 | `NOTARY_ISSUER_ID` | App Store Connect issuer ID |
 | `NOTARY_KEY` | the API key's .p8 file, base64 |
-
-The workflow imports the certificate into a temporary keychain, writes the
-.p8 to a file, runs the three scripts, and attaches the dmg and
-`SHA256SUMS` to the GitHub release. Nothing here is needed to build or run
-the app locally.

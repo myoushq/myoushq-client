@@ -1,7 +1,7 @@
 #!/bin/sh
-# Notarize and staple a signed "Myous Worker.app" with an App Store Connect
+# Notarize and staple a signed "myous.app" with an App Store Connect
 # API key (the kind notarytool takes; no Apple ID password involved).
-#   worker/mac/notarize.sh "build/Myous Worker.app" --key-id KEYID --issuer ISSUER_UUID --key AuthKey_KEYID.p8
+#   worker/mac/notarize.sh build/myous.app --key-id KEYID --issuer ISSUER_UUID --key AuthKey_KEYID.p8
 # The app must already be signed with a Developer ID certificate
 # (make-app.sh --sign). Prints Apple's log if notarization fails.
 set -eu

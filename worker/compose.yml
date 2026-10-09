@@ -19,8 +19,9 @@ services:
     labels:
       com.myoushq.worker: "1"
     volumes:
-      # Identity, contacts, status and logs: a host directory, so the Dock
-      # app (worker/mac) can read worker.json and set the pause file.
+      # Identity, contacts, status, request records and logs: a host
+      # directory, so the app (worker/mac) can read them and drop its
+      # command files.
       - ${MYOUS_WORKER_HOME:-~/.myous-worker}:/home/worker/.myous
       # The browser profile (your logins) and the work directory stay in
       # Docker volumes: Linux-only files, and nothing of the host's.

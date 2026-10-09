@@ -1,7 +1,7 @@
 #!/bin/sh
-# Build "Myous Worker.app" from source with the Command Line Tools only.
+# Build "myous.app" (myous for Mac) from source with the Command Line Tools only.
 #   worker/mac/make-app.sh [--direct] [--version X.Y.Z] [--sign "Developer ID Application: ..."] [--no-config]
-# Result: worker/mac/build/Myous Worker.app (drag it to /Applications if you
+# Result: worker/mac/build/myous.app (drag it to /Applications if you
 # like). By default it records this checkout's path in
 # ~/.myous-worker/app.json so Start runs `docker compose` there; --direct
 # sets mode "direct" (the worker runs on this Mac, no Docker); --no-config
@@ -32,23 +32,23 @@ REPO=$(cd ../.. && pwd)
 # Objective-C with clang: the Command Line Tools build it without Xcode, and
 # without SwiftPM, whose toolchain can be out of step with the SDK.
 mkdir -p build
-BIN=build/MyousWorker
+BIN=build/myous-bin
 # Universal binary (Apple Silicon and Intel), for macOS 12 and newer: the
 # runners that build releases are Apple Silicon, and the download must
 # run on older Intel Macs too.
 clang -fobjc-arc -O2 -Wall -Wunguarded-availability -arch arm64 -arch x86_64 -mmacosx-version-min=12.0 \
-	-framework Cocoa -framework CoreImage src/*.m -o "$BIN"
+	-framework Cocoa -framework CoreImage -framework UserNotifications -framework ServiceManagement src/*.m -o "$BIN"
 
-APP="build/Myous Worker.app"
+APP="build/myous.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp "$BIN" "$APP/Contents/MacOS/MyousWorker"
+cp "$BIN" "$APP/Contents/MacOS/myous"
 
 # Icon: the binary draws it (no image files in the repo), iconutil packs it.
 ICONSET=build/icon.iconset
 rm -rf "$ICONSET"
 "$BIN" --render-icon "$ICONSET"
-iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/MyousWorker.icns"
+iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/myous.icns"
 
 # The published image, pinned to this version, for the no-checkout mode.
 sed "s/@VERSION@/$VERSION/" compose-image.yml > "$APP/Contents/Resources/compose.yml"
@@ -58,16 +58,16 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>CFBundleName</key><string>Myous Worker</string>
-	<key>CFBundleDisplayName</key><string>Myous Worker</string>
-	<key>CFBundleIdentifier</key><string>com.myoushq.worker</string>
+	<key>CFBundleName</key><string>myous</string>
+	<key>CFBundleDisplayName</key><string>myous</string>
+	<key>CFBundleIdentifier</key><string>com.myoushq.desktop</string>
 	<key>CFBundleVersion</key><string>$VERSION</string>
 	<key>CFBundleShortVersionString</key><string>$VERSION</string>
-	<key>CFBundleExecutable</key><string>MyousWorker</string>
-	<key>CFBundleIconFile</key><string>MyousWorker</string>
+	<key>CFBundleExecutable</key><string>myous</string>
+	<key>CFBundleIconFile</key><string>myous</string>
 	<key>CFBundlePackageType</key><string>APPL</string>
 	<key>LSMinimumSystemVersion</key><string>12.0</string>
-	<key>LSUIElement</key><false/>
+	<key>LSUIElement</key><true/>
 	<key>NSHighResolutionCapable</key><true/>
 	<key>NSPrincipalClass</key><string>NSApplication</string>
 	<key>LSApplicationCategoryType</key><string>public.app-category.utilities</string>

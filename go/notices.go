@@ -12,7 +12,7 @@ import (
 )
 
 // Version is this client's release. Bump it with each release.
-const Version = "0.5.3"
+const Version = "0.6.0"
 
 // Notice is an announcement from the hub, passed on to the agent once.
 type Notice struct {

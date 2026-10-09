@@ -335,16 +335,16 @@ jobs:
         run: |
           set -eu
           echo "$NOTARY_KEY" | base64 --decode > /tmp/notary.p8
-          worker/mac/notarize.sh "worker/mac/build/Myous Worker.app" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" --key /tmp/notary.p8
+          worker/mac/notarize.sh worker/mac/build/myous.app --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" --key /tmp/notary.p8
           rm /tmp/notary.p8
       - name: disk image and checksum
         run: |
           set -eu
           mkdir -p out
           if [ "$HAVE_CERT" = true ]; then
-            worker/mac/make-dmg.sh "worker/mac/build/Myous Worker.app" "out/Myous-Worker-$TAG.dmg" --sign "$SIGN_IDENTITY"
+            worker/mac/make-dmg.sh worker/mac/build/myous.app "out/myous-$TAG.dmg" --sign "$SIGN_IDENTITY"
           else
-            worker/mac/make-dmg.sh "worker/mac/build/Myous Worker.app" "out/Myous-Worker-$TAG.dmg"
+            worker/mac/make-dmg.sh worker/mac/build/myous.app "out/myous-$TAG.dmg"
           fi
           (cd out && shasum -a 256 *.dmg > SHA256SUMS)
           cat out/SHA256SUMS

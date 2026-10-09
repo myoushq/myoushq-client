@@ -35,6 +35,8 @@ STDERR_LIMIT = 40_000
 HELP_INTERVAL = 60  # seconds between help replies to the same contact
 REVIEW_TIMEOUT = 60
 STATUS_EVERY = 5
+TICK = 5  # seconds between ticks: status writes and the owner's commands
+REQUESTS_KEEP = 200  # request records kept in <home>/requests for the owner's app
 
 
 class Worker:
@@ -49,6 +51,10 @@ class Worker:
         self.review_cmd = self._check_review_cmd(review_cmd)
         self.pause_file = Path(pause_file) if pause_file else (self.home / "worker.paused" if self.home else None)
         self.log_file = Path(home) / "worker.log" if home else None
+        # The owner's side (the desktop app): commands it drops as files, and
+        # one record per request it can show, with the output.
+        self.commands_dir = self.home / "commands" if self.home else None
+        self.requests_dir = self.home / "requests" if self.home else None
         self.allow_absolute = allow_absolute
         self.notes = notes or []
         self.out = out
@@ -87,15 +93,49 @@ class Worker:
         self.write_status()
         while True:
             try:
-                await self.agent.listen(on_new=self.on_new, on_tick=self.tick, tick=10)
+                await self.agent.listen(on_new=self.on_new, on_tick=self.tick, tick=TICK)
             except (OSError, relay.RelayError) as e:
                 self.say(f"connection lost ({e}); retrying in 10 seconds")
                 await asyncio.sleep(10)
 
     def tick(self) -> None:
+        self.handle_commands()
         self.ensure_invite()
         if time.time() - self._status_written > STATUS_EVERY:
             self.write_status()
+
+    # --- the owner's commands ------------------------------------------------
+
+    def handle_commands(self) -> None:
+        """Commands from the owner's app: a file per command in
+        <home>/commands, removed once done. `new-code` replaces the open
+        pairing code (while unpaired); `unpair` drops every contact and
+        offers a new code."""
+        if not self.commands_dir or not self.commands_dir.is_dir():
+            return
+        for f in sorted(self.commands_dir.iterdir()):
+            try:
+                f.unlink()
+            except OSError:
+                continue
+            if f.name == "new-code":
+                if not self.agent.contacts():
+                    self.invite = None
+                    self.ensure_invite()
+            elif f.name == "unpair":
+                self.unpair()
+            else:
+                self.say(f"unknown command file {f.name}")
+
+    def unpair(self) -> None:
+        with self.st.lock():
+            self.st.put("contacts", {})
+        self.paired = None
+        self.invite = None
+        self.log({"op": "unpair"})
+        self.say("unpaired: contacts removed; a new pairing code follows")
+        self.ensure_invite()
+        self.write_status()
 
     def ensure_invite(self) -> None:
         """Until the worker has a contact, keep a fresh invite on offer so
@@ -120,6 +160,7 @@ class Worker:
                 if e["type"] == "paired":
                     # Owners compare this number on both sides, so it must be visible here too.
                     self.paired = {"alias": e.get("alias"), "verify": e.get("verify"), "at": int(time.time())}
+                    self.log({"op": "paired", "alias": e.get("alias"), "sender": e.get("peer"), "verify": e.get("verify")})
                     self.say(f"paired with {e.get('alias')}: verification code {e.get('verify')} "
                              f"(your agent shows the same number; compare them)")
                     self.ensure_invite()
@@ -175,8 +216,10 @@ class Worker:
         if why:
             await self.refuse(e, req["id"], why)
             return
+        started = time.time()
         result = await asyncio.get_running_loop().run_in_executor(None, run_command, cmd, self.work, timeout)
         self.note(e, "exec", True)
+        self.record(req["id"], done_at=int(time.time()), duration=round(time.time() - started, 2), **result)
         await self.reply(e, dict(result, myous="result", id=req["id"]))
 
     async def do_get(self, e: dict, req: dict) -> None:
@@ -194,6 +237,7 @@ class Worker:
             await self.refuse(e, req["id"], f"could not send the file: {err}")
             return
         self.note(e, "get", True)
+        self.record(req["id"], done_at=int(time.time()), size=target.stat().st_size)
 
     async def do_put(self, e: dict, rid: str, path: str) -> None:
         target, why = self.resolve(path)
@@ -209,6 +253,7 @@ class Worker:
             await self.refuse(e, rid, f"could not write the file: {err}")
             return
         self.note(e, "put", True)
+        self.record(rid, done_at=int(time.time()), size=len(data))
         await self.reply(e, {"myous": "ack", "id": rid, "ok": True, "path": str(target), "size": len(data),
                              "sha256": files.sha256(data)})
 
@@ -231,6 +276,7 @@ class Worker:
         else:
             why = "worker is paused" if self.paused() else None
         self.log(dict(request, decision="allow" if why is None else f"refuse: {why}"))
+        self.record(rid, **request, at=int(time.time()), decision="allow" if why is None else "refuse", reason=why)
         return why
 
     def paused(self) -> bool:
@@ -256,6 +302,7 @@ class Worker:
 
     async def refuse(self, e: dict, rid: str, why: str) -> None:
         self.note(e, "refuse", False)
+        self.record(rid, done_at=int(time.time()), decision="refuse", reason=why)
         await self.reply(e, {"myous": "ack", "id": rid, "ok": False, "error": why})
 
     async def reply(self, e: dict, obj: dict) -> None:
@@ -297,6 +344,7 @@ class Worker:
             npub = None
         self.st.put("worker", {
             "pid": os.getpid(), "started": self.started, "alias": self.agent.alias, "npub": npub,
+            "phase": "paused" if self.paused() else "running",
             "contacts": len(self.agent.contacts()),
             "invite": ({"code": self.invite["code"], "link": self.invite["link"], "expires_at": self.invite["expires_at"],
                         "message": pairing_message(self.invite["code"], self.agent.alias)}
@@ -311,6 +359,32 @@ class Worker:
             return
         with open(self.log_file, "a") as f:
             f.write(json.dumps(dict(record, at=int(time.time())), sort_keys=True) + "\n")
+
+    def record(self, rid, **fields) -> None:
+        """One JSON file per request in <home>/requests, updated as it
+        progresses (decision, then outcome and output), for the owner's app
+        to list. The newest REQUESTS_KEEP are kept."""
+        if not self.requests_dir or not isinstance(rid, str):
+            return
+        name = "".join(c for c in rid if c.isalnum() or c in "-_")[:64]
+        if not name:
+            return
+        try:
+            self.requests_dir.mkdir(parents=True, exist_ok=True)
+            path = self.requests_dir / f"{name}.json"
+            try:
+                current = json.loads(path.read_text())
+            except (OSError, ValueError):
+                current = {"id": rid}
+            current.update({k: v for k, v in fields.items() if v is not None})
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(current, sort_keys=True))
+            tmp.replace(path)
+            old = sorted(self.requests_dir.glob("*.json"), key=lambda p: p.stat().st_mtime)
+            for p in old[:-REQUESTS_KEEP]:
+                p.unlink(missing_ok=True)
+        except OSError as err:
+            self.say(f"could not record request {rid}: {err}")
 
     def say(self, text: str) -> None:
         print(text, file=self.out, flush=True)

@@ -5,7 +5,33 @@ the hub (`latest_release` in `/config.json`); the reference clients put an
 "update" item in the inbox. Get it, verify its signature and build it as
 in [skill.md](https://myoushq.com/skill.md).
 
-## v0.5.3
+## v0.6.0
+
+- **myous for Mac.** The Mac app is now "myous" (`myous.app`,
+  `myous-<version>.dmg`, https://myoushq.com/download/mac): the human's
+  view of every worker on this Mac, designed for several workers and
+  local agents later. It lives in the menu bar with a state-coloured icon
+  and a menu (Open browser, Pause, Stop, Settings, Check for updates;
+  hold Option for the developer items). The window shows one step at a
+  time: Set up (the runtime found, with buttons to get Docker Desktop or
+  OrbStack when none is, and the not-recommended no-container option
+  behind a warning; the worker's name), Starting (download, browser,
+  registration with ticks and timings), Pair (the message to paste, the
+  code with a validity bar and "New code", QR behind a button), Paired
+  (the verification code, Unpair), then Requests (every request with the
+  agent, what ran or moved and the outcome; double-click for the output;
+  new rows bold and counted in the menu bar until the window is in front)
+  and Browser. A red line at the top asks for the one thing that needs
+  you. Settings: name, Dock icon, open at login (macOS 13+), notifications
+  (paired, refused, stopped, update), daily release check. One compose
+  project name in every mode, so Stop works after a mode switch.
+- **Worker:** `phase` in the status file (`starting`, `browser`,
+  `registering` from the container; `running`, `paused`, `error: ...`
+  from the worker); one JSON record per request in `requests/` with its
+  decision, outcome, duration and output (newest 200); command files in
+  `commands/` (`new-code`, `unpair`); `paired` and `unpair` entries in
+  the log; a changed name re-registers at the next start.
+- **Hub:** `/download/mac` (the old `/download/worker-mac` still works).
 
 - **Docs:** the skill has a "Workers" section saying what a worker is
   (an environment your owner offers you, usually on their computer; the

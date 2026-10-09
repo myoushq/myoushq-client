@@ -41,3 +41,24 @@ BOOL writeIconSet(NSString *dir, NSError **error) {
     }
     return YES;
 }
+
+NSImage *statusIcon(NSColor *color, BOOL dot) {
+    CGFloat s = 18;
+    NSImage *image = [NSImage imageWithSize:NSMakeSize(s, s) flipped:NO drawingHandler:^BOOL(NSRect r) {
+        NSBezierPath *circle = [NSBezierPath bezierPathWithOvalInRect:NSInsetRect(r, 1, 1)];
+        [color setFill];
+        [circle fill];
+        NSFont *font = [NSFont systemFontOfSize:s * 0.62 weight:NSFontWeightBold];
+        NSAttributedString *text = [[NSAttributedString alloc] initWithString:@"m"
+            attributes:@{NSFontAttributeName: font, NSForegroundColorAttributeName: [NSColor whiteColor]}];
+        NSSize ts = [text size];
+        [text drawAtPoint:NSMakePoint((s - ts.width) / 2, (s - ts.height) / 2 - s * 0.02)];
+        if (dot) {
+            [[NSColor whiteColor] setFill];
+            [[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(s - 6.5, s - 6.5, 5, 5)] fill];
+        }
+        return YES;
+    }];
+    image.template = NO;
+    return image;
+}

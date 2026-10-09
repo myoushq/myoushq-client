@@ -20,12 +20,12 @@ container is published for every release at
 `ghcr.io/myoushq/worker:<version>` (amd64 and arm64, signed with cosign;
 `<version>` is `latest_release` from https://myoushq.com/config.json
 without the `v`), so nothing needs building, and only Docker is needed.
-On a Mac, the GitHub release also has "Myous Worker.app" as a disk image
-(`Myous-Worker-v<version>.dmg`, from
-https://github.com/myoushq/myoushq-client/releases): open it, drag the
-app to Applications, launch it, press Start; it pulls that image, shows
-the pairing code in its window, and keeps its data in `~/.myous-worker`.
-With the app, continue at step 5. **From source** (the alternative, and
+On a Mac, there is **myous for Mac** (`myous.app`, a notarized disk
+image at https://myoushq.com/download/mac, also on the GitHub release
+page as `myous-v<version>.dmg`): open it, drag the app to Applications,
+launch it, give the worker a name and press "Start the worker"; it pulls
+that image, shows the pairing message in its window, and keeps its data
+in `~/.myous-worker`. With the app, continue at step 5. **From source** (the alternative, and
 the way to change anything): steps 1 and 3 below build the image from
 the verified checkout.
 
@@ -108,7 +108,7 @@ cat ~/.myous-worker/worker.json
 and `invite.message` is a sentence for the user to paste to their agent:
 it names the worker, gives the code, and says what to do with it, so the
 agent doesn't guess (one that was only given a code made itself a worker
-instead). The Dock app shows the same sentence with a copy button; the
+instead). The Mac app shows the same sentence with a copy button; the
 container's log prints it too.
 The worker makes one as long as it has no contacts, renewing it every 15
 minutes. Give it to the user and say: "Tell your Muse to accept this
@@ -128,9 +128,15 @@ their own skill (for Muse, "Using a worker" in
 docker compose ps && cat ~/.myous-worker/worker.json
 ```
 
-`worker.json` has the alias, the number of paired contacts, the last
-request and when, and whether it's paused. The log of every request,
-allowed or refused, is `~/.myous-worker/worker.log`.
+`worker.json` has the alias, a `phase` (`starting`, `browser`,
+`registering`, `running`, `paused`, or `error: ...`), the number of
+paired contacts, the last request and when. The log of every request,
+allowed or refused, is `~/.myous-worker/worker.log`, and
+`~/.myous-worker/requests/` keeps one JSON record per recent request
+with its outcome and output (the newest 200). Files dropped in
+`~/.myous-worker/commands/` are picked up by the worker: `new-code`
+(a fresh pairing code while unpaired) and `unpair` (drop every contact
+and offer a code). The Mac app uses all of these.
 
 - **Pause:** `touch ~/.myous-worker/worker.paused` refuses every request
   until the file is removed. The user can do this any time.
@@ -163,14 +169,14 @@ that, and keep the review hook strict. Keep the review hook outside the
 work directory (the worker refuses to start otherwise: a request could
 replace it there). Steps are in `worker/README.md`, "Direct mode".
 
-## 9. Optional: the Dock app (macOS)
+## 9. Optional: myous for Mac
 
-`worker/mac/make-app.sh` builds "Myous Worker.app" from source with the
-clang that comes with Xcode's command line tools (Objective-C, no Xcode,
-no Swift toolchain needed; a few seconds). It sits in the
-Dock, shows whether the worker is running, the pairing code, the last
-request, and offers Pause, Start/Stop and "Open browser". Details in
-`worker/mac/README.md`.
+`worker/mac/make-app.sh` builds `myous.app` from source with the clang
+that comes with Xcode's command line tools (Objective-C, no Xcode, no
+Swift toolchain needed; a few seconds). It lives in the menu bar, shows
+whether the worker is running and what phase it is in, the pairing
+message, every request with its outcome, and offers Pause, Start/Stop
+and "Open browser". Details in `worker/mac/README.md`.
 
 ## When something's wrong
 

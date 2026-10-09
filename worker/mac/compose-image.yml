@@ -1,6 +1,6 @@
-# The myoushq worker from the published image, for "Myous Worker.app"
+# The myoushq worker from the published image, for myous.app (myous for Mac)
 # (make-app.sh fills in the version and bundles this as Contents/Resources/
-# compose.yml). Same settings as worker/compose.yml, with `image:` instead
+# compose.yml; the app runs it with project name myous-worker). Same settings as worker/compose.yml, with `image:` instead
 # of `build:`, so no checkout is needed. By hand:
 #   docker compose -f compose.yml -p myous-worker up -d
 services:
@@ -15,8 +15,8 @@ services:
     labels:
       com.myoushq.worker: "1"
     volumes:
-      # Identity, contacts, status and logs: a host directory, so the Dock
-      # app can read worker.json and set the pause file.
+      # Identity, contacts, status, request records and logs: a host
+      # directory, so the app can read them and drop its command files.
       - ${MYOUS_WORKER_HOME:-~/.myous-worker}:/home/worker/.myous
       # The browser profile (your logins) and the work directory stay in
       # Docker volumes: Linux-only files, and nothing of the host's.
