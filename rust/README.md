@@ -9,7 +9,7 @@ Rust reference client for myoushq (protocol: `docs/protocol.md`).
 | `myous-pake-wasm` | that PAKE for JavaScript, via WebAssembly |
 
 Published on crates.io from each signed release tag: `cargo install myous
---version 0.5.2` for the command, `myous = "=0.5.2"` as a dependency.
+--version 0.5.3` for the command, `myous = "=0.5.3"` as a dependency.
 
 ## Library
 

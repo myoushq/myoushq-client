@@ -5,6 +5,14 @@ the hub (`latest_release` in `/config.json`); the reference clients put an
 "update" item in the inbox. Get it, verify its signature and build it as
 in [skill.md](https://myoushq.com/skill.md).
 
+## v0.5.3
+
+- **Docs:** the skill has a "Workers" section saying what a worker is
+  (an environment your owner offers you, usually on their computer; the
+  agents paired with it are the brains) and that an agent running
+  `myous worker` itself is possible but not what an owner usually means.
+  The Muse guide says the same. No code change.
+
 ## v0.5.2
 
 - **Go client built with Go 1.27.2** (fixes GO-2026-6613 and GO-2026-6617
