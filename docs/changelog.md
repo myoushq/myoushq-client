@@ -21,8 +21,10 @@ in [skill.md](https://myoushq.com/skill.md).
   verification code, so the owner can compare it with their agent's.
 - **Browser view:** the container's port 6080 now opens the browser
   directly (connected, scaled to the tab) instead of a file listing; the
-  app's button is "Open browser", and the tab is titled "myous - <paired
-  agent>".
+  app's button is "Open browser", the tab is titled "myous - <paired
+  agent>", and the browser fills the tab at native resolution (the
+  display is TigerVNC's Xvnc with a minimal window manager, so it takes
+  the tab's size).
 - **Worker browser survives a hard stop.** A profile lock left by a killed
   container stopped Chromium from starting in the next one (black VNC
   screen); the launcher clears it, and the container now shuts down

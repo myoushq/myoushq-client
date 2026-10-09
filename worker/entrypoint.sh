@@ -2,25 +2,32 @@
 # Container entry point: a virtual display with a VNC view of it, the
 # worker's browser, then the worker itself. Everything logs to stdout, so
 # `docker compose logs` shows all of it.
+#
+# The display is TigerVNC's Xvnc (an X server and VNC server in one): it
+# accepts the viewer's size, so the browser tab that shows it is filled
+# edge to edge at native resolution (noVNC's "remote" resize) instead of a
+# scaled fixed screen. matchbox, a minimal window manager, keeps Chromium's
+# window maximized, so it follows those size changes.
 set -u
 # On stop: end the children (Chromium closes its profile cleanly on TERM),
 # give them a moment, then exit.
 trap 'kill 0 2>/dev/null; sleep 2; exit 0' TERM INT
 
 export DISPLAY=:99
-Xvfb :99 -screen 0 1440x900x24 -nolisten tcp >/dev/null 2>&1 &
-sleep 1
 # No VNC password: the port is published on the host's loopback only
 # (compose.yml), so only someone already on this machine can reach it.
-x11vnc -display :99 -forever -shared -nopw -localhost -quiet -desktop myous >/dev/null 2>&1 &
+Xvnc :99 -geometry 1440x900 -depth 24 -rfbport 5900 -localhost -SecurityTypes None -AlwaysShared \
+	-AcceptSetDesktopSize -desktop myous >/dev/null 2>&1 &
+sleep 1
+matchbox-window-manager -use_titlebar no -use_cursor yes >/dev/null 2>&1 &
 # noVNC: the VNC view in a browser tab. Serve a copy of the client with an
 # index page that goes straight to it, connected and scaled, so the bare
 # port never shows a directory listing.
 NOVNC=/tmp/novnc
 rm -rf "$NOVNC" && cp -r /usr/share/novnc "$NOVNC"
 cat > "$NOVNC/index.html" <<'HTML'
-<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0; url=vnc.html?autoconnect=1&reconnect=1&resize=scale">
-<title>Myous Worker browser</title><a href="vnc.html?autoconnect=1&reconnect=1&resize=scale">Open the worker's browser</a>
+<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0; url=vnc.html?autoconnect=1&reconnect=1&resize=remote">
+<title>Myous Worker browser</title><a href="vnc.html?autoconnect=1&reconnect=1&resize=remote">Open the worker's browser</a>
 HTML
 # The tab's title: "myous - <paired agent>" (the worker's own alias until
 # it is paired). A small script in the page reads title.json, which the

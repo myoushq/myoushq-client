@@ -6,7 +6,7 @@ FROM mcr.microsoft.com/playwright/python:v1.63.0-noble@sha256:72bd171a9ffc2b4b59
 
 # Virtual display, VNC server, and noVNC (the VNC client as a web page).
 RUN apt-get update \
-	&& apt-get install -y --no-install-recommends xvfb x11vnc novnc websockify python3-venv \
+	&& apt-get install -y --no-install-recommends tigervnc-standalone-server matchbox-window-manager novnc websockify python3-venv \
 	&& rm -rf /var/lib/apt/lists/*
 
 # The client, from the verified checkout, dependencies pinned by hash

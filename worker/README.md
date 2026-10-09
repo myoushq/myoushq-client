@@ -48,7 +48,7 @@ Where things are:
 | identity, contacts, status (`worker.json`), log, pause file | `~/.myous-worker` on the host, `/home/worker/.myous` inside |
 | browser profile (logins) | Docker volume `browser-profile` |
 | work directory (files sent to the worker, outputs) | Docker volume `work`, `/work` inside |
-| ports | 6080 (noVNC), on 127.0.0.1 only; 9222 (Chromium CDP) inside the container only |
+| ports | 6080 (noVNC, the browser fills the tab at its size), on 127.0.0.1 only; 9222 (Chromium CDP) inside the container only |
 
 Commands run inside the container as user `worker`, in `/work`. Nothing
 from the host is mounted except `~/.myous-worker`.

@@ -332,7 +332,7 @@ static NSDictionary *dict(id v) { return [v isKindOfClass:[NSDictionary class]] 
 - (void)openBrowserView {
     // Straight into the noVNC client, connected and scaled to the tab; the
     // bare port shows the served folder's listing.
-    [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:@"http://localhost:6080/vnc.html?autoconnect=1&reconnect=1&resize=scale"]];
+    [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:@"http://localhost:6080/vnc.html?autoconnect=1&reconnect=1&resize=remote"]];
 }
 
 - (void)openLog {
