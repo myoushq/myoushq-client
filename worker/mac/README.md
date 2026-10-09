@@ -67,7 +67,8 @@ directory, and, while an invite is open, the pairing code with a Copy
 button and a QR code of the link. The Dock badge counts requests handled
 since the app started. Buttons: Start / Stop, Pause / Resume (creates or
 removes `~/.myous-worker/worker.paused`, which the default review hook
-honours), Open browser view (`http://localhost:6080`, not in direct mode),
+honours), Open browser (the noVNC client at `http://localhost:6080`,
+connected and scaled; not in direct mode),
 Show log, Get Docker Desktop (when Docker is missing or stopped), and the
 mode switches above.
 

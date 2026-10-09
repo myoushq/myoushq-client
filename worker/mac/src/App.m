@@ -105,7 +105,7 @@
     self.clipButton = [self button:@"Copy message for your agent" action:@selector(copyCode)];
     self.startStop = [self button:@"Start" action:@selector(toggleRunning)];
     self.pauseResume = [self button:@"Pause" action:@selector(togglePaused)];
-    self.browserButton = [self button:@"Open browser view" action:@selector(openBrowserView)];
+    self.browserButton = [self button:@"Open browser" action:@selector(openBrowserView)];
     self.logButton = [self button:@"Show log" action:@selector(openLog)];
     self.repoButton = [self button:@"Choose repo…" action:@selector(chooseRepo)];
     self.imageButton = [self button:@"Use the built-in image" action:@selector(useImage)];
@@ -330,7 +330,9 @@ static NSDictionary *dict(id v) { return [v isKindOfClass:[NSDictionary class]] 
 }
 
 - (void)openBrowserView {
-    [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:@"http://localhost:6080"]];
+    // Straight into the noVNC client, connected and scaled to the tab; the
+    // bare port shows the served folder's listing.
+    [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:@"http://localhost:6080/vnc.html?autoconnect=1&reconnect=1&resize=scale"]];
 }
 
 - (void)openLog {

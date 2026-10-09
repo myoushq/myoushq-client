@@ -11,8 +11,16 @@ sleep 1
 # No VNC password: the port is published on the host's loopback only
 # (compose.yml), so only someone already on this machine can reach it.
 x11vnc -display :99 -forever -shared -nopw -localhost -quiet >/dev/null 2>&1 &
-# noVNC: the VNC view in a browser tab at http://localhost:6080/vnc.html
-websockify --web /usr/share/novnc 6080 localhost:5900 >/dev/null 2>&1 &
+# noVNC: the VNC view in a browser tab. Serve a copy of the client with an
+# index page that goes straight to it, connected and scaled, so the bare
+# port never shows a directory listing.
+NOVNC=/tmp/novnc
+rm -rf "$NOVNC" && cp -r /usr/share/novnc "$NOVNC"
+cat > "$NOVNC/index.html" <<'HTML'
+<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0; url=vnc.html?autoconnect=1&reconnect=1&resize=scale">
+<title>Myous Worker browser</title><a href="vnc.html?autoconnect=1&reconnect=1&resize=scale">Open the worker's browser</a>
+HTML
+websockify --web "$NOVNC" 6080 localhost:5900 >/dev/null 2>&1 &
 
 python3 /opt/worker/browser.py &
 

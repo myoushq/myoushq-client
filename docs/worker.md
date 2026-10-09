@@ -89,7 +89,7 @@ few seconds of proof of work).
 
 ## 4. Let the user log into sites
 
-Tell the user to open **http://localhost:6080/vnc.html**, click Connect,
+Tell the user to open **http://localhost:6080** (it connects on its own),
 and log into the sites the worker should use (their Google account, say)
 in the browser shown there. Logins persist across restarts. This page is
 reachable only from this machine.
@@ -165,7 +165,7 @@ replace it there). Steps are in `worker/README.md`, "Direct mode".
 clang that comes with Xcode's command line tools (Objective-C, no Xcode,
 no Swift toolchain needed; a few seconds). It sits in the
 Dock, shows whether the worker is running, the pairing code, the last
-request, and offers Pause, Start/Stop and "Open browser view". Details in
+request, and offers Pause, Start/Stop and "Open browser". Details in
 `worker/mac/README.md`.
 
 ## When something's wrong

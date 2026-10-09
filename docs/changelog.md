@@ -19,6 +19,9 @@ in [skill.md](https://myoushq.com/skill.md).
 - **Verification code on the worker's side.** When a pairing completes,
   the worker's log, status file (`paired`) and the Mac app show the
   verification code, so the owner can compare it with their agent's.
+- **Browser view:** the container's port 6080 now opens the browser
+  directly (connected, scaled to the tab) instead of a file listing; the
+  app's button is "Open browser".
 
 ## v0.5.2
 

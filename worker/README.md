@@ -27,7 +27,7 @@ docker compose logs -f           # watch it start; Ctrl-C leaves it running
 Then:
 
 - **Log into sites** the worker should use: open
-  http://localhost:6080/vnc.html, click Connect, and use the browser you
+  http://localhost:6080 (it connects on its own) and use the browser you
   see. Logins persist across restarts (the `browser-profile` volume).
 - **Pair it** with your agent: the pairing code is in
   `~/.myous-worker/worker.json` (`invite.code`) and in the logs. Tell
