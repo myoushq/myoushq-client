@@ -65,7 +65,8 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
 @property (nonatomic, copy) NSString *lastQRLink;
 @property (nonatomic, strong) NSTextField *pairedText, *pairedCode;
 @property (nonatomic, strong) NSTextField *requestsTitle, *pausedNote, *approvalText;
-@property (nonatomic, strong) NSButton *pauseButton, *allowButton, *refuseButton;
+@property (nonatomic, strong) NSButton *pauseButton, *allowButton, *refuseButton, *stopCommandButton;
+@property (nonatomic, strong) NSArray<NSButton *> *settingsKinds;
 @property (nonatomic, strong) NSStackView *approvalRow;
 @property (nonatomic, copy) NSString *fakeApprovalId;
 @property (nonatomic, strong) NSTableView *table;
@@ -800,7 +801,9 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
     NSView *spacer = [NSView new];
     [spacer setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
     self.pauseButton = [self button:@"Pause" action:@selector(togglePaused)];
-    NSStackView *top = [self row:@[self.requestsTitle, spacer, self.pauseButton]];
+    self.stopCommandButton = [self button:@"Stop this command" action:@selector(stopCommand)];
+    self.stopCommandButton.hidden = YES;
+    NSStackView *top = [self row:@[self.requestsTitle, spacer, self.stopCommandButton, self.pauseButton]];
     [top.widthAnchor constraintEqualToConstant:kInner - 28].active = YES;
     self.pausedNote = [self wrap:@"Paused: requests are refused until you resume."];
     self.pausedNote.textColor = [NSColor systemOrangeColor];
@@ -976,6 +979,14 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
     self.current.alive = alive;
     self.current.attention = attention;
     self.current.attentionButton = attentionButton;
+    if (screen == ScreenPair) {
+        NSDictionary *invite = dict(s[@"invite"]);
+        double left = num(invite[@"expires_at"]).doubleValue - [[NSDate date] timeIntervalSince1970];
+        if (left > 0 && left < 120 && !self.window.visible)
+            [self notifyOnce:[@"expiring-" stringByAppendingString:str(invite[@"code"]) ?: @""]
+                       title:[NSString stringWithFormat:@"Still waiting for an agent to pair with %@", self.config.name ?: @"the worker"]
+                        body:[NSString stringWithFormat:@"The code %@ expires in %d min; the worker then makes a new one. Open myous to copy the message.", str(invite[@"code"]) ?: @"", (int)ceil(left / 60)]];
+    }
     if (screen == ScreenPaired || screen == ScreenRunning) [self notifyPaired:dict(s[@"paired"])];
     [self notifyRefusals];
     [self notifyApproval];
@@ -1179,7 +1190,26 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
     self.pairedCode.stringValue = str(paired[@"verify"]) ?: @"";
 }
 
+/// A `stop-<id>` command file: the worker kills the command's process group.
+- (void)stopCommand {
+    NSDictionary *r = [self runningRequest];
+    if (!r) return;
+    sendWorkerCommand(self.paths, [@"stop-" stringByAppendingString:str(r[@"id"]) ?: @""]);
+    [self append:[NSString stringWithFormat:@"stop: %@", str(r[@"cmd"]) ?: @""]];
+    self.stopCommandButton.enabled = NO;
+}
+
+- (NSDictionary *)runningRequest {
+    NSDictionary *r = self.requests.firstObject;
+    BOOL running = r && [str(r[@"op"]) isEqualToString:@"exec"] && [str(r[@"decision"]) isEqualToString:@"allow"] && !r[@"done_at"]
+        && [[NSDate date] timeIntervalSince1970] - num(r[@"at"]).doubleValue < 700;
+    return running ? r : nil;
+}
+
 - (void)fillRequests {
+    NSDictionary *running = [self runningRequest];
+    self.stopCommandButton.hidden = running == nil;
+    if (!running) self.stopCommandButton.enabled = YES;
     BOOL paused = [self isPaused];
     self.pausedNote.hidden = !paused;
     self.pauseButton.title = paused ? @"Resume" : @"Pause";
@@ -1298,6 +1328,7 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
         s[@"invite"] = @{@"code": @"4821-K7F3QX", @"link": @"https://myoushq.com/p/4821#K7F3QX", @"expires_at": @(now + 702)}; }
     else if ([f isEqualToString:@"paired"]) { self.config.seenPairedAt = 0; }
     else if ([f isEqualToString:@"paused"]) { s[@"phase"] = @"paused"; }
+    else if ([f isEqualToString:@"busy"]) { /* a command in progress: the requests below get one */ }
     else if ([f isEqualToString:@"approval"]) { self.approvals = @[@{@"id": @"q1", @"op": @"exec", @"alias": @"Max's Muse", @"cmd": @"rm -rf /work/old", @"asked_at": @(now - 20), @"wait": @120}]; }
     else if ([f isEqualToString:@"stopped"]) { st.modified = [NSDate dateWithTimeIntervalSinceNow:-3600]; }
     else if ([f isEqualToString:@"agents"] || [f isEqualToString:@"agent"] || [f isEqualToString:@"pairlocal"]) {
@@ -1328,7 +1359,9 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
     self.status = st;
     if (!self.requests) {
         self.requests = @[
-            @{@"id": @"1", @"op": @"exec", @"alias": @"Max's Muse", @"cmd": @"python3 /work/open_page.py", @"decision": @"allow", @"at": @(now - 120), @"done_at": @(now - 118), @"exit": @0, @"duration": @1.4, @"stdout": @"ok\n", @"stderr": @""},
+            [f isEqualToString:@"busy"]
+            ? @{@"id": @"0", @"op": @"exec", @"alias": @"Max's Muse", @"cmd": @"python3 /work/scrape.py --all", @"decision": @"allow", @"at": @(now - 40)}
+            : @{@"id": @"1", @"op": @"exec", @"alias": @"Max's Muse", @"cmd": @"python3 /work/open_page.py", @"decision": @"allow", @"at": @(now - 120), @"done_at": @(now - 118), @"exit": @0, @"duration": @1.4, @"stdout": @"ok\n", @"stderr": @""},
             @{@"id": @"2", @"op": @"put", @"alias": @"Max's Muse", @"path": @"open_page.py", @"size": @537, @"decision": @"allow", @"at": @(now - 130), @"done_at": @(now - 129)},
             @{@"id": @"3", @"op": @"get", @"alias": @"Max's Muse", @"path": @"cp-test.txt", @"decision": @"allow", @"at": @(now - 400), @"done_at": @(now - 399), @"size": @12},
             @{@"id": @"4", @"op": @"exec", @"alias": @"Max's Muse", @"cmd": @"cat /etc/passwd", @"decision": @"refuse", @"reason": @"path outside the work directory", @"at": @(now - 3000), @"done_at": @(now - 3000)},
@@ -1447,8 +1480,9 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
     } else {
         NSNumber *exit = num(r[@"exit"]);
         BOOL pending = [decision isEqualToString:@"pending"];
-        text = refused ? @"refused" : pending ? @"waiting for you" : !done ? @"running…" : (exit && exit.intValue != 0) ? [NSString stringWithFormat:@"exit %d", exit.intValue] : @"ok";
-        color = refused ? [NSColor systemRedColor] : (pending || (exit && exit.intValue != 0)) ? [NSColor systemOrangeColor] : [NSColor secondaryLabelColor];
+        BOOL stopped = num(r[@"stopped"]).boolValue;
+        text = refused ? @"refused" : pending ? @"waiting for you" : !done ? @"running…" : stopped ? @"stopped by you" : (exit && exit.intValue != 0) ? [NSString stringWithFormat:@"exit %d", exit.intValue] : @"ok";
+        color = refused ? [NSColor systemRedColor] : (pending || stopped || (exit && exit.intValue != 0)) ? [NSColor systemOrangeColor] : [NSColor secondaryLabelColor];
     }
     cell.stringValue = text;
     cell.textColor = color;
@@ -1851,7 +1885,20 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
         reviewHint.preferredMaxLayoutWidth = 380;
         self.settingsDock = [NSButton checkboxWithTitle:@"Show an icon in the Dock as well as the menu bar" target:nil action:nil];
         self.settingsLogin = [NSButton checkboxWithTitle:@"Open myous at login" target:nil action:nil];
-        self.settingsNotify = [NSButton checkboxWithTitle:@"Notify me when the worker pairs, refuses a request or stops" target:nil action:nil];
+        self.settingsNotify = [NSButton checkboxWithTitle:@"Notify me" target:nil action:nil];
+        self.settingsNotify.target = self;
+        self.settingsNotify.action = @selector(notifyMasterChanged);
+        NSMutableArray *kinds = [NSMutableArray new];
+        for (NSArray *k in @[@[@"paired", @"when a worker pairs (and when its code is about to expire)"], @[@"approval", @"when a request waits for my answer"],
+                             @[@"refused", @"when a request is refused"], @[@"stopped", @"when a worker stops on its own"], @[@"update", @"when a new version is available"]]) {
+            NSButton *b = [NSButton checkboxWithTitle:k[1] target:nil action:nil];
+            b.identifier = k[0];
+            [kinds addObject:b];
+        }
+        self.settingsKinds = kinds;
+        NSStackView *kindsCol = [self column:kinds];
+        kindsCol.edgeInsets = NSEdgeInsetsMake(0, 24, 0, 0);
+        kindsCol.spacing = 4;
         self.settingsUpdate = [NSButton checkboxWithTitle:@"Check for a new version daily" target:nil action:nil];
         self.settingsAgents = [NSButton checkboxWithTitle:@"Show the agents on this Mac (their myous folders)" target:nil action:nil];
         NSButton *save = [self button:@"Save" action:@selector(saveSettings)];
@@ -1859,7 +1906,7 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
         NSButton *cancel = [self button:@"Cancel" action:@selector(closeSettings)];
         NSStackView *col = [self column:@[[self row:@[[self label:@"Worker name" size:13 weight:NSFontWeightRegular], self.settingsName]], nameHint,
                                           [self label:@"Review" size:13 weight:NSFontWeightRegular], self.settingsReview, reviewHint,
-                                          self.settingsDock, self.settingsLogin, self.settingsNotify, self.settingsUpdate, self.settingsAgents, [self row:@[cancel, save]]]];
+                                          self.settingsDock, self.settingsLogin, self.settingsNotify, kindsCol, self.settingsUpdate, self.settingsAgents, [self row:@[cancel, save]]]];
         col.edgeInsets = NSEdgeInsetsMake(16, 20, 16, 20);
         col.translatesAutoresizingMaskIntoConstraints = NO;
         [self.settingsWindow.contentView addSubview:col];
@@ -1874,6 +1921,7 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
     [self.settingsReview selectItemAtIndex:[@[@"trust", @"changes", @"all"] indexOfObject:reviewLevel(self.paths)]];
     self.settingsDock.state = self.appConfig.dock ? NSControlStateValueOn : NSControlStateValueOff;
     self.settingsNotify.state = self.appConfig.notifications ? NSControlStateValueOn : NSControlStateValueOff;
+    for (NSButton *b in self.settingsKinds) { b.state = [self.appConfig notifies:b.identifier] ? NSControlStateValueOn : NSControlStateValueOff; b.enabled = self.appConfig.notifications; }
     self.settingsUpdate.state = self.appConfig.autoUpdate ? NSControlStateValueOn : NSControlStateValueOff;
     self.settingsAgents.state = self.appConfig.showAgents ? NSControlStateValueOn : NSControlStateValueOff;
     if (@available(macOS 13.0, *)) {
@@ -1893,6 +1941,9 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
     if (name.length) self.config.name = name;
     self.appConfig.dock = self.settingsDock.state == NSControlStateValueOn;
     self.appConfig.notifications = self.settingsNotify.state == NSControlStateValueOn;
+    NSMutableDictionary *kinds = [NSMutableDictionary new];
+    for (NSButton *b in self.settingsKinds) kinds[b.identifier] = @(b.state == NSControlStateValueOn);
+    self.appConfig.notifyKinds = kinds;
     self.appConfig.autoUpdate = self.settingsUpdate.state == NSControlStateValueOn;
     BOOL showAgents = self.settingsAgents.state == NSControlStateValueOn;
     if (showAgents != self.appConfig.showAgents) self.agents = nil;
@@ -1915,6 +1966,7 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
 }
 
 - (void)closeSettings { [self.settingsWindow orderOut:nil]; }
+- (void)notifyMasterChanged { for (NSButton *b in self.settingsKinds) b.enabled = self.settingsNotify.state == NSControlStateValueOn; }
 
 #pragma mark - notifications
 
@@ -1957,10 +2009,12 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
 }
 
 - (void)notifyOnce:(NSString *)key title:(NSString *)title body:(NSString *)body category:(NSString *)category {
+    NSString *kind = [key hasPrefix:@"ask-"] ? @"approval" : [key hasPrefix:@"update-"] ? @"update" : [key hasPrefix:@"refused-"] ? @"refused"
+        : [key hasPrefix:@"paired-"] || [key hasPrefix:@"expiring-"] ? @"paired" : @"stopped";
     if (![key hasPrefix:@"ask-"] && ![key hasPrefix:@"update-"]) key = [NSString stringWithFormat:@"%@/%@", self.paths.home.lastPathComponent, key];
     if ([self.notified containsObject:key]) return;
     [self.notified addObject:key];
-    if (!self.appConfig.notifications || ![NSBundle mainBundle].bundleIdentifier || self.fake) return;
+    if (!self.appConfig.notifications || ![self.appConfig notifies:kind] || ![NSBundle mainBundle].bundleIdentifier || self.fake) return;
     UNMutableNotificationContent *content = [UNMutableNotificationContent new];
     content.title = title;
     content.body = body;

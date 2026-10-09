@@ -53,6 +53,8 @@ extern const NSTimeInterval kStaleAfter;
 @property (nonatomic, copy) NSString *name;   // the worker's name (its alias); nil until set up
 @property (nonatomic) BOOL dock;              // show a Dock icon too (default: menu bar only)
 @property (nonatomic) BOOL notifications;     // default YES
+@property (nonatomic, strong) NSDictionary *notifyKinds;   // "paired", "approval", "refused", "stopped", "update" -> BOOL (missing: YES)
+- (BOOL)notifies:(NSString *)kind;
 @property (nonatomic) BOOL autoUpdate;        // check for a new release daily (default YES)
 @property (nonatomic) double seenPairedAt;    // the pairing the owner has acknowledged
 @property (nonatomic) double seenRequestsAt;  // requests before this are not "new"

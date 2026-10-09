@@ -33,13 +33,20 @@ in [skill.md](https://myoushq.com/skill.md).
   agent, marked `added_by: owner`. **Several workers:** "Add a worker…"
   gives this Mac another worker with its own key, folder
   (`~/.myous-worker-2`, …), container and pairing; the list and the menu
-  show each one, the icon the worst state.
+  show each one, the icon the worst state. "Stop this command" ends a
+  command in progress (the worker kills its process group and tells the
+  agent "stopped by the owner"). Notifications can be switched per kind.
+  One notification when a pairing code is about to expire with no agent
+  yet, if the window is closed.
 - **Worker:** `phase` in the status file (`starting`, `browser`,
   `registering` from the container; `running`, `paused`, `error: ...`
   from the worker); one JSON record per request in `requests/` with its
   decision, outcome, duration and output (newest 200); command files in
   `commands/` (`new-code`, `unpair`); `paired` and `unpair` entries in
-  the log; a changed name re-registers at the next start.
+  the log; a changed name re-registers at the next start. A `stop-<id>`
+  command file ends the command with that id (`stopped: true` in the
+  result and the record). Command output goes through temporary files,
+  so a daemon a command leaves behind no longer delays the result.
 - **Review levels and approvals.** The review hook (`worker/review.py`)
   reads `review.json` in the worker's home: `trust` (everything runs),
   `changes` (reads run, anything that changes something asks the owner)

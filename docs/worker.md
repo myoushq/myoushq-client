@@ -143,8 +143,10 @@ allowed or refused, is `~/.myous-worker/worker.log`, and
 `~/.myous-worker/requests/` keeps one JSON record per recent request
 with its outcome and output (the newest 200). Files dropped in
 `~/.myous-worker/commands/` are picked up by the worker: `new-code`
-(a fresh pairing code while unpaired) and `unpair` (drop every contact
-and offer a code). The Mac app uses all of these.
+(a fresh pairing code while unpaired), `unpair` (drop every contact
+and offer a code) and `stop-<request id>` (end the command running
+under that id; its result says `stopped by the owner`). The Mac app
+uses all of these.
 
 - **Pause:** `touch ~/.myous-worker/worker.paused` refuses every request
   until the file is removed. The user can do this any time.

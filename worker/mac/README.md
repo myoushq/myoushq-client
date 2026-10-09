@@ -74,7 +74,8 @@ The project name is `myous-worker` in every mode, so Stop finds the
 containers after a mode switch or an app update; "Remove stale containers"
 clears anything older. The mode and checkout path are in
 `~/.myous-worker/app.json` with the app's settings (`name`, `dock`,
-`notifications`, `auto_update`, and what the owner has already seen).
+`notifications` with `notify` per kind, `auto_update`, `show_agents`,
+`agent_homes`, and what the owner has already seen).
 
 ## What the window shows, screen by screen
 
@@ -89,7 +90,8 @@ clears anything older. The mode and checkout path are in
   with a validity bar and "New code", a QR code behind a button.
 - **Paired:** the verification code; Unpair if the numbers differ.
 - **Requests:** newest first, with the agent, what ran or moved, and the
-  outcome (ok, exit N, refused with the reason, running…). New rows are
+  outcome (ok, exit N, refused with the reason, running…, stopped by
+  you). "Stop this command" appears while one runs. New rows are
   bold until the window has been in front; the menu bar shows their count.
   Pause / Resume creates or removes `~/.myous-worker/worker.paused`.
 - **Browser:** "Open browser" asks Docker which port the browser view
@@ -120,7 +122,7 @@ clears anything older. The mode and checkout path are in
 Checking the layout without a worker: `build/myous.app/Contents/MacOS/myous
 --snapshot /tmp/window.png` renders the window (a PDF next to it carries
 the text) and exits; `MYOUS_FAKE_STATE=setup|noruntime|stoppedruntime|
-starting|pair|paired|running|paused|stopped|approval|agents|agent|pairlocal|workers`
+starting|pair|paired|running|paused|stopped|approval|busy|agents|agent|pairlocal|workers`
 shows each screen with made-up data, `MYOUS_WORKER_HOME=<dir>` points at
 another worker's home, `MYOUS_AGENT_HOMES=<dir>:<dir>` replaces the search
 for agents' directories (`MYOUS_SNAPSHOT_AGENT=1` shows the first one's

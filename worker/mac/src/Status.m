@@ -93,6 +93,7 @@ NSDictionary *dict(id v) { return [v isKindOfClass:[NSDictionary class]] ? v : n
     c.lastUpdateCheck = num(d[@"last_update_check"]).doubleValue;
     c.skippedVersion = str(d[@"skipped_version"]);
     if (num(d[@"show_agents"])) c.showAgents = num(d[@"show_agents"]).boolValue;
+    c.notifyKinds = dict(d[@"notify"]) ?: @{};
     NSMutableArray *homes = [NSMutableArray new];
     for (id h in [d[@"agent_homes"] isKindOfClass:[NSArray class]] ? d[@"agent_homes"] : @[]) if (str(h)) [homes addObject:h];
     c.agentHomes = homes;
@@ -113,10 +114,12 @@ NSDictionary *dict(id v) { return [v isKindOfClass:[NSDictionary class]] ? v : n
     if (self.lastUpdateCheck) d[@"last_update_check"] = @(self.lastUpdateCheck);
     if (self.skippedVersion) d[@"skipped_version"] = self.skippedVersion;
     d[@"show_agents"] = @(self.showAgents);
+    if (self.notifyKinds.count) d[@"notify"] = self.notifyKinds;
     if (self.agentHomes.count) d[@"agent_homes"] = self.agentHomes;
     NSData *data = [NSJSONSerialization dataWithJSONObject:d options:NSJSONWritingPrettyPrinted | NSJSONWritingSortedKeys error:nil];
     [data writeToFile:[self.paths config] atomically:YES];
 }
+- (BOOL)notifies:(NSString *)kind { NSNumber *v = num(self.notifyKinds[kind]); return v ? v.boolValue : YES; }
 - (BOOL)isDirect { return [self.mode isEqualToString:@"direct"]; }
 - (BOOL)isImage {
     if ([self.mode isEqualToString:@"image"]) return YES;

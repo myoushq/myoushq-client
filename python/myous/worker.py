@@ -20,6 +20,7 @@ import shlex
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -114,6 +115,15 @@ class Worker:
         if not self.commands_dir or not self.commands_dir.is_dir():
             return
         for f in sorted(self.commands_dir.iterdir()):
+            if f.name.startswith("stop-"):
+                # For the command running now (run_command watches and removes
+                # it); one left behind by a command that had finished expires.
+                try:
+                    if time.time() - f.stat().st_mtime > 600:
+                        f.unlink()
+                except OSError:
+                    pass
+                continue
             try:
                 f.unlink()
             except OSError:
@@ -217,7 +227,8 @@ class Worker:
             await self.refuse(e, req["id"], why)
             return
         started = time.time()
-        result = await asyncio.get_running_loop().run_in_executor(None, run_command, cmd, self.work, timeout)
+        stop_file = self.commands_dir / f"stop-{req['id']}" if self.commands_dir else None
+        result = await asyncio.get_running_loop().run_in_executor(None, run_command, cmd, self.work, timeout, stop_file)
         self.note(e, "exec", True)
         self.record(req["id"], done_at=int(time.time()), duration=round(time.time() - started, 2), **result)
         await self.reply(e, dict(result, myous="result", id=req["id"]))
@@ -391,36 +402,53 @@ class Worker:
         print(text, file=self.out, flush=True)
 
 
-def run_command(cmd: str, cwd: Path, timeout: int) -> dict:
+def run_command(cmd: str, cwd: Path, timeout: int, stop_file: Path | None = None) -> dict:
     """Run a shell command in its own process group, so a timeout kills
-    whatever it started too. Output is cut to fit a message."""
-    proc = subprocess.Popen(cmd, shell=True, cwd=cwd, stdin=subprocess.DEVNULL,
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
-    try:
-        out, err = proc.communicate(timeout=timeout)
-        exit_code = proc.returncode
-    except subprocess.TimeoutExpired:
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except OSError:
-            pass
-        try:
-            out, err = proc.communicate(timeout=5)
-            note = f"[myous: killed after {timeout} seconds]"
-        except subprocess.TimeoutExpired as still_open:
-            # Something the command started left the process group (setsid,
-            # a daemon) and still holds our pipes: stop reading rather than
-            # wait for it. The shell itself is dead, so wait() returns.
-            out, err = still_open.stdout or b"", still_open.stderr or b""
-            proc.stdout.close()
-            proc.stderr.close()
+    whatever it started too. Output goes to temporary files (a daemon the
+    command leaves behind can't hold us up by keeping a pipe open) and is
+    cut to fit a message. While it runs, the owner's app can create
+    `stop_file` to end it ("stopped by you" to the agent)."""
+    with tempfile.TemporaryFile() as out_f, tempfile.TemporaryFile() as err_f:
+        proc = subprocess.Popen(cmd, shell=True, cwd=cwd, stdin=subprocess.DEVNULL,
+                                stdout=out_f, stderr=err_f, start_new_session=True)
+        deadline = time.time() + timeout
+        note, stopped = None, False
+        while True:
+            try:
+                proc.wait(timeout=0.25)
+                break
+            except subprocess.TimeoutExpired:
+                pass
+            if stop_file is not None and stop_file.exists():
+                stopped = True
+                note = "[myous: stopped by the owner]"
+            elif time.time() >= deadline:
+                note = f"[myous: killed after {timeout} seconds]"
+            else:
+                continue
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except OSError:
+                pass
             proc.wait()
-            note = f"[myous: killed after {timeout} seconds; a process it started kept running and its output was cut]"
+            break
+        if stop_file is not None:
+            try:
+                stop_file.unlink()
+            except OSError:
+                pass
+        out_f.seek(0)
+        err_f.seek(0)
+        out, err = out_f.read(), err_f.read()
+    exit_code = proc.returncode if note is None else -1
+    if note:
         err += b"\n" + note.encode()
-        exit_code = -1
     stdout, cut_out = _cut(out, STDOUT_LIMIT)
     stderr, cut_err = _cut(err, STDERR_LIMIT)
-    return {"exit": exit_code, "stdout": stdout, "stderr": stderr, "truncated": cut_out or cut_err}
+    result = {"exit": exit_code, "stdout": stdout, "stderr": stderr, "truncated": cut_out or cut_err}
+    if stopped:
+        result["stopped"] = True
+    return result
 
 
 def _cut(data: bytes, limit: int) -> tuple[str, bool]:

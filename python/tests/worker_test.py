@@ -115,15 +115,40 @@ class WorkerTest(unittest.TestCase):
         self.assertLess(time.time() - started, 10)
 
     def test_timeout_does_not_wait_for_an_escaped_grandchild(self):
-        # A daemon that leaves the process group and keeps our pipes open
-        # must not hang the worker: output stops, the shell is reaped.
+        # A daemon that leaves the process group and keeps our output open
+        # must not hang the worker: the shell is reaped, what was written stays.
         cmd = f"{sys.executable} -c 'import os,time,sys; os.setsid(); print(\"started\", flush=True); time.sleep(20)' & wait"
         started = time.time()
         self.run_(self.w.handle(message(json.dumps({"myous": "exec", "id": RID, "cmd": cmd, "timeout": 1}))))
         r = self.replies()[-1]
         self.assertEqual(r["exit"], -1)
-        self.assertIn("kept running", r["stderr"])
+        self.assertIn("killed after 1 seconds", r["stderr"])
+        self.assertIn("started", r["stdout"])
         self.assertLess(time.time() - started, 12)
+
+    def test_owner_stops_a_running_command(self):
+        # The app drops commands/stop-<id>; the worker kills the command and
+        # tells the agent it was stopped by the owner.
+        (self.home / "commands").mkdir(exist_ok=True)
+
+        async def stop_soon():
+            await asyncio.sleep(0.7)
+            (self.home / "commands" / f"stop-{RID}").touch()
+
+        async def both():
+            await asyncio.gather(self.w.handle(message(json.dumps({"myous": "exec", "id": RID, "cmd": "echo begun; sleep 30", "timeout": 60}))), stop_soon())
+
+        started = time.time()
+        self.run_(both())
+        r = self.replies()[-1]
+        self.assertEqual(r["exit"], -1)
+        self.assertTrue(r["stopped"])
+        self.assertIn("stopped by the owner", r["stderr"])
+        self.assertIn("begun", r["stdout"])
+        self.assertLess(time.time() - started, 10)
+        self.assertFalse((self.home / "commands" / f"stop-{RID}").exists())
+        rec = json.loads((self.home / "requests" / f"{RID}.json").read_text())
+        self.assertTrue(rec["stopped"])
 
     def test_malformed_requests_are_refused_not_fatal(self):
         self.run_(self.w.handle(message('{"myous": "exec", "id": "%s", "cmd": "echo ok", "timeout": Infinity}' % RID)))
