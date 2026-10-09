@@ -1,0 +1,28 @@
+#!/bin/sh
+# Pre-push hook: before a release tag leaves this machine, run what the
+# release workflow runs first, so a tag that would fail CI isn't pushed.
+# Install once:  git config core.hooksPath scripts/hooks
+# Skip once:     MYOUS_SKIP_HOOK=1 git push ...
+set -u
+[ "${MYOUS_SKIP_HOOK:-}" = 1 ] && exit 0
+cd "$(git rev-parse --show-toplevel)"
+
+tags=""
+while read -r local_ref local_sha remote_ref remote_sha; do
+	case "$local_ref" in refs/tags/v*) tags="$tags ${local_ref#refs/tags/}" ;; esac
+done
+[ -n "$tags" ] || exit 0   # branches push freely; CI tests them
+
+echo "pre-push: release tag(s)$tags: checking versions and auditing dependencies (a few minutes)"
+for tag in $tags; do
+	version=${tag#v}
+	for f in python/pyproject.toml rust/Cargo.toml; do
+		git show "$tag:$f" | grep -q "^version = \"$version\"" || { echo "pre-push: $f at $tag is not version $version" >&2; exit 1; }
+	done
+	git show "$tag:typescript/package.json" | grep -q "\"version\": \"$version\"" || { echo "pre-push: typescript/package.json at $tag is not version $version" >&2; exit 1; }
+	git show "$tag:go/notices.go" | grep -q "Version = \"$version\"" || { echo "pre-push: go/notices.go at $tag is not version $version" >&2; exit 1; }
+	git -c gpg.format=ssh -c gpg.ssh.allowedSignersFile=docs/allowed_signers verify-tag "$tag" >/dev/null 2>&1 \
+		|| { echo "pre-push: $tag is not signed by the release key" >&2; exit 1; }
+done
+PATH="$HOME/.cargo/bin:$PATH" sh scripts/audit.sh || { echo "pre-push: the audit failed; fix it (usually a toolchain or dependency bump) before tagging" >&2; exit 1; }
+echo "pre-push: all clear"

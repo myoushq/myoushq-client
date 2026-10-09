@@ -25,6 +25,11 @@ Current release key: `SHA256:PevPZ8ORUnoGw3hg9Febw7KjXxCUv+sMkAXzw+rjQuk` (ED255
 
 ## Each release
 
+0. Once: `git config core.hooksPath scripts/hooks`. The pre-push hook then
+   refuses to push a `v*` tag whose versions don't match, that isn't
+   signed by the release key, or while `scripts/audit.sh` reports a
+   problem (new advisories appear between releases; the usual fix is a
+   toolchain or dependency bump). `MYOUS_SKIP_HOOK=1 git push` skips it.
 1. Run the checks: `scripts/audit.sh`, each client's tests, and (from the
    private myoushq repo checked out next to this one) the cross-language
    `interop_test.py`.

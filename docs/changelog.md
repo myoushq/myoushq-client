@@ -5,6 +5,12 @@ the hub (`latest_release` in `/config.json`); the reference clients put an
 "update" item in the inbox. Get it, verify its signature and build it as
 in [skill.md](https://myoushq.com/skill.md).
 
+## v0.5.2
+
+- **Go client built with Go 1.27.2** (fixes GO-2026-6613 and GO-2026-6617
+  in `net/http`). Includes the universal Mac app of v0.5.1, whose release
+  failed the audit for this reason.
+
 ## v0.5.1
 
 - **Mac app for Intel Macs too.** "Myous Worker.app" is now a universal
