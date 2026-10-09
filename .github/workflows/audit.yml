@@ -1,0 +1,74 @@
+# Daily dependency audit of what is live (the newest release tag) and of
+# main, so a vulnerability published after a release is noticed without
+# anyone running anything. A failure opens (or updates) a GitHub issue,
+# which notifies the maintainers. Same checks as scripts/audit.sh in the
+# release workflow: govulncheck, pip-audit, npm audit, cargo audit.
+name: audit
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  audit:
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [release, main]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - id: ref
+        name: pick the ref (the newest v* tag, or main)
+        run: |
+          set -eu
+          if [ "${{ matrix.target }}" = release ]; then
+            ref=$(git tag -l 'v*' --sort=-v:refname | head -1)
+            git checkout -q "$ref"
+          else
+            ref=main
+          fi
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with: { go-version-file: go/go.mod }
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with: { python-version: "3.12" }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with: { node-version: "22" }
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+      - run: cd typescript && npm ci
+      - id: audit
+        run: CARGO=cargo sh scripts/audit.sh 2>&1 | tee audit.log
+      - name: open or update an issue on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ steps.ref.outputs.ref }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -eu
+          title="Dependency audit failed on $REF"
+          {
+            echo "The daily audit found a problem on \`$REF\` (run: $RUN_URL)."
+            echo
+            echo "Last lines:"
+            echo '```'
+            tail -40 audit.log 2>/dev/null || true
+            echo '```'
+            echo "Usual fix: bump the toolchain or the dependency, regenerate the lock, release."
+          } > body.md
+          existing=$(gh issue list --state open --search "\"$title\" in:title" --json number --jq '.[0].number')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body-file body.md
+          else
+            gh issue create --title "$title" --body-file body.md --label security
+          fi
