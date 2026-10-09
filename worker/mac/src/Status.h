@@ -26,6 +26,11 @@ extern const NSTimeInterval kStaleAfter;
 - (NSString *)requests;  // requests/: one JSON record per request
 - (NSString *)approvals; // approvals/: questions from the review hook, answers from the app
 - (NSString *)review;    // review.json: {"level": "trust" | "changes" | "all"}
+- (NSString *)browserDir;       // browser/: the profile of the browser on this Mac
+- (NSString *)downloads;        // downloads/: where that browser saves files
+- (NSString *)browserJSON;      // browser.json: {"host", "port", ...} for the container's forwarder
+- (NSString *)browserSeatbelt;  // browser.sb: the sandbox profile it runs under
+- (NSString *)browserLog;       // browser.log: its output
 + (NSString *)bundledReview;    // Contents/Resources/review.py, for direct mode
 + (NSString *)bundledCompose;   // Contents/Resources/compose.yml: the published image
 @end
@@ -51,6 +56,8 @@ extern const NSTimeInterval kStaleAfter;
 @property (nonatomic, copy) NSString *repo;   // path to the myoushq-client checkout
 @property (nonatomic, copy) NSString *mode;   // "image", "docker" or "direct"
 @property (nonatomic, copy) NSString *name;   // the worker's name (its alias); nil until set up
+@property (nonatomic, copy) NSString *browser; // "container" (default) or "mac": where the worker's browser runs
+@property (nonatomic) BOOL browserHidden;      // the Mac browser starts hidden, until "Show browser"
 @property (nonatomic) BOOL dock;              // show a Dock icon too (default: menu bar only)
 @property (nonatomic) BOOL notifications;     // default YES
 @property (nonatomic, strong) NSDictionary *notifyKinds;   // "paired", "approval", "refused", "stopped", "update" -> BOOL (missing: YES)
@@ -67,6 +74,7 @@ extern const NSTimeInterval kStaleAfter;
 - (BOOL)isDirect;
 - (BOOL)isImage;
 - (BOOL)usesDocker;
+- (BOOL)macBrowser;   // a container worker whose browser runs on this Mac
 @end
 
 /// requests/*.json, newest first (by `at`), at most `limit`.

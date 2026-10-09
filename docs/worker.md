@@ -87,6 +87,17 @@ You should see the browser start, then the worker. The worker creates its
 identity in `~/.myous-worker` on the host and registers with the hub (a
 few seconds of proof of work).
 
+The browser can also run on the host instead of in the container:
+`MYOUS_BROWSER=host` makes the entrypoint skip the container's browser
+and run `forward.py`, which relays `127.0.0.1:9222` inside the container
+to the port named in `~/.myous-worker/browser.json` (`{"host":
+"host.docker.internal", "port": N}`), written by whatever runs the
+browser on the host. The Mac app does this ("Browser: on this Mac": a
+real Chrome with the worker's own profile, sandboxed to its folder;
+`worker/mac/README.md`). Scripts connect to `http://localhost:9222`
+either way. `MYOUS_TZ` and `MYOUS_LANG` (e.g. `America/Chicago`,
+`en-US`) give the container's browser the user's clock and language.
+
 ## 4. Let the user log into sites
 
 Find the port Docker picked for the browser view (it changes at each
@@ -105,6 +116,14 @@ host's clipboard into the worker's browser and Cmd+C or Ctrl+C copies
 from it to the host (text only; files go through `myous cp`). The same
 goes for Cmd+A, Cmd+Z and the other editing shortcuts. Shortcuts the
 host browser keeps for itself (new tab, close tab, quit) stay with it.
+
+With the browser on the host there is no browser view: the user logs in
+in that browser's own window. Either way the browser is started as a
+plain process, never through Playwright: a Playwright-launched browser
+carries the automation mark (`navigator.webdriver` is true on every
+page) for as long as Playwright is attached, and sites that screen for
+bots refuse it even while the user drives it by hand. A script's
+`connect_over_cdp` does not set the mark.
 
 ## 5. Pair it with the user's agent
 
@@ -195,7 +214,8 @@ that comes with Xcode's command line tools (Objective-C, no Xcode, no
 Swift toolchain needed; a few seconds). It lives in the menu bar, shows
 whether the worker is running and what phase it is in, the pairing
 message, every request with its outcome, and offers Pause, Start/Stop
-and "Open browser". It also lists the agents whose myous directories are
+and "Open browser" (or "Show browser" when the worker's browser is a
+Chrome on the Mac, sandboxed to the worker's folder). It also lists the agents whose myous directories are
 on this Mac and can accept a pairing code on their behalf (the contact
 then carries `added_by: owner`). Details in `worker/mac/README.md`.
 

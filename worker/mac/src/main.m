@@ -3,6 +3,7 @@
 #import <AppKit/AppKit.h>
 #import "App.h"
 #import "Icon.h"
+#import "Browser.h"
 
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
@@ -12,6 +13,23 @@ int main(int argc, const char *argv[]) {
                 fprintf(stderr, "render-icon: %s\n", err.localizedDescription.UTF8String);
                 return 1;
             }
+            return 0;
+        }
+        if (argc >= 3 && strcmp(argv[1], "--browser-test") == 0) {
+            // Run the "browser on this Mac" launcher for a worker folder, print
+            // browser.json once the port is known, keep it 20 s, quit it.
+            MacBrowser *b = [[MacBrowser alloc] initWithPaths:[[Paths alloc] initWithHome:[[NSString stringWithUTF8String:argv[2]] stringByExpandingTildeInPath]]];
+            b.log = ^(NSString *line) { fprintf(stderr, "%s\n", line.UTF8String); };
+            NSError *err;
+            if (![b start:&err]) { fprintf(stderr, "browser-test: %s\n", err.localizedDescription.UTF8String); return 1; }
+            NSDate *until = [NSDate dateWithTimeIntervalSinceNow:20];
+            while (b.port == 0 && b.task && [until timeIntervalSinceNow] > 0) [[NSRunLoop mainRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.2]];
+            NSString *json = [NSString stringWithContentsOfFile:[b.paths browserJSON] encoding:NSUTF8StringEncoding error:nil] ?: @"(no browser.json)";
+            printf("%s\n", json.UTF8String);
+            fflush(stdout);
+            while ([until timeIntervalSinceNow] > 0) [[NSRunLoop mainRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.5]];
+            [b stop];
+            [[NSRunLoop mainRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:1]];
             return 0;
         }
         NSApplication *app = [NSApplication sharedApplication];

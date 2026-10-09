@@ -24,7 +24,7 @@ RUN python3 -m venv --system-site-packages /opt/venv \
 RUN useradd -m -u 10001 worker \
 	&& mkdir -p /work /home/worker/profile /home/worker/.myous \
 	&& chown -R worker:worker /work /home/worker
-COPY --chown=worker:worker worker/browser.py worker/entrypoint.sh worker/review.py /opt/worker/
+COPY --chown=worker:worker worker/browser.py worker/forward.py worker/entrypoint.sh worker/review.py /opt/worker/
 RUN chmod 755 /opt/worker/entrypoint.sh /opt/worker/review.py
 
 USER worker

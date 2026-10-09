@@ -75,7 +75,8 @@ containers after a mode switch or an app update; "Remove stale containers"
 clears anything older. The mode and checkout path are in
 `~/.myous-worker/app.json` with the app's settings (`name`, `dock`,
 `notifications` with `notify` per kind, `auto_update`, `show_agents`,
-`agent_homes`, and what the owner has already seen).
+`agent_homes`, and what the owner has already seen); per worker also
+`browser` ("mac" or "container") and `browser_hidden`.
 
 ## What the window shows, screen by screen
 
@@ -94,8 +95,35 @@ clears anything older. The mode and checkout path are in
   you). "Stop this command" appears while one runs. New rows are
   bold until the window has been in front; the menu bar shows their count.
   Pause / Resume creates or removes `~/.myous-worker/worker.paused`.
-- **Browser:** "Open browser" asks Docker which port the browser view
-  got and opens it connected and sized to the tab.
+- **Browser:** two places it can run, chosen on the Set up card and under
+  Advanced › Browser (a change applies at the next start; each browser
+  keeps its own logins). **On this Mac** (the default when Google Chrome,
+  Edge, Brave or Chromium is installed, else disabled with "Get Google
+  Chrome"): the app runs that browser with the worker's own profile in
+  `~/.myous-worker/browser` (never your everyday profile), under a
+  seatbelt sandbox profile (`browser.sb`, run with `sandbox-exec`) that
+  keeps it to its folder: nothing else under your home folder (not even
+  the worker's key next door), no mounted volumes, no programs outside
+  its own bundle, no connections to this Mac's localhost; downloads go
+  to `~/.myous-worker/downloads`, which the container sees. The window
+  is told apart from your own browser by its profile name ("<worker> ·
+  myous"), a teal toolbar and a start page that says whose it is. Its
+  DevTools port (one the app picks; a dynamic port would make Chrome mark
+  every page as automated) is written to `browser.json`, and the
+  container's `forward.py` relays `localhost:9222` to it, so agents'
+  scripts need no change. "Show browser" brings it to the front; the
+  setting "Keep this worker's browser hidden until I choose Show
+  browser" launches it hidden (Cmd+H) and it keeps working there. macOS
+  allows no sandbox inside a sandbox, so Chrome's own helper sandbox is
+  off (`--no-sandbox`, as in the container, where the container is the
+  sandbox); Chrome shows a bar about that flag, which you can close. If
+  the browser can't run (uninstalled, or `sandbox-exec` gone), a red
+  line says so. **In the container:** a Chromium inside the container
+  started as a plain process (not through Playwright, whose launch marks
+  every page as automated, which is what made sites take you for a bot
+  in the browser view); "Open browser" asks Docker which port the browser
+  view got and opens it connected and sized to the tab. The owner's
+  timezone and language go into the container either way.
 - **Stopping:** the moment you press Stop, the header, the menu and the
   icon say "Stopping…" (blue) and the card explains; the worker counts
   as stopped as soon as the stop command has finished, without waiting
@@ -130,14 +158,17 @@ clears anything older. The mode and checkout path are in
 Checking the layout without a worker: `build/myous.app/Contents/MacOS/myous
 --snapshot /tmp/window.png` renders the window (a PDF next to it carries
 the text) and exits; `MYOUS_FAKE_STATE=setup|noruntime|stoppedruntime|
-starting|pair|paired|running|paused|stopping|stopped|approval|busy|agents|agent|pairlocal|workers`
+starting|pair|paired|running|paused|stopping|stopped|approval|busy|agents|agent|pairlocal|workers|macbrowser`
 (`MYOUS_SNAPSHOT_WORKER=<n>` shows the n-th worker)
 shows each screen with made-up data, `MYOUS_WORKER_HOME=<dir>` points at
 another worker's home, `MYOUS_AGENT_HOMES=<dir>:<dir>` replaces the search
 for agents' directories (`MYOUS_SNAPSHOT_AGENT=1` shows the first one's
 card), and `MYOUS_DOCKER_BIN=/nonexistent` simulates a Mac without Docker.
 `--render-icon DIR` writes the icon PNGs (make-app.sh uses it; the icon
-is drawn in code, no image files in the repo).
+is drawn in code, no image files in the repo). `--browser-test DIR` runs
+the "browser on this Mac" launcher for a worker folder on its own: it
+prints `browser.json` once the port is open, keeps the browser 20 s and
+quits it.
 
 ## Releasing (maintainers)
 

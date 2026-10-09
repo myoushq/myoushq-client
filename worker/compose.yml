@@ -31,6 +31,17 @@ services:
       MYOUS_ALIAS: ${MYOUS_ALIAS:-Desktop worker}
       # Another hub, for tests; empty means myoushq.com.
       MYOUS_HUB: ${MYOUS_HUB:-}
+      # "container" (the browser above) or "host" (a browser on this
+      # machine, forwarded; see entrypoint.sh and forward.py).
+      MYOUS_BROWSER: ${MYOUS_BROWSER:-container}
+      # The owner's timezone and language, so the browser's clock and
+      # Accept-Language match the address it browses from.
+      TZ: ${MYOUS_TZ:-UTC}
+      MYOUS_LANG: ${MYOUS_LANG:-}
+    # The host, for the forwarded browser (Docker Desktop has this name
+    # built in; Docker Engine on Linux needs the mapping).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     # Chromium keeps its renderers in shared memory.
     shm_size: 1g
     # Chromium runs with --no-sandbox here (its own sandbox needs

@@ -9,24 +9,35 @@ it with Playwright:
         browser = p.chromium.connect_over_cdp("http://localhost:9222")
         page = browser.contexts[0].new_page()
 
+The browser is started as a plain process, not through Playwright: a
+browser launched by Playwright carries the automation mark
+(navigator.webdriver is true on every page) for as long as Playwright is
+attached, and sites that screen for bots refuse it even while the owner
+drives it by hand through the browser view. Started plainly, nothing is
+attached until an agent's script connects, and that connection does not
+set the mark.
+
 The browser uses a persistent profile, so sites you log into once stay
-logged in. In the container the window shows on the Xvfb display that
-noVNC serves (http://localhost:6080/vnc.html); in direct mode it's an
-ordinary window on your screen. If the browser exits (you closed it, it
-crashed), it's started again a few seconds later.
+logged in. In the container the window shows on the display that noVNC
+serves (http://localhost:6080/); in direct mode it's an ordinary window
+on your screen. If the browser exits (you closed it, it crashed), it's
+started again a few seconds later.
 
 Environment: MYOUS_BROWSER_PROFILE (profile directory, default
 ~/.myous-worker/profile), MYOUS_CDP_PORT (default 9222),
 MYOUS_BROWSER_NO_SANDBOX=1 (needed inside the container, where Chromium's
-own sandbox can't be set up).
+own sandbox can't be set up), MYOUS_BROWSER_BIN (the browser to run;
+default: Playwright's Chromium, else chromium or google-chrome on PATH),
+MYOUS_LANG (the browser's language, e.g. en-US; the container gets the
+owner's from the app).
 """
 from __future__ import annotations
 
 import os
+import shutil
+import subprocess
 import sys
 import time
-
-from playwright.sync_api import sync_playwright
 
 PROFILE = os.path.expanduser(os.environ.get("MYOUS_BROWSER_PROFILE", "~/.myous-worker/profile"))
 PORT = int(os.environ.get("MYOUS_CDP_PORT", "9222"))
@@ -54,36 +65,73 @@ def clear_stale_lock() -> None:
                 log(f"could not remove {name}: {e}")
 
 
-def run_once() -> None:
-    clear_stale_lock()
-    args = [f"--remote-debugging-port={PORT}", "--remote-debugging-address=127.0.0.1"]
+def executable() -> str | None:
+    """The browser binary: MYOUS_BROWSER_BIN, Playwright's Chromium (what the
+    image ships), or a chromium / google-chrome on PATH."""
+    env = os.environ.get("MYOUS_BROWSER_BIN")
+    if env:
+        return env
+    try:
+        from playwright.sync_api import sync_playwright
+
+        with sync_playwright() as p:
+            path = p.chromium.executable_path
+        if path and os.path.exists(path):
+            return path
+    except Exception as e:  # no Playwright, or its browsers aren't installed
+        log(f"no Playwright Chromium ({type(e).__name__}); looking on PATH")
+    for name in ("chromium", "chromium-browser", "google-chrome", "google-chrome-stable"):
+        found = shutil.which(name)
+        if found:
+            return found
+    return None
+
+
+def arguments(exe: str) -> list[str]:
+    args = [
+        exe,
+        f"--remote-debugging-port={PORT}",
+        "--remote-debugging-address=127.0.0.1",
+        f"--user-data-dir={PROFILE}",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-search-engine-choice-screen",
+        "--start-maximized",
+    ]
+    lang = os.environ.get("MYOUS_LANG")
+    if lang:
+        args.append(f"--lang={lang}")
+    if sys.platform == "darwin":
+        args.append("--use-mock-keychain")   # never a login-keychain dialog
+    else:
+        args.append("--password-store=basic")
     if os.environ.get("MYOUS_BROWSER_NO_SANDBOX") == "1":
         args.append("--no-sandbox")
-    with sync_playwright() as p:
-        context = p.chromium.launch_persistent_context(
-            PROFILE, headless=False, args=args, viewport=None, no_viewport=True,
-        )
-        page = context.pages[0] if context.pages else context.new_page()
-        page.goto(START_PAGE)
-        log(f"running, profile {PROFILE}, CDP on 127.0.0.1:{PORT}")
-        # The sync API only delivers events while we're inside a call, so
-        # keep calling into it; a closed context makes the call raise.
-        while True:
-            page = next(iter(context.pages), None)
-            if page is None:
-                page = context.new_page()
-            page.wait_for_timeout(1000)
+    args.append(START_PAGE)
+    return args
+
+
+def run_once(exe: str) -> int:
+    clear_stale_lock()
+    proc = subprocess.Popen(arguments(exe))
+    log(f"running {exe} (pid {proc.pid}), profile {PROFILE}, CDP on 127.0.0.1:{PORT}")
+    return proc.wait()
 
 
 def main() -> None:
     os.makedirs(PROFILE, mode=0o700, exist_ok=True)
+    exe = executable()
+    if not exe:
+        log("no browser found; set MYOUS_BROWSER_BIN")
+        sys.exit(1)
     while True:
         try:
-            run_once()
+            status = run_once(exe)
+            log(f"exited with status {status}; restarting in 3 s")
         except KeyboardInterrupt:
             return
-        except Exception as e:  # closed window, crash, display not ready yet
-            log(f"stopped ({type(e).__name__}: {str(e).splitlines()[0] if str(e) else ''}); restarting in 3 s")
+        except Exception as e:  # display not ready yet, binary gone
+            log(f"could not run ({type(e).__name__}: {str(e).splitlines()[0] if str(e) else ''}); retrying in 3 s")
         time.sleep(3)
 
 

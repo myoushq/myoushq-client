@@ -57,6 +57,9 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
 @property (nonatomic, strong) NSBox *setupCard, *runtimeCard, *startingCard, *pairCard, *pairedCard, *requestsCard, *browserCard, *stoppedCard;
 @property (nonatomic, strong) NSTextField *setupRuntime, *nameField, *runtimeText, *directWarning;
 @property (nonatomic, strong) NSButton *setupRemove, *stoppedRemove;
+@property (nonatomic, strong) NSPopUpButton *setupBrowser;
+@property (nonatomic, strong) NSTextField *setupBrowserHint, *browserText;
+@property (nonatomic, strong) NSButton *browserOpen, *setupGetChrome, *settingsBrowserHidden;
 @property (nonatomic, strong) NSButton *setupStart, *getDockerButton, *getOrbButton, *openRuntimeButton, *directToggle, *directStart;
 @property (nonatomic, strong) NSArray<NSTextField *> *startRows;
 @property (nonatomic, strong) NSTextField *startNote;
@@ -189,7 +192,7 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
     return NO;
 }
 - (void)applicationWillTerminate:(NSNotification *)note {
-    [self.direct terminate];   // a direct-mode worker is our child; don't leave it orphaned
+    for (Worker *w in self.workers) { [w.direct terminate]; [w.browser stop]; }   // our children; don't leave them orphaned
 }
 
 #pragma mark - widgets
@@ -311,7 +314,7 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
             if (pairedWith) [sub addItemWithTitle:[NSString stringWithFormat:@"Paired with %@", pairedWith] action:nil keyEquivalent:@""].enabled = NO;
             BOOL up = w.screen == ScreenRunning || w.screen == ScreenPair || w.screen == ScreenPaired;
             if (up) {
-                if (![w.config isDirect]) [self menu:sub add:@"Open browser" worker:w sel:@selector(openBrowserView)];
+                if (![w.config isDirect]) [self menu:sub add:[w.config macBrowser] ? @"Show browser" : @"Open browser" worker:w sel:@selector(openBrowserView)];
                 [self menu:sub add:[self isPausedFor:w] ? @"Resume" : @"Pause" worker:w sel:@selector(togglePaused)];
                 [self menu:sub add:@"Show requests…" worker:w sel:@selector(showWindow)];
                 [self menu:sub add:@"Stop" worker:w sel:@selector(stop)];
@@ -343,7 +346,7 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
     if (several) {
         // the per-worker items are in the submenus above
     } else if (running) {
-        if (![self.config isDirect]) [menu addItemWithTitle:@"Open browser" action:@selector(openBrowserView) keyEquivalent:@""];
+        if (![self.config isDirect]) [menu addItemWithTitle:[self.config macBrowser] ? @"Show browser" : @"Open browser" action:@selector(openBrowserView) keyEquivalent:@""];
         [menu addItemWithTitle:[self isPaused] ? @"Resume" : @"Pause" action:@selector(togglePaused) keyEquivalent:@""];
         [menu addItemWithTitle:@"Show requests…" action:@selector(showWindow) keyEquivalent:@""];
         [menu addItem:[NSMenuItem separatorItem]];
@@ -371,6 +374,18 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
         [sub addItemWithTitle:@"Use a checkout…" action:@selector(chooseRepo) keyEquivalent:@""];
         [sub addItemWithTitle:@"Run without a container" action:@selector(useDirect) keyEquivalent:@""];
         if (self.config.repo && ![self.config isImage]) [sub addItemWithTitle:@"Rebuild the image" action:@selector(rebuild) keyEquivalent:@""];
+        if ([self.config usesDocker]) {
+            NSMenuItem *bi = [sub addItemWithTitle:@"Browser" action:nil keyEquivalent:@""];
+            NSMenu *bm = [NSMenu new];
+            NSDictionary *found = [MacBrowser find];
+            NSString *why = [MacBrowser unavailableReason];
+            NSMenuItem *mac = [bm addItemWithTitle:!why ? [NSString stringWithFormat:@"On this Mac, in %@", found[@"name"]] : [NSString stringWithFormat:@"On this Mac (%@)", why] action:@selector(chooseMacBrowser) keyEquivalent:@""];
+            mac.enabled = why == nil;
+            mac.state = [self.config macBrowser] ? NSControlStateValueOn : NSControlStateValueOff;
+            NSMenuItem *cont = [bm addItemWithTitle:@"In the container" action:@selector(chooseContainerBrowser) keyEquivalent:@""];
+            cont.state = [self.config macBrowser] ? NSControlStateValueOff : NSControlStateValueOn;
+            bi.submenu = bm;
+        }
         [sub addItem:[NSMenuItem separatorItem]];
         [sub addItemWithTitle:@"Show app log" action:@selector(openLog) keyEquivalent:@""];
         [sub addItemWithTitle:@"Show container log" action:@selector(containerLog) keyEquivalent:@""];
@@ -516,10 +531,16 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
     NSTextField *hint = [self wrap:@"Already have an agent on this Mac? It installs the myous client itself (see the skill). This app runs workers: computers an agent can use."];
     hint.textColor = [NSColor secondaryLabelColor];
     hint.font = [NSFont systemFontOfSize:12];
+    NSTextField *bq = [self label:@"Where should its browser run?" size:13 weight:NSFontWeightRegular];
+    self.setupBrowser = [NSPopUpButton new];
+    self.setupBrowserHint = [self wrap:@""];
+    self.setupBrowserHint.textColor = [NSColor secondaryLabelColor];
+    self.setupBrowserHint.font = [NSFont systemFontOfSize:12];
+    self.setupGetChrome = [self button:@"Get Google Chrome" action:@selector(getChrome)];
     self.setupStart = [self button:@"Start the worker" action:@selector(setupStart:)];
     self.setupStart.keyEquivalent = @"\r";
     self.setupRemove = [self button:@"Remove this worker" action:@selector(removeWorker)];
-    NSStackView *col = [self column:@[self.setupRuntime, q, self.nameField, hint, [self buttons:@[self.setupRemove, self.setupStart]]]];
+    NSStackView *col = [self column:@[self.setupRuntime, q, self.nameField, bq, [self row:@[self.setupBrowser, self.setupGetChrome]], self.setupBrowserHint, hint, [self buttons:@[self.setupRemove, self.setupStart]]]];
     self.setupCard = [self card:@"Set up" content:col];
 }
 
@@ -882,8 +903,8 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
 }
 
 - (void)buildBrowserCard {
-    NSTextField *t = [self wrap:@"Your agent can use sites you're logged into here. Open it to log in or to watch."];
-    NSButton *open = [self button:@"Open browser" action:@selector(openBrowserView)];
+    NSTextField *t = self.browserText = [self wrap:@"Your agent can use sites you're logged into here. Open it to log in or to watch."];
+    NSButton *open = self.browserOpen = [self button:@"Open browser" action:@selector(openBrowserView)];
     NSStackView *col = [self column:@[t, [self buttons:@[open]]]];
     self.browserCard = [self card:@"Browser" content:col];
 }
@@ -1023,6 +1044,11 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
         else if (paired && num(paired[@"at"]).doubleValue > self.config.seenPairedAt) screen = ScreenPaired;
         else screen = ScreenRunning;
         if (self.stoppedAt && now - self.stoppedAt > 90 && now - self.stoppedAt < 120) { attention = @"The worker didn't stop. The log says why."; attentionButton = @"Show log"; }
+        NSString *why = [self.config macBrowser] && !self.fake ? [MacBrowser unavailableReason] : nil;
+        if (why && !attention) {
+            attention = [NSString stringWithFormat:@"The worker's browser can't run on this Mac: %@. Install Google Chrome, or choose the browser in the container (Advanced › Browser).", why];
+            attentionButton = [why containsString:@"sandbox"] ? @"Show log" : @"Get Chrome";
+        }
     } else {
         screen = ScreenStopped;
         if (self.stopping) { self.stopping = NO; self.stoppedAt = 0; self.current.stopDoneAt = 0; self.current.stoppedByUs = YES; }
@@ -1032,6 +1058,14 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
     }
     if (alive) { self.wasRunning = YES; self.current.stoppedByUs = NO; }
     if (screen != ScreenStopped) self.wasRunning = alive;
+    if (!self.fake) {
+        // The browser on this Mac lives and dies with the worker: started
+        // when the worker runs without it (the app was relaunched), quit
+        // when the worker is gone.
+        if ([self.config macBrowser] && (alive || booting) && !self.stopping) [self ensureMacBrowser:self.current];
+        else if (self.current.browser.running && screen == ScreenStopped) [self.current.browser stop];
+        if (screen == ScreenStopped && self.current.restartAfterStop) { self.current.restartAfterStop = NO; [self start]; return; }
+    }
     self.screen = screen;
     self.current.alive = alive;
     self.current.attention = attention;
@@ -1106,6 +1140,19 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
         : @"Stopping the worker. Its container shuts down in a few seconds; your agent's requests are refused meanwhile.";
     self.requestsCard.hidden = !(screen == ScreenRunning || screen == ScreenPaired);
     self.browserCard.hidden = self.requestsCard.hidden || [self.config isDirect];
+    if (!self.browserCard.hidden) {
+        if ([self.config macBrowser]) {
+            NSString *app = self.current.browser.appName ?: [MacBrowser find][@"name"] ?: @"Chrome";
+            BOOL up = self.current.browser.port > 0 || self.fake;
+            self.browserText.stringValue = up
+                ? [NSString stringWithFormat:@"Your agent uses %@ on this Mac, with its own profile kept to the worker's folder. Log into sites there; it is you at the keyboard, so sites behave.", app]
+                : [NSString stringWithFormat:@"Starting %@ on this Mac… (browser.log in the worker folder says why if it doesn't).", app];
+            self.browserOpen.title = @"Show browser";
+        } else {
+            self.browserText.stringValue = @"Your agent can use sites you're logged into here. Open it to log in or to watch.";
+            self.browserOpen.title = @"Open browser";
+        }
+    }
     self.stoppedCard.hidden = screen != ScreenStopped || attention != nil || !self.config.name;
     if (screen == ScreenStopped && !self.stoppedCard.hidden) self.stoppedText.stringValue = @"The worker is stopped. Your agent can't reach this Mac until you start it.";
 
@@ -1196,7 +1243,31 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
     self.setupRuntime.stringValue = [self.runtimeState isEqualToString:@"ok"]
         ? [NSString stringWithFormat:@"✓ %@ found. The worker runs in a container there, so your agent's commands stay inside it.", self.runtimeName]
         : @"✓ Ready.";
+    BOOL fakeSetup = [self.fake isEqualToString:@"setup"];
+    NSDictionary *found = fakeSetup ? @{@"name": @"Google Chrome"} : [MacBrowser find];
+    NSString *why = fakeSetup ? nil : [MacBrowser unavailableReason];
+    if (why) found = nil;
+    NSArray *titles = @[found ? [NSString stringWithFormat:@"On this Mac, in %@ (recommended)", found[@"name"]] : [NSString stringWithFormat:@"On this Mac (%@)", why],
+                        @"In the container"];
+    if (![self.setupBrowser.itemTitles isEqualToArray:titles]) {
+        [self.setupBrowser removeAllItems];
+        [self.setupBrowser addItemsWithTitles:titles];
+        [self.setupBrowser itemAtIndex:0].enabled = found != nil;
+        BOOL mac = self.config.browser ? [self.config.browser isEqualToString:@"mac"] : found != nil;
+        [self.setupBrowser selectItemAtIndex:mac && found ? 0 : 1];
+    }
+    self.setupGetChrome.hidden = found != nil || [why containsString:@"sandbox"];
+    self.setupBrowserHint.stringValue = self.setupBrowser.indexOfSelectedItem == 0
+        ? @"A real browser with its own profile, kept to the worker's folder by a sandbox: sites see an ordinary Mac, and you use the window itself."
+        : why && ![why containsString:@"sandbox"]
+        ? @"A Chromium inside the container, shown through a window in your browser. Some sites take it for a bot, even when it's you. To run a real browser on this Mac instead, install Google Chrome (or Edge, Brave, Chromium): the choice above turns on by itself."
+        : @"A Chromium inside the container, shown through a window in your browser. Some sites take it for a bot, even when it's you.";
+    self.setupBrowser.target = self;
+    self.setupBrowser.action = @selector(setupBrowserChanged);
 }
+
+- (void)setupBrowserChanged { [self render]; }
+- (void)getChrome { [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:@"https://www.google.com/chrome/"]]; }
 
 - (void)fillRuntime {
     BOOL stopped = [self.runtimeState isEqualToString:@"stopped"];
@@ -1221,7 +1292,9 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
     NSArray *texts = @[
         @"✓ Container runtime ready",
         [NSString stringWithFormat:@"%@ Downloading the worker (first time only)%@", pulled ? @"✓" : @"⟳", pulled ? @"" : clock],
-        [NSString stringWithFormat:@"%@ Starting the browser%@", browserDone ? @"✓" : (pulled && inContainer) ? @"⟳" : @"○", (!browserDone && pulled && inContainer) ? clock : @""],
+        [self.config macBrowser]
+            ? [NSString stringWithFormat:@"%@ Starting %@ on this Mac", self.current.browser.port > 0 ? @"✓" : @"⟳", self.current.browser.appName ?: @"the browser"]
+            : [NSString stringWithFormat:@"%@ Starting the browser%@", browserDone ? @"✓" : (pulled && inContainer) ? @"⟳" : @"○", (!browserDone && pulled && inContainer) ? clock : @""],
         [NSString stringWithFormat:@"%@ Registering with myoushq.com%@", error ? @"✗" : browserDone ? @"⟳" : @"○", error ? [@": " stringByAppendingString:[phase substringFromIndex:MIN(phase.length, 7)]] : browserDone ? clock : @""],
     ];
     for (NSUInteger i = 0; i < 4; i++) {
@@ -1391,6 +1464,7 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
     else if ([f isEqualToString:@"paired"]) { self.config.seenPairedAt = 0; }
     else if ([f isEqualToString:@"paused"]) { s[@"phase"] = @"paused"; }
     else if ([f isEqualToString:@"busy"]) { /* a command in progress: the requests below get one */ }
+    else if ([f isEqualToString:@"macbrowser"]) { self.config.browser = @"mac"; }
     else if ([f isEqualToString:@"approval"]) { self.approvals = @[@{@"id": @"q1", @"op": @"exec", @"alias": @"Max's Muse", @"cmd": @"rm -rf /work/old", @"asked_at": @(now - 20), @"wait": @120}]; }
     else if ([f isEqualToString:@"stopped"]) { st.modified = [NSDate dateWithTimeIntervalSinceNow:-3600]; }
     else if ([f isEqualToString:@"stopping"]) { self.current.stopping = YES; self.current.stoppedAt = now - 3; }
@@ -1609,6 +1683,7 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
     NSString *name = [self.nameField.stringValue stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
     if (!name.length) { [self.window makeFirstResponder:self.nameField]; return; }
     self.config.name = name;
+    if ([self.config usesDocker]) self.config.browser = self.setupBrowser.indexOfSelectedItem == 0 && ![MacBrowser unavailableReason] ? @"mac" : @"container";
     [self.config write];
     [self start];
 }
@@ -1629,7 +1704,25 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
     NSMutableDictionary *env = [NSMutableDictionary new];
     if (self.config.name) env[@"MYOUS_ALIAS"] = self.config.name;
     env[@"MYOUS_WORKER_HOME"] = [self.paths home];
+    env[@"MYOUS_BROWSER"] = [self.config macBrowser] ? @"host" : @"container";
+    env[@"MYOUS_TZ"] = [NSTimeZone localTimeZone].name ?: @"UTC";
+    NSString *lang = [NSLocale preferredLanguages].firstObject;
+    if (lang.length) env[@"MYOUS_LANG"] = lang;
     return env;
+}
+
+/// The browser on this Mac for a worker, started if it isn't running.
+- (void)ensureMacBrowser:(Worker *)w {
+    if (!w.browser) {
+        w.browser = [[MacBrowser alloc] initWithPaths:w.paths];
+        __weak typeof(self) weak = self;
+        w.browser.log = ^(NSString *line) { [weak append:line]; };
+    }
+    w.browser.workerName = w.config.name;
+    w.browser.hidden = w.config.browserHidden;
+    if (w.browser.running) return;
+    NSError *err;
+    if (![w.browser start:&err]) [self append:[NSString stringWithFormat:@"browser: %@", err.localizedDescription]];
 }
 
 - (void)start {
@@ -1644,6 +1737,8 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
         self.launchedAt = 0;
         return;
     }
+    if ([self.config macBrowser]) [self ensureMacBrowser:self.current];
+    else if (self.current.browser.running) [self.current.browser stop];
     self.launchStage = @"pulling";
     NSString *cmd = [[self composePrefix] stringByAppendingString:[self.config isImage] ? @" up -d" : @" up -d --build"];
     __weak typeof(self) weak = self;
@@ -1665,6 +1760,7 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
     self.launchedAt = 0;
     self.launchStage = nil;
     Worker *w = self.current;
+    [w.browser stop];
     if ([self.config isDirect]) { [self stopDirect]; [self refresh]; return; }
     // `down` for this worker's project only; other workers keep running.
     // "Remove stale containers" in Advanced clears anything older.
@@ -1752,6 +1848,7 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
     NSString *t = self.bannerButton.title;
     if ([t isEqualToString:@"Start"]) [self start];
     else if ([t isEqualToString:@"Download"]) [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:@"https://myoushq.com/download/mac"]];
+    else if ([t isEqualToString:@"Get Chrome"]) [self getChrome];
     else [self openLog];
 }
 
@@ -1793,6 +1890,25 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
     [self append:@"mode: direct (no container)"];
     [self refresh];
 }
+- (void)chooseMacBrowser { [self chooseBrowser:@"mac"]; }
+- (void)chooseContainerBrowser { [self chooseBrowser:@"container"]; }
+- (void)chooseBrowser:(NSString *)which {
+    if ([self.config.browser ?: @"container" isEqualToString:which]) return;
+    self.config.browser = which;
+    [self.config write];
+    [self append:[NSString stringWithFormat:@"browser: %@", [which isEqualToString:@"mac"] ? @"on this Mac" : @"in the container"]];
+    BOOL up = self.screen == ScreenRunning || self.screen == ScreenPair || self.screen == ScreenPaired || self.screen == ScreenStarting;
+    if (up) {
+        NSAlert *a = [NSAlert new];
+        a.messageText = @"Restart the worker to switch its browser?";
+        a.informativeText = @"The browser choice applies when the worker starts. Each browser keeps its own logins, so sites may ask you to log in again.";
+        [a addButtonWithTitle:@"Restart now"];
+        [a addButtonWithTitle:@"Later"];
+        if ([a runModal] == NSAlertFirstButtonReturn) { self.current.restartAfterStop = YES; [self stop]; return; }
+    }
+    [self refresh];
+}
+
 - (void)useImage { self.config.mode = @"image"; [self.config write]; [self append:[NSString stringWithFormat:@"mode: the published image ghcr.io/myoushq/worker:%@", appVersion()]]; [self refresh]; }
 
 - (void)chooseRepo {
@@ -1889,6 +2005,11 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
 }
 
 - (void)openBrowserView {
+    if ([self.config macBrowser]) {
+        if (self.current.browser.running) [self.current.browser activate];
+        else [self ensureMacBrowser:self.current];
+        return;
+    }
     NSString *port = [Runtime browserPort:[self composePrefix] legacy:self.current.isDefault];
     if (!port) { [self append:@"the worker isn't running, so there's no browser to open"]; return; }
     NSString *url = [NSString stringWithFormat:@"http://localhost:%@/?autoconnect=1&reconnect=1&resize=remote", port];
@@ -1974,12 +2095,13 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
         kindsCol.spacing = 4;
         self.settingsUpdate = [NSButton checkboxWithTitle:@"Check for a new version daily" target:nil action:nil];
         self.settingsAgents = [NSButton checkboxWithTitle:@"Show the agents on this Mac (their myous folders)" target:nil action:nil];
+        self.settingsBrowserHidden = [NSButton checkboxWithTitle:@"Keep this worker's browser hidden until I choose Show browser" target:nil action:nil];
         NSButton *save = [self button:@"Save" action:@selector(saveSettings)];
         save.keyEquivalent = @"\r";
         NSButton *cancel = [self button:@"Cancel" action:@selector(closeSettings)];
         NSStackView *col = [self column:@[[self row:@[[self label:@"Worker name" size:13 weight:NSFontWeightRegular], self.settingsName]], nameHint,
                                           [self label:@"Review" size:13 weight:NSFontWeightRegular], self.settingsReview, reviewHint,
-                                          self.settingsDock, self.settingsLogin, self.settingsNotify, kindsCol, self.settingsUpdate, self.settingsAgents, [self row:@[cancel, save]]]];
+                                          self.settingsBrowserHidden, self.settingsDock, self.settingsLogin, self.settingsNotify, kindsCol, self.settingsUpdate, self.settingsAgents, [self row:@[cancel, save]]]];
         col.edgeInsets = NSEdgeInsetsMake(16, 20, 16, 20);
         col.translatesAutoresizingMaskIntoConstraints = NO;
         [self.settingsWindow.contentView addSubview:col];
@@ -1997,6 +2119,8 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
     for (NSButton *b in self.settingsKinds) { b.state = [self.appConfig notifies:b.identifier] ? NSControlStateValueOn : NSControlStateValueOff; b.enabled = self.appConfig.notifications; }
     self.settingsUpdate.state = self.appConfig.autoUpdate ? NSControlStateValueOn : NSControlStateValueOff;
     self.settingsAgents.state = self.appConfig.showAgents ? NSControlStateValueOn : NSControlStateValueOff;
+    self.settingsBrowserHidden.state = self.config.browserHidden ? NSControlStateValueOn : NSControlStateValueOff;
+    self.settingsBrowserHidden.hidden = ![self.config macBrowser];
     if (@available(macOS 13.0, *)) {
         self.settingsLogin.state = SMAppService.mainAppService.status == SMAppServiceStatusEnabled ? NSControlStateValueOn : NSControlStateValueOff;
         self.settingsLogin.enabled = YES;
@@ -2021,6 +2145,12 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
     BOOL showAgents = self.settingsAgents.state == NSControlStateValueOn;
     if (showAgents != self.appConfig.showAgents) self.agents = nil;
     self.appConfig.showAgents = showAgents;
+    BOOL hidden = self.settingsBrowserHidden.state == NSControlStateValueOn;
+    if (hidden != self.config.browserHidden) {
+        self.config.browserHidden = hidden;
+        self.current.browser.hidden = hidden;
+        if (hidden) [self.current.browser hide]; else [self.current.browser activate];
+    }
     [self.config write];
     if (self.appConfig != self.config) [self.appConfig write];
     NSString *level = @[@"trust", @"changes", @"all"][MAX(0, self.settingsReview.indexOfSelectedItem)];

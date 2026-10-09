@@ -50,6 +50,11 @@ NSDictionary *dict(id v) { return [v isKindOfClass:[NSDictionary class]] ? v : n
 - (NSString *)requests { return [self.home stringByAppendingPathComponent:@"requests"]; }
 - (NSString *)approvals { return [self.home stringByAppendingPathComponent:@"approvals"]; }
 - (NSString *)review { return [self.home stringByAppendingPathComponent:@"review.json"]; }
+- (NSString *)browserDir { return [self.home stringByAppendingPathComponent:@"browser"]; }
+- (NSString *)downloads { return [self.home stringByAppendingPathComponent:@"downloads"]; }
+- (NSString *)browserJSON { return [self.home stringByAppendingPathComponent:@"browser.json"]; }
+- (NSString *)browserSeatbelt { return [self.home stringByAppendingPathComponent:@"browser.sb"]; }
+- (NSString *)browserLog { return [self.home stringByAppendingPathComponent:@"browser.log"]; }
 + (NSString *)bundledReview { return [[NSBundle mainBundle] pathForResource:@"review" ofType:@"py"]; }
 + (NSString *)bundledCompose { return [[NSBundle mainBundle] pathForResource:@"compose" ofType:@"yml"]; }
 @end
@@ -85,6 +90,8 @@ NSDictionary *dict(id v) { return [v isKindOfClass:[NSDictionary class]] ? v : n
     c.repo = str(d[@"repo"]);
     c.mode = str(d[@"mode"]);
     c.name = str(d[@"name"]);
+    c.browser = str(d[@"browser"]);
+    c.browserHidden = num(d[@"browser_hidden"]).boolValue;
     if (num(d[@"dock"])) c.dock = num(d[@"dock"]).boolValue;
     if (num(d[@"notifications"])) c.notifications = num(d[@"notifications"]).boolValue;
     if (num(d[@"auto_update"])) c.autoUpdate = num(d[@"auto_update"]).boolValue;
@@ -106,6 +113,8 @@ NSDictionary *dict(id v) { return [v isKindOfClass:[NSDictionary class]] ? v : n
     if (self.repo) d[@"repo"] = self.repo;
     if (self.mode) d[@"mode"] = self.mode;
     if (self.name) d[@"name"] = self.name;
+    if (self.browser) d[@"browser"] = self.browser;
+    if (self.browserHidden) d[@"browser_hidden"] = @YES;
     d[@"dock"] = @(self.dock);
     d[@"notifications"] = @(self.notifications);
     d[@"auto_update"] = @(self.autoUpdate);
@@ -127,6 +136,7 @@ NSDictionary *dict(id v) { return [v isKindOfClass:[NSDictionary class]] ? v : n
     return !self.isDirect && self.repo == nil;
 }
 - (BOOL)usesDocker { return !self.isDirect; }
+- (BOOL)macBrowser { return [self.browser isEqualToString:@"mac"] && self.usesDocker; }
 @end
 
 NSArray<NSDictionary *> *loadRequests(Paths *paths, NSUInteger limit) {

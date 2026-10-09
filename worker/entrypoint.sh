@@ -34,129 +34,138 @@ PY
 }
 phase starting
 
-export DISPLAY=:99
-# No VNC password: the port is published on the host's loopback only
-# (compose.yml), so only someone already on this machine can reach it.
-Xvnc :99 -geometry 1440x900 -depth 24 -rfbport 5900 -localhost -SecurityTypes None -AlwaysShared \
-	-AcceptSetDesktopSize -desktop myous >/dev/null 2>&1 &
-sleep 1
-matchbox-window-manager -use_titlebar no -use_cursor yes >/dev/null 2>&1 &
-# noVNC: the VNC view in a browser tab. A copy of the client is served
-# with the client itself as the index page, so the bare address opens it
-# and never shows a directory listing.
-NOVNC=/tmp/novnc
-rm -rf "$NOVNC" && cp -r /usr/share/novnc "$NOVNC"
-# The tab's title: "myous - <paired agent>" (the worker's own alias until
-# it is paired). A small script in the page reads title.json, which the
-# loop below refreshes from the worker's contacts.
-sed -i 's/const PAGE_TITLE = "noVNC";/const PAGE_TITLE = "myous";/' "$NOVNC/app/ui.js"
-cat > "$NOVNC/title.js" <<'JS'
-(function () {
-  async function refresh() {
-    try {
-      const r = await fetch("title.json", { cache: "no-store" });
-      if (r.ok) { const t = (await r.json()).title; if (t && document.title !== t) document.title = t; }
-    } catch (e) { /* worker not up yet */ }
-  }
-  // noVNC sets its own title when the connection comes up, so keep ours
-  // winning: often at first, then every 10 s.
-  refresh(); setInterval(refresh, 2000); setTimeout(() => setInterval(refresh, 10000), 30000);
-})();
-JS
-# Clipboard and shortcuts between the host and the worker's browser. The
-# worker's browser is Linux Chromium, so its shortcuts are Ctrl+key; the
-# page translates from what the host uses (Cmd on a Mac, Ctrl elsewhere).
-# Paste reads the host's own paste event (no permission needed anywhere),
-# copy writes what the worker's browser copied to the host clipboard (the
-# next Cmd+C / Ctrl+C in the tab offers it too, for browsers that only
-# write during a user gesture). Text only; files go through `myous cp`.
-cat > "$NOVNC/clip.js" <<'JS'
-import UI from "./app/ui.js";
-import KeyTable from "./core/input/keysym.js";
-import { getKeysym } from "./core/input/util.js";
+# Two browsers: in the container (the default: a Chromium on a virtual
+# display with a VNC view of it) or on the host (MYOUS_BROWSER=host: the
+# app runs a real browser there and writes its DevTools port into
+# browser.json in the worker folder; forward.py relays 127.0.0.1:9222 to
+# it, so agents' scripts connect the same way either way).
+if [ "${MYOUS_BROWSER:-container}" = host ]; then
+	phase browser
+	python3 /opt/worker/forward.py &
+else
+	export DISPLAY=:99
+	# No VNC password: the port is published on the host's loopback only
+	# (compose.yml), so only someone already on this machine can reach it.
+	Xvnc :99 -geometry 1440x900 -depth 24 -rfbport 5900 -localhost -SecurityTypes None -AlwaysShared \
+		-AcceptSetDesktopSize -desktop myous >/dev/null 2>&1 &
+	sleep 1
+	matchbox-window-manager -use_titlebar no -use_cursor yes >/dev/null 2>&1 &
+	# noVNC: the VNC view in a browser tab. A copy of the client is served
+	# with the client itself as the index page, so the bare address opens it
+	# and never shows a directory listing.
+	NOVNC=/tmp/novnc
+	rm -rf "$NOVNC" && cp -r /usr/share/novnc "$NOVNC"
+	# The tab's title: "myous - <paired agent>" (the worker's own alias until
+	# it is paired). A small script in the page reads title.json, which the
+	# loop below refreshes from the worker's contacts.
+	sed -i 's/const PAGE_TITLE = "noVNC";/const PAGE_TITLE = "myous";/' "$NOVNC/app/ui.js"
+	cat > "$NOVNC/title.js" <<-'JS'
+	(function () {
+	  async function refresh() {
+	    try {
+	      const r = await fetch("title.json", { cache: "no-store" });
+	      if (r.ok) { const t = (await r.json()).title; if (t && document.title !== t) document.title = t; }
+	    } catch (e) { /* worker not up yet */ }
+	  }
+	  // noVNC sets its own title when the connection comes up, so keep ours
+	  // winning: often at first, then every 10 s.
+	  refresh(); setInterval(refresh, 2000); setTimeout(() => setInterval(refresh, 10000), 30000);
+	})();
+	JS
+	# Clipboard and shortcuts between the host and the worker's browser. The
+	# worker's browser is Linux Chromium, so its shortcuts are Ctrl+key; the
+	# page translates from what the host uses (Cmd on a Mac, Ctrl elsewhere).
+	# Paste reads the host's own paste event (no permission needed anywhere),
+	# copy writes what the worker's browser copied to the host clipboard (the
+	# next Cmd+C / Ctrl+C in the tab offers it too, for browsers that only
+	# write during a user gesture). Text only; files go through `myous cp`.
+	cat > "$NOVNC/clip.js" <<-'JS'
+	import UI from "./app/ui.js";
+	import KeyTable from "./core/input/keysym.js";
+	import { getKeysym } from "./core/input/util.js";
 
-const mac = /Mac|iPhone|iPad/.test(navigator.platform);
-// Shortcuts the host browser keeps for itself; never translated.
-const reserved = new Set(["w", "q", "n", "t", "h", "m", "tab", ",", "`", " "]);
-let rfb = null, lastRemote = "", pending = false;
+	const mac = /Mac|iPhone|iPad/.test(navigator.platform);
+	// Shortcuts the host browser keeps for itself; never translated.
+	const reserved = new Set(["w", "q", "n", "t", "h", "m", "tab", ",", "`", " "]);
+	let rfb = null, lastRemote = "", pending = false;
 
-function attach() {
-  if (UI.rfb === rfb) return;
-  rfb = UI.rfb;
-  if (!rfb) return;
-  rfb.addEventListener("clipboard", (e) => {
-    lastRemote = e.detail.text || "";
-    if (lastRemote && navigator.clipboard && navigator.clipboard.writeText)
-      navigator.clipboard.writeText(lastRemote).catch(() => {});
-  });
-}
-setInterval(attach, 500);
+	function attach() {
+	  if (UI.rfb === rfb) return;
+	  rfb = UI.rfb;
+	  if (!rfb) return;
+	  rfb.addEventListener("clipboard", (e) => {
+	    lastRemote = e.detail.text || "";
+	    if (lastRemote && navigator.clipboard && navigator.clipboard.writeText)
+	      navigator.clipboard.writeText(lastRemote).catch(() => {});
+	  });
+	}
+	setInterval(attach, 500);
 
-function key(keysym, code, down) { if (rfb) rfb.sendKey(keysym, code, down); }
-function ctrl(down) { key(KeyTable.XK_Control_L, "ControlLeft", down); }
-function tap(e) { const ks = getKeysym(e); if (!ks) return; key(ks, e.code, true); key(ks, e.code, false); }
+	function key(keysym, code, down) { if (rfb) rfb.sendKey(keysym, code, down); }
+	function ctrl(down) { key(KeyTable.XK_Control_L, "ControlLeft", down); }
+	function tap(e) { const ks = getKeysym(e); if (!ks) return; key(ks, e.code, true); key(ks, e.code, false); }
 
-window.addEventListener("keydown", (e) => {
-  if (!rfb) return;
-  const k = e.key.toLowerCase();
-  if (mac) {
-    if (e.key === "Meta") { e.stopPropagation(); return; }   // the worker never sees Cmd
-    if (!e.metaKey) return;
-    if (reserved.has(k)) return;
-    e.stopPropagation();
-    if (k === "v") { pending = true; return; }               // the paste event follows
-    ctrl(true); tap(e); ctrl(false);
-    if (k !== "c") e.preventDefault();                        // Cmd+C: let the copy event fire
-  } else {
-    if (!e.ctrlKey || e.altKey) return;
-    if (k === "v") { pending = true; e.stopPropagation(); }  // Ctrl is already held on the worker
-  }
-}, true);
-window.addEventListener("keyup", (e) => {
-  if (mac && e.key === "Meta") e.stopPropagation();
-}, true);
+	window.addEventListener("keydown", (e) => {
+	  if (!rfb) return;
+	  const k = e.key.toLowerCase();
+	  if (mac) {
+	    if (e.key === "Meta") { e.stopPropagation(); return; }   // the worker never sees Cmd
+	    if (!e.metaKey) return;
+	    if (reserved.has(k)) return;
+	    e.stopPropagation();
+	    if (k === "v") { pending = true; return; }               // the paste event follows
+	    ctrl(true); tap(e); ctrl(false);
+	    if (k !== "c") e.preventDefault();                        // Cmd+C: let the copy event fire
+	  } else {
+	    if (!e.ctrlKey || e.altKey) return;
+	    if (k === "v") { pending = true; e.stopPropagation(); }  // Ctrl is already held on the worker
+	  }
+	}, true);
+	window.addEventListener("keyup", (e) => {
+	  if (mac && e.key === "Meta") e.stopPropagation();
+	}, true);
 
-window.addEventListener("paste", (e) => {
-  if (!rfb) return;
-  const text = e.clipboardData ? e.clipboardData.getData("text/plain") : "";
-  e.preventDefault();
-  if (text) rfb.clipboardPasteFrom(text);
-  if (!pending) return;
-  pending = false;
-  // The worker has the text now; press paste there (Ctrl is held by the
-  // real key on Windows and Linux, so only the letter is needed).
-  setTimeout(() => { if (mac) ctrl(true); key(KeyTable.XK_v, "KeyV", true); key(KeyTable.XK_v, "KeyV", false); if (mac) ctrl(false); }, 50);
-}, true);
+	window.addEventListener("paste", (e) => {
+	  if (!rfb) return;
+	  const text = e.clipboardData ? e.clipboardData.getData("text/plain") : "";
+	  e.preventDefault();
+	  if (text) rfb.clipboardPasteFrom(text);
+	  if (!pending) return;
+	  pending = false;
+	  // The worker has the text now; press paste there (Ctrl is held by the
+	  // real key on Windows and Linux, so only the letter is needed).
+	  setTimeout(() => { if (mac) ctrl(true); key(KeyTable.XK_v, "KeyV", true); key(KeyTable.XK_v, "KeyV", false); if (mac) ctrl(false); }, 50);
+	}, true);
 
-window.addEventListener("copy", (e) => {
-  if (!rfb || !lastRemote) return;
-  e.clipboardData.setData("text/plain", lastRemote);
-  e.preventDefault();
-}, true);
-JS
-sed -i 's#</body>#<script src="title.js"></script><script type="module" src="clip.js"></script></body>#' "$NOVNC/vnc.html"
-# The client is the site's index, so the address is just
-# http://localhost:<port>/?autoconnect=1&reconnect=1&resize=remote
-cp "$NOVNC/vnc.html" "$NOVNC/index.html"
-(
-	while true; do
-		python3 - > "$NOVNC/title.json.tmp" 2>/dev/null <<'PY' && mv "$NOVNC/title.json.tmp" "$NOVNC/title.json"
-import json, os, subprocess
-def run(*a):
-    try: return json.loads(subprocess.run(["myous", *a], capture_output=True, text=True, timeout=10).stdout or "null")
-    except Exception: return None
-contacts = run("contacts", "--json") or {}
-paired = [c.get("alias") for c in contacts.values() if c.get("status") == "approved" and c.get("alias")]
-alias = paired[0] if paired else ((run("status", "--json") or {}).get("alias") or "worker")
-print(json.dumps({"title": "myous - " + alias}))
-PY
-		sleep 10
-	done
-) &
-websockify --web "$NOVNC" 6080 localhost:5900 >/dev/null 2>&1 &
-
-phase browser
-python3 /opt/worker/browser.py &
+	window.addEventListener("copy", (e) => {
+	  if (!rfb || !lastRemote) return;
+	  e.clipboardData.setData("text/plain", lastRemote);
+	  e.preventDefault();
+	}, true);
+	JS
+	sed -i 's#</body>#<script src="title.js"></script><script type="module" src="clip.js"></script></body>#' "$NOVNC/vnc.html"
+	# The client is the site's index, so the address is just
+	# http://localhost:<port>/?autoconnect=1&reconnect=1&resize=remote
+	cp "$NOVNC/vnc.html" "$NOVNC/index.html"
+	(
+		while true; do
+			python3 - > "$NOVNC/title.json.tmp" 2>/dev/null <<-'PY' && mv "$NOVNC/title.json.tmp" "$NOVNC/title.json"
+	import json, os, subprocess
+	def run(*a):
+	    try: return json.loads(subprocess.run(["myous", *a], capture_output=True, text=True, timeout=10).stdout or "null")
+	    except Exception: return None
+	contacts = run("contacts", "--json") or {}
+	paired = [c.get("alias") for c in contacts.values() if c.get("status") == "approved" and c.get("alias")]
+	alias = paired[0] if paired else ((run("status", "--json") or {}).get("alias") or "worker")
+	print(json.dumps({"title": "myous - " + alias}))
+	PY
+			sleep 10
+		done
+	) &
+	websockify --web "$NOVNC" 6080 localhost:5900 >/dev/null 2>&1 &
+	phase browser
+	python3 /opt/worker/browser.py &
+fi
 
 # Identity: created once, kept in the mounted home (~/.myous-worker on the
 # host). `init` also registers with the hub, so it needs the network.

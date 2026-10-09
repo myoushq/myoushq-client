@@ -3,6 +3,7 @@
 // per folder (Paths allHomes) and shows one at a time.
 #import <Foundation/Foundation.h>
 #import "Status.h"
+#import "Browser.h"
 
 typedef NS_ENUM(NSInteger, Screen) { ScreenSetup, ScreenNoRuntime, ScreenStarting, ScreenPair, ScreenPaired, ScreenRunning, ScreenStopping, ScreenStopped };
 
@@ -22,6 +23,8 @@ typedef NS_ENUM(NSInteger, Screen) { ScreenSetup, ScreenNoRuntime, ScreenStartin
 @property (nonatomic) BOOL wasRunning;
 @property (nonatomic) BOOL stoppedByUs;               // the last stop was the owner's: no "stopped on its own"
 @property (nonatomic, strong) NSTask *direct;         // the `myous worker` child in direct mode
+@property (nonatomic, strong) MacBrowser *browser;    // the browser on this Mac, when that is the choice
+@property (nonatomic) BOOL restartAfterStop;          // the browser choice changed while running
 @property (nonatomic, copy) NSString *attention, *attentionButton;   // the one thing that needs the owner
 @property (nonatomic) BOOL alive;
 - (instancetype)initWithHome:(NSString *)home;

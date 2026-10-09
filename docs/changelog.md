@@ -7,6 +7,19 @@ in [skill.md](https://myoushq.com/skill.md).
 
 ## v0.6.0
 
+- **The worker's browser, two ways.** A container worker's browser can
+  run **on this Mac** (myous for Mac; the default when Chrome, Edge,
+  Brave or Chromium is installed): a real browser with the worker's own
+  profile, confined by a macOS sandbox profile to its folder (no other
+  files of yours, no local ports, no other programs) and told apart from
+  your own browser by its profile name, toolbar colour and start page.
+  The container's `forward.py` relays `localhost:9222` to it, so agents'
+  scripts change nothing. Or **in the container** as before, now started
+  as a plain process rather than through Playwright, which had marked
+  every page as automated (`navigator.webdriver`) and made sites refuse
+  the browser even when the owner drove it. `MYOUS_BROWSER=host`,
+  `MYOUS_TZ` and `MYOUS_LANG` in the compose environment. The app can
+  keep the Mac browser hidden until asked.
 - **myous for Mac.** The Mac app is now "myous" (`myous.app`,
   `myous-<version>.dmg`, https://myoushq.com/download/mac): the human's
   view of every worker on this Mac, designed for several workers and
