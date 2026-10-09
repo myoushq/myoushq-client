@@ -45,6 +45,9 @@ in [skill.md](https://myoushq.com/skill.md).
   editing shortcuts (Cmd+A, Cmd+Z, ...) are translated to the Linux
   browser's Ctrl+key. No permission prompts: paste reads the host's own
   paste event. Text only. noVNC's clipboard panel remains as the fallback.
+- **Pairing:** accepting a code retries the claim when the connection
+  drops before the hub answers (seen with Muse behind a proxy), and
+  explains when a retry finds the code already taken.
 - **Hub:** `/download/mac` (the old `/download/worker-mac` still works).
 
 - **Docs:** the skill has a "Workers" section saying what a worker is

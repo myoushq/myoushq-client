@@ -139,6 +139,10 @@ def _unb64(s: str) -> bytes:
 # "pending/<nameplate>" document and finished by whichever call gets there
 # first: accept (which waits a while), or any later advance().
 
+CLAIM_ATTEMPTS = 3
+CLAIM_RETRY_DELAY = 1.0  # seconds, growing per attempt
+
+
 class Pairing:
     def __init__(self, storage: Storage, hub: Hub, keys: Keys, alias: str):
         self.st, self.hub, self.keys, self.alias = storage, hub, keys, alias
@@ -173,10 +177,7 @@ class Pairing:
         if mine and mine["role"] == "b" and mine["secret"] == secret:
             # Accepted before (e.g. the connection dropped); carry on with it.
             return self.advance(mine, wait=wait)
-        try:
-            claim = self.hub.request("POST", f"/api/pair/{nameplate}/claim", {})
-        except HubError as e:
-            raise PairingError(e.message) from None
+        claim = self._claim(nameplate)
         message, state = _pake_start("b", format_code(nameplate, secret))
         self._post(nameplate, claim["token"], {"t": "pake", "v": VERSION, "m": _b64(message)})
         p = {
@@ -187,6 +188,27 @@ class Pairing:
             p["context"] = context
         self._save(p)
         return self.advance(p, wait=wait)
+
+    def _claim(self, nameplate: str) -> dict:
+        """Claim the invite's second side, retrying when the connection
+        drops before the hub answers (a proxy cutting the request, say).
+        A claim is handed out once: if a retry finds it taken, the first
+        attempt may have gone through without us seeing the answer, and
+        the only way on is a new code."""
+        dropped = None
+        for attempt in range(CLAIM_ATTEMPTS):
+            try:
+                return self.hub.request("POST", f"/api/pair/{nameplate}/claim", {})
+            except HubError as e:
+                if dropped and e.status in (404, 409, 410):
+                    raise PairingError(f"{e.message} (the connection dropped on an earlier attempt, which may have "
+                                       "claimed the code; ask for a new code)") from None
+                raise PairingError(e.message) from None
+            except OSError as e:
+                dropped = e
+                if attempt + 1 < CLAIM_ATTEMPTS:
+                    time.sleep(CLAIM_RETRY_DELAY * (attempt + 1))
+        raise PairingError(f"could not reach the hub to accept the code: {dropped}") from None
 
     def advance_all(self) -> list[dict]:
         """Move every pending pairing forward without waiting. Returns the
