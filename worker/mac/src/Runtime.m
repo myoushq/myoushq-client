@@ -57,8 +57,9 @@
     // The browser view is published on a port Docker picks at each start;
     // ask Docker which one, by the label the compose files set.
     NSString *bin = [self dockerBin];
+    // A container from before v0.6.0 has no label; its compose name does.
     NSString *addr = [self output:[NSString stringWithFormat:
-        @"id=$(%@ ps -q --filter label=com.myoushq.worker | head -1); [ -n \"$id\" ] && %@ port \"$id\" 6080/tcp | head -1", bin, bin]];
+        @"id=$(%@ ps -q --filter label=com.myoushq.worker | head -1); id=${id:-myous-worker-worker-1}; %@ port \"$id\" 6080/tcp 2>/dev/null | head -1", bin, bin]];
     NSString *port = [addr componentsSeparatedByString:@":"].lastObject;
     return port.integerValue > 0 ? port : nil;
 }
