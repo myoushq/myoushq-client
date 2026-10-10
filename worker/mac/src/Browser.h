@@ -25,6 +25,7 @@
 @property (nonatomic, copy) void (^log)(NSString *line);
 @property (nonatomic, copy) NSString *workerName;     // for the profile name and start page
 @property (nonatomic) BOOL hidden;                    // launch hidden (Cmd+H), until "Show browser"
+@property (nonatomic) BOOL shown;                     // the owner asked for it since this launch: stop hiding
 /// The first installed browser the app can run: {"id", "name", "exe",
 /// "bundle"}, or nil when none of Chrome, Edge, Brave, Chromium is there.
 + (NSDictionary *)find;

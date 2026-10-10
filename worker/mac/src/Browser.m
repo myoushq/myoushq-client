@@ -147,6 +147,7 @@ static int freePort(void) {
     }
     self.appName = b[@"name"];
     self.wanted = YES;
+    self.shown = NO;
     NSFileManager *fm = [NSFileManager defaultManager];
     for (NSString *dir in @[[self.paths browserDir], [self.paths downloads]])
         [fm createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions: @0700} error:nil];
@@ -217,7 +218,7 @@ static int freePort(void) {
     if (fd >= 0) close(fd);
     if (up) {
         self.port = port;
-        if (self.hidden) [self hide];
+        if (self.hidden) [self hideWhenReady:0];
         NSDictionary *d = @{@"host": @"host.docker.internal", @"port": @(port), @"pid": @(self.task.processIdentifier),
                             @"app": self.appName ?: @"", @"at": @([[NSDate date] timeIntervalSince1970])};
         [[NSJSONSerialization dataWithJSONObject:d options:NSJSONWritingPrettyPrinted | NSJSONWritingSortedKeys error:nil] writeToFile:[self.paths browserJSON] atomically:YES];
@@ -241,6 +242,17 @@ static int freePort(void) {
     [[self app] hide];
 }
 
+- (void)hideWhenReady:(int)tries {
+    // The DevTools port opens before the window exists, and the window may
+    // come to the front after it is shown: hide now and again over the
+    // first seconds, unless the owner has asked to see it meanwhile.
+    if (!self.task || !self.hidden || self.shown) return;
+    [self hide];
+    if (tries >= 12) return;
+    __weak typeof(self) weak = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ [weak hideWhenReady:tries + 1]; });
+}
+
 - (void)stop {
     self.wanted = NO;
     [[NSFileManager defaultManager] removeItemAtPath:[self.paths browserJSON] error:nil];
@@ -252,6 +264,7 @@ static int freePort(void) {
 }
 
 - (void)activate {
+    self.shown = YES;
     NSRunningApplication *app = [self app];
     [app unhide];
     [app activateWithOptions:NSApplicationActivateAllWindows];

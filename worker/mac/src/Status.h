@@ -57,7 +57,7 @@ extern const NSTimeInterval kStaleAfter;
 @property (nonatomic, copy) NSString *mode;   // "image", "docker" or "direct"
 @property (nonatomic, copy) NSString *name;   // the worker's name (its alias); nil until set up
 @property (nonatomic, copy) NSString *browser; // "container" (default) or "mac": where the worker's browser runs
-@property (nonatomic) BOOL browserHidden;      // the Mac browser starts hidden, until "Show browser"
+@property (nonatomic) BOOL browserHidden;      // the Mac browser starts hidden, until "Show browser" (default YES)
 @property (nonatomic) BOOL dock;              // show a Dock icon too (default: menu bar only)
 @property (nonatomic) BOOL notifications;     // default YES
 @property (nonatomic, strong) NSDictionary *notifyKinds;   // "paired", "approval", "refused", "stopped", "update" -> BOOL (missing: YES)

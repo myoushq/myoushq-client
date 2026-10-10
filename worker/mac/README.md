@@ -111,9 +111,9 @@ clears anything older. The mode and checkout path are in
   DevTools port (one the app picks; a dynamic port would make Chrome mark
   every page as automated) is written to `browser.json`, and the
   container's `forward.py` relays `localhost:9222` to it, so agents'
-  scripts need no change. "Show browser" brings it to the front; the
-  setting "Keep this worker's browser hidden until I choose Show
-  browser" launches it hidden (Cmd+H) and it keeps working there. macOS
+  scripts need no change. It starts hidden (Cmd+H) and keeps working
+  there; "Show browser" brings it up. The setting "Start this worker's
+  browser hidden" turns that off for a worker. macOS
   allows no sandbox inside a sandbox, so Chrome's own helper sandbox is
   off (`--no-sandbox`, as in the container, where the container is the
   sandbox); Chrome shows a bar about that flag, and the start page says
@@ -169,7 +169,8 @@ card), and `MYOUS_DOCKER_BIN=/nonexistent` simulates a Mac without Docker.
 is drawn in code, no image files in the repo). `--browser-test DIR` runs
 the "browser on this Mac" launcher for a worker folder on its own: it
 prints `browser.json` once the port is open, keeps the browser 20 s and
-quits it.
+quits it (`MYOUS_BROWSER_HIDDEN=1` launches it hidden and reports
+whether it stayed so).
 
 ## Releasing (maintainers)
 

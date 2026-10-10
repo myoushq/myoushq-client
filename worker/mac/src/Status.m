@@ -83,6 +83,7 @@ NSDictionary *dict(id v) { return [v isKindOfClass:[NSDictionary class]] ? v : n
     c.notifications = YES;
     c.autoUpdate = YES;
     c.showAgents = YES;
+    c.browserHidden = YES;
     NSData *data = [NSData dataWithContentsOfFile:[paths config]];
     if (!data) return c;
     NSDictionary *d = dict([NSJSONSerialization JSONObjectWithData:data options:0 error:nil]);
@@ -91,7 +92,7 @@ NSDictionary *dict(id v) { return [v isKindOfClass:[NSDictionary class]] ? v : n
     c.mode = str(d[@"mode"]);
     c.name = str(d[@"name"]);
     c.browser = str(d[@"browser"]);
-    c.browserHidden = num(d[@"browser_hidden"]).boolValue;
+    if (num(d[@"browser_hidden"])) c.browserHidden = num(d[@"browser_hidden"]).boolValue;
     if (num(d[@"dock"])) c.dock = num(d[@"dock"]).boolValue;
     if (num(d[@"notifications"])) c.notifications = num(d[@"notifications"]).boolValue;
     if (num(d[@"auto_update"])) c.autoUpdate = num(d[@"auto_update"]).boolValue;
@@ -114,7 +115,7 @@ NSDictionary *dict(id v) { return [v isKindOfClass:[NSDictionary class]] ? v : n
     if (self.mode) d[@"mode"] = self.mode;
     if (self.name) d[@"name"] = self.name;
     if (self.browser) d[@"browser"] = self.browser;
-    if (self.browserHidden) d[@"browser_hidden"] = @YES;
+    d[@"browser_hidden"] = @(self.browserHidden);
     d[@"dock"] = @(self.dock);
     d[@"notifications"] = @(self.notifications);
     d[@"auto_update"] = @(self.autoUpdate);

@@ -20,6 +20,7 @@ int main(int argc, const char *argv[]) {
             // browser.json once the port is known, keep it 20 s, quit it.
             MacBrowser *b = [[MacBrowser alloc] initWithPaths:[[Paths alloc] initWithHome:[[NSString stringWithUTF8String:argv[2]] stringByExpandingTildeInPath]]];
             b.log = ^(NSString *line) { fprintf(stderr, "%s\n", line.UTF8String); };
+            b.hidden = getenv("MYOUS_BROWSER_HIDDEN") != NULL;   // MYOUS_BROWSER_HIDDEN=1: launch hidden, as the app does by default
             NSError *err;
             if (![b start:&err]) { fprintf(stderr, "browser-test: %s\n", err.localizedDescription.UTF8String); return 1; }
             NSDate *until = [NSDate dateWithTimeIntervalSinceNow:20];
@@ -27,6 +28,12 @@ int main(int argc, const char *argv[]) {
             NSString *json = [NSString stringWithContentsOfFile:[b.paths browserJSON] encoding:NSUTF8StringEncoding error:nil] ?: @"(no browser.json)";
             printf("%s\n", json.UTF8String);
             fflush(stdout);
+            if (b.hidden) {
+                [[NSRunLoop mainRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:4]];
+                NSRunningApplication *app = [NSRunningApplication runningApplicationWithProcessIdentifier:b.task.processIdentifier];
+                printf("hidden after 4 s: %s\n", app.isHidden ? "yes" : "no");
+                fflush(stdout);
+            }
             while ([until timeIntervalSinceNow] > 0) [[NSRunLoop mainRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.5]];
             [b stop];
             [[NSRunLoop mainRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:1]];

@@ -18,8 +18,8 @@ in [skill.md](https://myoushq.com/skill.md).
   as a plain process rather than through Playwright, which had marked
   every page as automated (`navigator.webdriver`) and made sites refuse
   the browser even when the owner drove it. `MYOUS_BROWSER=host`,
-  `MYOUS_TZ` and `MYOUS_LANG` in the compose environment. The app can
-  keep the Mac browser hidden until asked.
+  `MYOUS_TZ` and `MYOUS_LANG` in the compose environment. The Mac
+  browser starts hidden and keeps working; "Show browser" brings it up.
 - **myous for Mac.** The Mac app is now "myous" (`myous.app`,
   `myous-<version>.dmg`, https://myoushq.com/download/mac): the human's
   view of every worker on this Mac, designed for several workers and
