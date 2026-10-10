@@ -95,13 +95,18 @@ static int freePort(void) {
     NSString *esc = [[[name stringByReplacingOccurrencesOfString:@"&" withString:@"&amp;"] stringByReplacingOccurrencesOfString:@"<" withString:@"&lt;"] stringByReplacingOccurrencesOfString:@">" withString:@"&gt;"];
     NSString *html = [NSString stringWithFormat:
         @"<!doctype html><meta charset=utf-8><title>myous · %@</title>"
-        "<style>body{font:15px/1.5 -apple-system,system-ui,sans-serif;color:#222;background:#f4f1ea;margin:0;display:flex;min-height:100vh;align-items:center;justify-content:center}"
-        "main{max-width:36em;padding:2em}h1{font-size:1.4em;margin:0 0 .5em}h1 b{color:#1f7a6d}p{margin:.5em 0}small{color:#666}"
-        ".note{border:1px solid #d9b25a;background:#fff6dc;border-radius:8px;padding:.8em 1em;margin:1em 0}.note b{color:#7a5a00}kbd{font:inherit;background:#eee;border:1px solid #ccc;border-radius:4px;padding:0 .3em}</style>"
+        "<style>body{font:15px/1.5 -apple-system,system-ui,sans-serif;color:#222;background:#f4f1ea;margin:0;min-height:100vh;display:flex;flex-direction:column}"
+        "main{max-width:36em;margin:0 auto;padding:2em 2em 3em}h1{font-size:1.4em;margin:0 0 .5em}h1 b{color:#1f7a6d}p{margin:.5em 0}small{color:#666}"
+        // A speech bubble at the top right, in the flow so the text starts
+        // below it; its tail points up at the bar Chrome shows above the
+        // page (the bar's × sits at its right end).
+        ".bubble{position:relative;align-self:flex-end;margin:22px 14px 0 14px;max-width:24em;background:#fff6dc;border:1px solid #d9b25a;border-radius:12px;padding:.7em 1em;box-shadow:0 2px 8px rgba(0,0,0,.08)}"
+        ".bubble:before,.bubble:after{content:'';position:absolute;right:22px;border:12px solid transparent;border-top:0}"
+        ".bubble:before{top:-13px;border-bottom-color:#d9b25a}.bubble:after{top:-11px;border-bottom-color:#fff6dc}"
+        ".bubble b{color:#7a5a00}kbd{font:inherit;white-space:nowrap;background:#eee;border:1px solid #ccc;border-radius:4px;padding:0 .3em}</style>"
+        "<div class=bubble><b>That bar is expected.</b> Close it with its &times;. It says <kbd>--no-sandbox</kbd> is unsupported: "
+        "myous confines this browser with a macOS sandbox of its own, and macOS allows no sandbox inside another, so the browser's built-in one is off here. The outer one does the work.</div>"
         "<main><h1><b>myous</b> · %@'s browser</h1>"
-        "<div class=note><b>Expected:</b> a bar above this page says the <kbd>--no-sandbox</kbd> flag is unsupported and &ldquo;stability and security will suffer&rdquo;. "
-        "Close it with its &times;. myous confines this browser with a macOS sandbox of its own, and macOS allows no sandbox inside another, so the browser's built-in one is switched off here. "
-        "The outer one does the work: see below.</div>"
         "<p>This window belongs to the worker <b>%@</b>: your agent browses here, and so can you. "
         "Sites you log into here stay logged in for it.</p>"
         "<p>It is kept to the worker's folder by that sandbox: it can't read your files, reach other programs on this Mac, or save anywhere but the worker's downloads folder.</p>"
