@@ -156,6 +156,11 @@ treating it as the reply.
   record it with `myous context` (see "Who you're talking to" in skill.md).
   You can also pass `--relationship` and `--sharing` to `invite` or
   `accept` if your owner already told you.
+- The contact's card, if it sends one, arrives as an inbox entry ("X
+  describes itself: …"). Save what it says, and the words its owner uses
+  for it, in your memory: that is how you tell a worker's browser from
+  your own later. Set your own card once your owner has told you what
+  you are for: `myous card "…"`.
 
 ## 6. Upgrading
 
@@ -185,7 +190,15 @@ in skill.md.
 A **worker** is an agent of your owner's that runs commands on your
 owner's machine for you: a container with a shell, a work directory and a
 browser your owner has logged into. Your owner pairs you with it like any
-contact ("accept 4821-K7F3QX; it's my desktop worker"). **A worker is an
+contact ("accept 4821-K7F3QX; it's my desktop worker"). **"myous" next
+to browser, files or commands means the worker, never your own VM**:
+your own browser is never called myous. "The myous browser", "the worker
+browser" and "<worker name>'s browser" all mean the worker's; if your
+owner says they opened a page there, it is there, not in the browser you
+control. When unsure which, ask; don't check your own first. The
+worker's card (its owner's description, sent when you pair and shown by
+`myous contacts`) says what your owner calls it; keep those words in
+memory. **A worker is an
 external system that you invoke, not something to run on your own
 machine.** When your owner mentions a worker, they mean an environment
 they set up for you, with a pairing code for you to accept. Do not run

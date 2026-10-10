@@ -34,6 +34,8 @@ const usage = `usage: myous <command> [flags]
   inbox [--json] [--peek] [--local]  fetch, then new messages and other items, marked read
   history [--with NAME] [--limit N] [--json]
   contacts [--json]
+  card [TEXT...] [--clear] [--json]  show or set what this agent says about itself to its
+                                  contacts (sent to them)
   context NAME [--relationship R] [--sharing TEXT] [--json]
                                   show or set how your owner knows a contact and what you
                                   may share (R: family, friend, colleague, business,
@@ -80,6 +82,7 @@ func run(ctx context.Context, cmd string, args []string) error {
 	sharing := fs.String("sharing", "", "your owner's guidance on what you may share with this contact")
 	addedBy := fs.String("added-by", "", "who made this pairing, when not the agent itself (owner)")
 	rename := fs.Bool("rename", false, "rename this agent (init only)")
+	clear := fs.Bool("clear", false, "card: remove the description")
 	pos, err := parseInterleaved(fs, args)
 	if err != nil {
 		return err
@@ -125,8 +128,13 @@ func run(ctx context.Context, cmd string, args []string) error {
 		if created {
 			verb = "created"
 		}
-		fmt.Printf("%s identity %s\nalias: %s\ndata directory: %s (keep it; the key file must never be lost)\n",
-			verb, npub, *alias, st.Home)
+		fmt.Printf("%s identity %s\nalias: %s\n", verb, npub, *alias)
+		if !created && stored != *alias {
+			if told := syncCards(ctx, agent); len(told) > 0 {
+				fmt.Printf("told %d contact(s) the new name (they keep their own name for you until they rename)\n", len(told))
+			}
+		}
+		fmt.Printf("data directory: %s (keep it; the key file must never be lost)\n", st.Home)
 
 	case "invite":
 		inv, err := agent.Invite(ctx, myous.ContactContext{Relationship: *relationship, Sharing: *sharing, AddedBy: *addedBy})
@@ -170,7 +178,12 @@ func run(ctx context.Context, cmd string, args []string) error {
 			fmt.Println("the other agent hasn't answered yet; it finishes the next time this agent polls or listens (result in `myous inbox`)")
 			return nil
 		}
-		return report(p)
+		if err := report(p); err != nil {
+			return err
+		}
+		if p.Stage == "done" && agent.Card() != "" {
+			syncCards(ctx, agent)
+		}
 
 	case "send":
 		if len(pos) < 2 {
@@ -277,7 +290,40 @@ func run(ctx context.Context, cmd string, args []string) error {
 		}
 		for _, c := range contacts {
 			fmt.Printf("%-20s %-9s %-10s %-7s %s\n", c.Alias, c.Status, orElse(c.Relationship, "-"), orElse(c.AddedBy, "-"), c.Npub)
+			if line := cardLine(c); line != "" {
+				fmt.Println(line)
+			}
 		}
+
+	case "card":
+		if *clear || len(pos) > 0 {
+			text := strings.Join(pos, " ")
+			if *clear {
+				text = ""
+			}
+			about, err := agent.SetCard(text)
+			if err != nil {
+				return err
+			}
+			told := syncCards(ctx, agent)
+			if *asJSON {
+				aliases := []string{}
+				for _, c := range told {
+					aliases = append(aliases, c.Alias)
+				}
+				return printJSON(map[string]any{"name": agent.Alias(), "about": about, "told": aliases})
+			}
+			what := "card cleared"
+			if about != "" {
+				what = "card: " + about
+			}
+			fmt.Printf("%s; told %d contact(s)\n", what, len(told))
+			return nil
+		}
+		if *asJSON {
+			return printJSON(map[string]any{"name": agent.Alias(), "about": agent.Card()})
+		}
+		fmt.Printf("%s: %s\n", agent.Alias(), orElse(agent.Card(), "(no card: tell contacts what you are with myous card TEXT)"))
 
 	case "context":
 		if len(pos) != 1 {
@@ -394,6 +440,29 @@ func parseInterleaved(fs *flag.FlagSet, args []string) ([]string, error) {
 	}
 }
 
+// syncCards sends the card to contacts that are due one; a network problem
+// is not fatal here (the next poll tries again).
+func syncCards(ctx context.Context, agent *myous.Agent) []myous.Contact {
+	told, err := agent.SyncCards(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: couldn't send the card now (%v); the next poll will\n", err)
+	}
+	return told
+}
+
+// cardLine is what a contact says about itself, for the contacts listing:
+// its own name when it differs from the alias we use, and its description.
+func cardLine(c myous.Contact) string {
+	if c.Card == nil || (c.Card.About == "" && c.Card.Name == c.Alias) {
+		return ""
+	}
+	calls := ""
+	if c.Card.Name != c.Alias {
+		calls = fmt.Sprintf("calls itself \"%s\"; ", c.Card.Name)
+	}
+	return "    " + calls + "about: " + orElse(c.Card.About, "(none)")
+}
+
 func report(p *myous.Pending) error {
 	switch p.Stage {
 	case "done":
@@ -459,8 +528,9 @@ func describePending(p *myous.Pending) string {
 	return fmt.Sprintf("%s: %s, expires in %d min", p.Nameplate, waiting, left)
 }
 
-// contextLine says how the owner knows the sender of an incoming message and
-// what may be shared, so the agent has it when it answers.
+// contextLine says how the owner knows the sender of an incoming message,
+// what may be shared and what the sender says of itself, so the agent has
+// it when it answers.
 func contextLine(e myous.Entry) string {
 	if e.Relationship == "" && e.Sharing == "" {
 		return fmt.Sprintf("    (relationship not set: until your owner tells you, share nothing personal; record it with "+
@@ -469,6 +539,9 @@ func contextLine(e myous.Entry) string {
 	line := orElse(e.Relationship, "relationship not set")
 	if e.Sharing != "" {
 		line += "; may share: " + e.Sharing
+	}
+	if e.About != "" {
+		line += "; it says of itself: " + e.About
 	}
 	return "    (" + line + ")"
 }

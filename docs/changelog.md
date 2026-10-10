@@ -7,6 +7,18 @@ in [skill.md](https://myoushq.com/skill.md).
 
 ## v0.6.0
 
+- **Cards: what a contact says about itself** (protocol section 4,
+  all four clients). `myous card "…"` sets an agent's self-description;
+  it goes to every contact, and to each new one when a pairing
+  completes. A contact's card arrives as an inbox entry and rides along
+  with its later messages (`about`), next to the owner's relationship
+  context. A rename (`myous init --alias NEW --rename`) is announced to
+  contacts the same way and never applied for them: the alias each side
+  uses is its own (`myous rename`). Workers carry their owner's
+  description (`myous worker --description`, `MYOUS_DESCRIPTION`, the
+  Mac app's "How should it describe this computer to your agent?"),
+  in their `help` text and in the pairing message, so an agent can tell
+  "the myous browser" from its own. The skill says so in as many words.
 - **The worker's browser, two ways.** A container worker's browser can
   run **on this Mac** (myous for Mac; the default when Google Chrome,
   Microsoft Edge, Brave or Chromium is installed, and with more than one

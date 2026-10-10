@@ -17,7 +17,7 @@ import * as contacts from "./contacts.js";
 import type { Contact, Contacts } from "./contacts.js";
 import { Blobs, decryptFile, encryptFile, fileTags, parseFileTags, sanitizeName, type FileInfo } from "./files.js";
 import { record, type State } from "./history.js";
-import { Hub, type HubConfig, type Notice } from "./hub.js";
+import { Hub, HubError, type HubConfig, type Notice } from "./hub.js";
 import { Pairing, type Invite, type Pending } from "./pairing.js";
 import * as parts from "./parts.js";
 import { Connection, KIND_FILE, unwrap, type Unwrapped } from "./relay.js";
@@ -88,6 +88,80 @@ export class Agent {
 
   async alias(): Promise<string> {
     return (await this.st.get<Record<string, string>>("settings", {})).alias ?? "agent";
+  }
+
+  // --- cards (protocol section 4) -------------------------------------------
+
+  /** This agent's self-description, in its owner's words ("" if unset). */
+  async card(): Promise<string> {
+    return (await this.st.get<Record<string, string>>("settings", {})).card ?? "";
+  }
+
+  /** Set (or clear, with "") what this agent says about itself. It reaches
+   * contacts at the next syncCards() (poll does one). */
+  async setCard(about: string | null | undefined): Promise<string> {
+    about = (about ?? "").trim();
+    if ([...about].length > contacts.MAX_ABOUT) throw new Error(`a card's description is limited to ${contacts.MAX_ABOUT} characters`);
+    const settings = await this.st.get<Record<string, unknown>>("settings", {});
+    await this.st.put("settings", { ...settings, card: about });
+    return about;
+  }
+
+  /**
+   * Approved contacts that haven't been told this agent's current alias and
+   * card: new contacts (when there is a card to send), and every contact
+   * after a rename or a card change.
+   */
+  async cardsDue(): Promise<Contact[]> {
+    const name = await this.alias(), about = await this.card();
+    const due: Contact[] = [];
+    for (const c of Object.values(await contacts.load(this.st))) {
+      if (c.status !== "approved") continue;
+      const knows = c.peer_knows ?? { name: null, about: "" }; // from before cards: no record
+      if (knows.name === name && (knows.about || "") === about) continue;
+      if (!about && !knows.name) continue; // nothing to say yet: no card, and no name they know us by
+      due.push(c);
+    }
+    return due;
+  }
+
+  /**
+   * Send this agent's card to every contact that is due one (see cardsDue).
+   * Returns the contacts told; a contact that can't be reached now is tried
+   * again next time. Only a hub problem (nothing can be sent) propagates.
+   */
+  async syncCards(): Promise<Contact[]> {
+    const told: Contact[] = [];
+    for (const c of await this.cardsDue()) {
+      try {
+        await this.sendCard(c.npub);
+      } catch (e) {
+        if (e instanceof HubError) throw e;
+        continue;
+      }
+      told.push(c);
+    }
+    return told;
+  }
+
+  /** Send this agent's card to one contact now. */
+  async sendCard(name: string): Promise<HistoryEntry> {
+    const [pubkey, contact] = await contacts.find(this.st, name);
+    if (contact.status !== "approved") throw new Error(`${contact.alias} is ${contact.status}`);
+    const myName = await this.alias(), about = await this.card();
+    const conn = await this.connect();
+    try {
+      await conn.sendMessage(pubkey, contacts.cardText(myName, about));
+    } finally {
+      conn.close();
+    }
+    return (await locked(this.st, "state", async () => {
+      await contacts.peerKnows(this.st, pubkey, myName, about);
+      return record(this.st, {
+        type: "card", direction: "out", peer: contact.npub, alias: contact.alias, name: myName, about,
+        text: `card sent to ${contact.alias}`,
+      });
+    }))!;
   }
 
   /** Refuse to run an existing identity under another alias unless renaming: one agent, one home. */
@@ -298,6 +372,7 @@ export class Agent {
     const before = await this.nextSeq();
     await this.advancePairings();
     await this.checkNotices();
+    await this.syncCards();
     const conn = await this.connect();
     let wraps: Event[];
     try {
@@ -330,6 +405,11 @@ export class Agent {
         const before = await this.nextSeq();
         await this.advancePairings();
         await this.checkNotices();
+        try {
+          await this.syncCards();
+        } catch {
+          // next round
+        }
         await notify(await this.entriesSince(before));
         await onTick?.();
         const pending = (await (await this.pairing()).pending()).length;
@@ -439,9 +519,15 @@ export class Agent {
         if (!done) continue; // waiting for the other parts
         [text, sentAt] = done;
       }
-      stored.push(await record(this.st, {
-        type: "message", direction: "in", peer: contact.npub, alias: contact.alias, text, sent_at: sentAt, ...workerReply(text),
-      }));
+      const base = { direction: "in" as const, peer: contact.npub, alias: contact.alias, sent_at: sentAt };
+      const card = contacts.parseCard(text);
+      if (card) {
+        // A card (protocol section 4) is kept on the contact; the entry says what changed.
+        const [, line] = await contacts.receiveCard(this.st, sender, card, now);
+        stored.push(await record(this.st, { ...base, type: "card", name: card.name, about: card.about, text: line }));
+        continue;
+      }
+      stored.push(await record(this.st, { ...base, type: "message", text, ...workerReply(text) }));
     }
     for (const [sender, text, sentAt] of parts.expire(buf, now)) {
       changed = true;

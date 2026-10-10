@@ -7,6 +7,8 @@
 //!   {"seq", "type": "result"|"ack", "direction": "in", "peer", "alias", "id", "text", ...fields, "at"}
 //!        (worker replies, protocol section 7; consumed by the request that waits for them)
 //!   {"seq", "type": "paired"|"pairing_failed", "peer"?, "alias"?, "text", "at"}
+//!   {"seq", "type": "card", "direction": "in"|"out", "peer", "alias", "name", "about", "text", "at", "sent_at"?}
+//!        (a contact's card, what it says about itself, or ours sent to it; protocol section 4)
 //! The "state" document keeps the last seq read and the gift wraps already
 //! handled. Callers hold the storage lock around `record` and `handle_wraps`.
 
@@ -108,6 +110,15 @@ pub fn handle_wraps(st: &dyn Storage, keys: &Keys, wraps: &[Event]) -> Result<Ve
             }
             None => (m.text, m.sent_at),
         };
+        // A card is stored on the contact and noted; anything else is a message.
+        if let Some((name, about)) = contacts::parse_card(&text) {
+            let (_, line) = contacts::receive_card(st, &sender, &name, &about, now)?;
+            stored.push(record(st, json!({
+                "type": "card", "direction": "in", "peer": contact.npub, "alias": contact.alias,
+                "name": name, "about": about, "text": line, "sent_at": sent_at,
+            }))?);
+            continue;
+        }
         stored.push(record(st, json!({
             "type": "message", "direction": "in", "peer": contact.npub,
             "alias": contact.alias, "text": text, "sent_at": sent_at,
@@ -141,12 +152,14 @@ pub fn unread(st: &dyn Storage, mark_read: bool) -> Result<Vec<Value>> {
     let mut entries: Vec<Value> = st.read_history()?.into_iter()
         .filter(|e| e["seq"].as_u64().unwrap_or(0) > last && e["direction"] != "out" && !is_reply(e))
         .collect();
-    // The contact's current relationship context, so the agent has it when it answers.
+    // The contact's current relationship context and what it says of itself,
+    // so the agent has them when it answers.
     for e in entries.iter_mut() {
         if let Some(peer) = e["peer"].as_str().map(String::from) {
-            let (relationship, sharing) = contacts::context_of(st, &peer);
+            let (relationship, sharing, about) = contacts::context_of(st, &peer);
             e["relationship"] = json!(relationship);
             e["sharing"] = json!(sharing);
+            e["about"] = json!(about);
         }
     }
     if mark_read {
@@ -206,4 +219,73 @@ fn worker_reply(text: &str) -> Option<(String, Map<String, Value>)> {
     }
     obj.get("id")?.as_str()?;
     Some((kind.to_string(), obj.clone()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::FileStorage;
+    use nostr::nips::nip59::GiftWrapBuilder;
+    use nostr_sdk::prelude::{EventBuilder, FinalizeEvent, FinalizeUnsignedEvent, Kind, Tag};
+
+    /// A kind-14 gift wrap from `sender` to `me`, as the relay would deliver it.
+    fn wrap(sender: &Keys, me: &Keys, text: &str) -> Event {
+        let rumor = EventBuilder::new(Kind::PrivateDirectMessage, text)
+            .tags([Tag::public_key(me.public_key())])
+            .finalize_unsigned(sender.public_key());
+        GiftWrapBuilder::new(me.public_key(), rumor).finalize(sender).unwrap()
+    }
+
+    #[test]
+    fn cards() {
+        let dir = tempfile::tempdir().unwrap();
+        let st = FileStorage::new(Some(dir.path().to_path_buf())).unwrap();
+        let (me, peer) = (Keys::generate(), Keys::generate());
+        let peer_hex = peer.public_key().to_hex();
+        contacts::add(&st, &peer_hex, "peer").unwrap();
+        let handle = |text: &str| -> Value {
+            let mut got = handle_wraps(&st, &me, &[wrap(&peer, &me, text)]).unwrap();
+            assert_eq!(got.len(), 1, "{text}");
+            got.remove(0)
+        };
+        let card = |v: Value| v.to_string();
+
+        let e = handle(&card(json!({"myous": "card", "name": "peer", "about": "Sam's own Mac; the 'myous browser' is its browser"})));
+        assert_eq!(e["type"], "card");
+        assert_eq!(e["direction"], "in");
+        assert_eq!(e["about"], "Sam's own Mac; the 'myous browser' is its browser");
+        assert_eq!(e["text"], "peer describes itself: Sam's own Mac; the 'myous browser' is its browser");
+        assert!(e["sent_at"].as_u64().is_some() && e["seq"].as_u64().is_some());
+        assert_eq!(contacts::load(&st).unwrap()[&peer_hex].card.as_ref().unwrap().about, "Sam's own Mac; the 'myous browser' is its browser");
+        // A rename is announced, never applied: the alias is ours.
+        let renamed = card(json!({"myous": "card", "name": "Sam's Mac", "about": "Sam's own Mac; the 'myous browser' is its browser"}));
+        let e = handle(&renamed);
+        assert_eq!(e["text"], "peer now calls itself \"Sam's Mac\"; you call it \"peer\" \
+                               (keep that, or follow it: myous rename \"peer\" \"Sam's Mac\")");
+        let c = &contacts::load(&st).unwrap()[&peer_hex];
+        assert_eq!((c.alias.as_str(), c.card.as_ref().unwrap().name.as_str()), ("peer", "Sam's Mac"));
+        // The same card again: noted as unchanged. A cleared description is noted too.
+        assert_eq!(handle(&renamed)["text"], "peer sent its card again, unchanged");
+        let e = handle(&card(json!({"myous": "card", "name": "Sam's Mac", "about": ""})));
+        assert_eq!(e["text"], "peer cleared its description");
+        // Incoming messages carry the contact's description, like the owner's context.
+        handle(&card(json!({"myous": "card", "name": "Sam's Mac", "about": "a Mac"})));
+        handle("hello");
+        let shown = unread(&st, true).unwrap();
+        assert_eq!(shown.last().unwrap()["text"], "hello");
+        assert_eq!(shown.last().unwrap()["about"], "a Mac");
+        assert_eq!(shown.iter().filter(|e| e["type"] == "card").count(), 5, "cards show as new items");
+        // Malformed cards are plain messages: no name, a long name, a long about, wrong types.
+        for bad in [
+            json!({"myous": "card", "about": "x"}),
+            json!({"myous": "card", "name": "n".repeat(65), "about": ""}),
+            json!({"myous": "card", "name": "n", "about": "a".repeat(501)}),
+            json!({"myous": "card", "name": 3, "about": ""}),
+        ] {
+            let e = handle(&card(bad.clone()));
+            assert_eq!(e["type"], "message", "{bad}");
+            assert_eq!(e["text"], bad.to_string());
+        }
+        assert_eq!(contacts::load(&st).unwrap()[&peer_hex].card.as_ref().unwrap().about, "a Mac");
+    }
 }

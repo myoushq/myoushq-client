@@ -8,10 +8,17 @@ RELATIONSHIPS, and `sharing`, the owner's guidance on what may be shared
 with this contact. Incoming messages carry both when read, so the agent has
 them when it answers.
 
+Cards (protocol.md, section 4): `card` is the latest {"name", "about",
+"at"} the contact sent about itself; `peer_knows` is {"name", "about"} as
+this agent last told the contact (the alias at pairing, then each card
+sent), so a change is sent once. The contact's `alias` is this agent's own
+label for it and never follows a card.
+
 Callers hold `storage.lock()` around changes.
 """
 from __future__ import annotations
 
+import json
 import time
 
 from nostr_sdk import PublicKey
@@ -22,6 +29,8 @@ APPROVED = "approved"
 BLOCKED = "blocked"
 RELATIONSHIPS = ("family", "friend", "colleague", "business", "service", "other")
 MAX_SHARING = 500
+MAX_NAME = 64     # an alias, as in the pairing payload
+MAX_ABOUT = 500   # a card's self-description
 
 
 def context_fields(relationship: str | None = None, sharing: str | None = None,
@@ -44,11 +53,68 @@ def context_fields(relationship: str | None = None, sharing: str | None = None,
 
 
 def context_of(st: Storage, npub: str) -> dict:
-    """{"relationship", "sharing"} for the contact with this npub (None if unset)."""
+    """{"relationship", "sharing", "about"} for the contact with this npub
+    (None if unset): the owner's context, and what the contact says about
+    itself (its card)."""
     for c in load(st).values():
         if c["npub"] == npub:
-            return {"relationship": c.get("relationship"), "sharing": c.get("sharing")}
-    return {"relationship": None, "sharing": None}
+            return {"relationship": c.get("relationship"), "sharing": c.get("sharing"),
+                    "about": (c.get("card") or {}).get("about") or None}
+    return {"relationship": None, "sharing": None, "about": None}
+
+
+def parse_card(text: str) -> dict | None:
+    """The {"name", "about"} of a card message (protocol.md, section 4),
+    or None when the text is not a valid card."""
+    if not text.startswith("{"):
+        return None
+    try:
+        obj = json.loads(text)
+    except ValueError:
+        return None
+    if not isinstance(obj, dict) or obj.get("myous") != "card":
+        return None
+    name, about = obj.get("name"), obj.get("about", "")
+    if not isinstance(name, str) or not isinstance(about, str):
+        return None
+    name, about = name.strip(), about.strip()
+    if not 1 <= len(name) <= MAX_NAME or len(about) > MAX_ABOUT:
+        return None
+    return {"name": name, "about": about}
+
+
+def card_text(name: str, about: str) -> str:
+    """The JSON of this agent's card."""
+    return json.dumps({"myous": "card", "name": name, "about": about})
+
+
+def receive_card(st: Storage, pubkey_hex: str, card: dict, at: int) -> tuple[dict, str]:
+    """Store a contact's card; returns the contact and a line for the
+    history saying what changed: a new or changed description, a new
+    name (announced, never applied: the alias is ours), or both."""
+    contacts = load(st)
+    c = contacts[pubkey_hex]
+    old = c.get("card") or {}
+    known_name = old.get("name") or c["alias"]
+    bits = []
+    if card["name"] != known_name:
+        bits.append(f"now calls itself \"{card['name']}\"; you call it \"{c['alias']}\" "
+                    f"(keep that, or follow it: myous rename \"{c['alias']}\" \"{card['name']}\")")
+    if card["about"] != (old.get("about") or ""):
+        bits.append(f"describes itself: {card['about']}" if card["about"] else "cleared its description")
+    if not bits:
+        bits.append("sent its card again, unchanged")
+    c["card"] = {"name": card["name"], "about": card["about"], "at": at}
+    st.put("contacts", contacts)
+    return c, f"{c['alias']} " + "; ".join(bits)
+
+
+def peer_knows(st: Storage, pubkey_hex: str, name: str, about: str) -> None:
+    """Record what this agent has told a contact about itself."""
+    contacts = load(st)
+    if pubkey_hex in contacts:
+        contacts[pubkey_hex]["peer_knows"] = {"name": name, "about": about}
+        st.put("contacts", contacts)
 
 
 def load(st: Storage) -> dict[str, dict]:

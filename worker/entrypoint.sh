@@ -188,6 +188,11 @@ done
 current=$(myous status --json 2>/dev/null | python3 -c 'import json, sys; print(json.load(sys.stdin).get("alias") or "")')
 ALIAS_OPT=
 [ -n "${MYOUS_ALIAS:-}" ] && [ "$current" != "$MYOUS_ALIAS" ] && ALIAS_OPT="--alias"
+# The owner's description of this worker (its card, sent to the agents
+# paired with it). Set, possibly empty, by the app or compose; absent means
+# keep whatever card the worker has.
+DESC_OPT=
+[ -n "${MYOUS_DESCRIPTION+set}" ] && DESC_OPT="--description"
 
 # The worker loop. If it exits (crash, hub unreachable for long), start it
 # again rather than taking the browser down with it. It runs in the
@@ -197,7 +202,7 @@ ALIAS_OPT=
 (
 	while true; do
 		# shellcheck disable=SC2086
-		myous worker --work /work --review /opt/worker/review.py ${ALIAS_OPT:+$ALIAS_OPT "$MYOUS_ALIAS"}
+		myous worker --work /work --review /opt/worker/review.py ${ALIAS_OPT:+$ALIAS_OPT "$MYOUS_ALIAS"} ${DESC_OPT:+$DESC_OPT "$MYOUS_DESCRIPTION"}
 		echo "worker: exited with status $?; restarting in 10 s"
 		phase "error: the worker stopped; restarting"
 		ALIAS_OPT=

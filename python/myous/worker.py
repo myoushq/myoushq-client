@@ -157,7 +157,7 @@ class Worker:
             return
         self.invite = self.agent.invite()
         self.say(f"pairing code {self.invite['code']} (link {self.invite['link']}; valid 15 minutes, renewed when it expires). "
-                 f"Tell your agent: {pairing_message(self.invite['code'], self.agent.alias)}")
+                 f"Tell your agent: {pairing_message(self.invite['code'], self.agent.alias, self.agent.card)}")
         self.write_status()
 
     async def on_new(self, entries: list[dict]) -> None:
@@ -174,6 +174,13 @@ class Worker:
                     self.say(f"paired with {e.get('alias')}: verification code {e.get('verify')} "
                              f"(your agent shows the same number; compare them)")
                     self.ensure_invite()
+                    try:
+                        await self.agent.sync_cards()   # tell it what this worker is, now
+                    except (OSError, relay.RelayError):
+                        pass  # the next poll does it
+                elif e["type"] == "card":
+                    self.log({"op": "card", "alias": e.get("alias"), "sender": e.get("peer")})
+                    self.say(e.get("text", "card received"))
                 elif e["type"] in ("message", "file"):
                     await self.handle(e)
                 self.write_status()
@@ -331,6 +338,10 @@ class Worker:
         has_playwright = importlib.util.find_spec("playwright") is not None
         lines = [
             f"{self.agent.alias} is a myoushq worker: it runs commands and moves files for its owner's agents.",
+        ]
+        if self.agent.card:
+            lines.append(f"Its owner describes it: {self.agent.card}")
+        lines += [
             "Use `myous exec <me> -- CMD`, `myous cp FILE <me>:PATH` and `myous cp <me>:PATH FILE` "
             "(protocol.md, section 7). Wait for each reply before the next request.",
             f"Shell: /bin/sh on {platform.system()} {platform.machine()}; Python {platform.python_version()}"
@@ -359,7 +370,7 @@ class Worker:
             "phase": "paused" if self.paused() else "running",
             "contacts": len(self.agent.contacts()),
             "invite": ({"code": self.invite["code"], "link": self.invite["link"], "expires_at": self.invite["expires_at"],
-                        "message": pairing_message(self.invite["code"], self.agent.alias)}
+                        "message": pairing_message(self.invite["code"], self.agent.alias, self.agent.card)}
                        if self.invite else None),
             "paused": self.paused(), "requests": self.requests, "last": self.last, "paired": self.paired, "work": str(self.work),
             "updated": int(time.time()),
@@ -457,12 +468,14 @@ def _cut(data: bytes, limit: int) -> tuple[str, bool]:
     return data[:limit].decode("utf-8", "replace") + f"\n[myous: output cut at {limit} bytes]", True
 
 
-def pairing_message(code: str, alias: str) -> str:
+def pairing_message(code: str, alias: str, about: str = "") -> str:
     """One sentence the owner pastes to their agent along with the code, so
     the agent knows what it is pairing with and what to do next (an agent
     that only gets a code may guess, for instance that it should become a
-    worker itself)."""
+    worker itself). The owner's description of the worker, when set, goes
+    in too: it is what the agent should remember the worker by."""
+    desc = f" It describes itself: \"{about}\"." if about else ""
     return (f"Pair with my worker \"{alias}\" (an environment I set up for you, not something to run yourself): "
             f"accept the pairing code {code} with relationship other and sharing \"my own worker; run commands "
-            f"there for me\". Then send it the message help, and read the Workers section of "
+            f"there for me\".{desc} Then send it the message help, and read the Workers section of "
             f"https://myoushq.com/skill.md before using it.")

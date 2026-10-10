@@ -1,6 +1,7 @@
 package myous
 
 import (
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
@@ -29,12 +30,37 @@ type Contact struct {
 	// AddedBy records who made the pairing when it wasn't the agent itself
 	// ("owner": the owner, through the myous desktop app).
 	AddedBy string `json:"added_by,omitempty"`
+	// Card is the latest card the contact sent about itself (protocol.md
+	// section 4); PeerKnows is what this agent last told the contact about
+	// itself (the alias at pairing, then each card sent), so a change is
+	// sent once. Alias is this agent's own label for the contact and never
+	// follows a card.
+	Card      *Card      `json:"card,omitempty"`
+	PeerKnows *PeerKnows `json:"peer_knows,omitempty"`
+}
+
+// Card is what a contact says about itself: its current alias and its
+// self-description in its owner's words, received at At.
+type Card struct {
+	Name  string `json:"name"`
+	About string `json:"about"`
+	At    int64  `json:"at"`
+}
+
+// PeerKnows is the alias and card a contact was last told.
+type PeerKnows struct {
+	Name  string `json:"name"`
+	About string `json:"about"`
 }
 
 // Relationships are the accepted values of Contact.Relationship.
 var Relationships = []string{"family", "friend", "colleague", "business", "service", "other"}
 
-const maxSharing = 500
+const (
+	maxSharing = 500
+	maxName    = 64  // an alias, as in the pairing payload
+	maxAbout   = 500 // a card's self-description
+)
 
 // ContactContext is relationship context to record on a contact; empty
 // fields are left as they are.
@@ -66,15 +92,105 @@ func (cc ContactContext) apply(c *Contact) {
 	}
 }
 
-// contextOf returns the relationship context of the contact with this npub.
-func contextOf(st Storage, npub string) (relationship, sharing string) {
+// contextOf returns the relationship context of the contact with this npub,
+// and what the contact says about itself (its card's about).
+func contextOf(st Storage, npub string) (relationship, sharing, about string) {
 	contacts, _ := loadContacts(st)
 	for _, c := range contacts {
 		if c.Npub == npub {
-			return c.Relationship, c.Sharing
+			if c.Card != nil {
+				about = c.Card.About
+			}
+			return c.Relationship, c.Sharing, about
 		}
 	}
-	return "", ""
+	return "", "", ""
+}
+
+// parseCard recognizes a card message (protocol.md section 4) in a text:
+// a JSON object {"myous": "card", "name": ..., "about": ...}. Anything
+// else, including a card with missing, mistyped or too long fields, is
+// not a card.
+func parseCard(text string) (name, about string, ok bool) {
+	if !strings.HasPrefix(text, "{") {
+		return "", "", false
+	}
+	var obj map[string]any
+	if json.Unmarshal([]byte(text), &obj) != nil || obj["myous"] != "card" {
+		return "", "", false
+	}
+	name, ok = obj["name"].(string)
+	if !ok {
+		return "", "", false
+	}
+	if v, present := obj["about"]; present {
+		if about, ok = v.(string); !ok {
+			return "", "", false
+		}
+	}
+	name, about = strings.TrimSpace(name), strings.TrimSpace(about)
+	if n := len([]rune(name)); n < 1 || n > maxName || len([]rune(about)) > maxAbout {
+		return "", "", false
+	}
+	return name, about, true
+}
+
+// cardText is the JSON of this agent's card.
+func cardText(name, about string) string {
+	b, _ := json.Marshal(struct {
+		Myous string `json:"myous"`
+		Name  string `json:"name"`
+		About string `json:"about"`
+	}{"card", name, about})
+	return string(b)
+}
+
+// receiveCard stores a contact's card and returns the contact and a line
+// for the history saying what changed: a new or changed description, a
+// new name (announced, never applied: the alias is ours), or both.
+func receiveCard(st Storage, pubkey, name, about string, at int64) (Contact, string, error) {
+	contacts, err := loadContacts(st)
+	if err != nil {
+		return Contact{}, "", err
+	}
+	c := contacts[pubkey]
+	knownName, oldAbout := c.Alias, ""
+	if c.Card != nil {
+		knownName, oldAbout = c.Card.Name, c.Card.About
+	}
+	var bits []string
+	if name != knownName {
+		bits = append(bits, fmt.Sprintf(`now calls itself "%s"; you call it "%s" (keep that, or follow it: myous rename "%s" "%s")`,
+			name, c.Alias, c.Alias, name))
+	}
+	if about != oldAbout {
+		if about != "" {
+			bits = append(bits, "describes itself: "+about)
+		} else {
+			bits = append(bits, "cleared its description")
+		}
+	}
+	if len(bits) == 0 {
+		bits = append(bits, "sent its card again, unchanged")
+	}
+	c.Card = &Card{Name: name, About: about, At: at}
+	contacts[pubkey] = c
+	return c, c.Alias + " " + strings.Join(bits, "; "), st.Put("contacts", contacts)
+}
+
+// peerKnows records what this agent has told a contact about itself.
+func peerKnows(st Storage, pubkey, name, about string) error {
+	contacts, err := loadContacts(st)
+	if err != nil {
+		return err
+	}
+	c, ok := contacts[pubkey]
+	if !ok {
+		return nil
+	}
+	c.PeerKnows = &PeerKnows{Name: name, About: about}
+	contacts[pubkey] = c
+	return st.Put("contacts", contacts)
 }
 
 // Callers hold the "state" lock around changes.

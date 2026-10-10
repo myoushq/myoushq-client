@@ -527,6 +527,11 @@ func (pr *pairing) step(ctx context.Context, p *Pending, body string) error {
 				return err
 			}
 		}
+		// They learned our alias from the payload; a card follows if we have one.
+		if err := peerKnows(pr.st, peer.Pubkey, pr.alias, ""); err != nil {
+			return err
+		}
+		c.PeerKnows = &PeerKnows{Name: pr.alias}
 		p.Stage, p.Contact, p.Verify = "done", &c, VerifyCode(key)
 		if err := pr.st.Delete("pending/" + p.Nameplate); err != nil {
 			return err

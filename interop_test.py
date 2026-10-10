@@ -177,6 +177,29 @@ class Interop(unittest.TestCase):
         self.assertEqual([(e["alias"], e["text"], e.get("relationship"), e.get("sharing")) for e in received],
                          [(b_name, f"hi {inviter}", "friend", "calendar yes")])
 
+        # Cards (protocol section 4): a's description reaches b as a card
+        # entry and rides along with a's later messages; a rename is
+        # announced to b and never changes b's alias for a.
+        set_card = json.loads(self.run_cli(inviter, a_home, "card", "my", "own", "test", "agent", "--json"))
+        self.assertEqual((set_card["name"], set_card["about"], set_card["told"]), (a_name, "my own test agent", [b_name]))
+        got = self.entries(joiner, b_home)
+        self.assertEqual([(e["type"], e.get("name"), e.get("about")) for e in got], [("card", a_name, "my own test agent")])
+        self.assertIn(f"{a_name} describes itself: my own test agent", got[0]["text"])
+        b_contacts = json.loads(self.run_cli(joiner, b_home, "contacts", "--json"))
+        self.assertEqual(next(iter(b_contacts.values()))["card"]["about"], "my own test agent")
+        self.run_cli(inviter, a_home, "send", b_name, "with card")
+        got = self.entries(joiner, b_home)
+        self.assertEqual([(e["text"], e.get("about")) for e in got], [("with card", "my own test agent")])
+        self.run_cli(inviter, a_home, "init", "--alias", a_name + "-renamed", "--hub", self.hub_url, "--rename")
+        got = self.entries(joiner, b_home)
+        self.assertEqual([e["type"] for e in got], ["card"])
+        self.assertIn(f'{a_name} now calls itself "{a_name}-renamed"; you call it "{a_name}"', got[0]["text"])
+        b_contacts = json.loads(self.run_cli(joiner, b_home, "contacts", "--json"))
+        self.assertEqual([c["alias"] for c in b_contacts.values()], [a_name])
+        self.run_cli(inviter, a_home, "init", "--alias", a_name, "--hub", self.hub_url, "--rename")   # back, for the checks below
+        self.entries(joiner, b_home)
+        self.assertEqual(json.loads(self.run_cli(inviter, a_home, "card", "--json")), {"name": a_name, "about": "my own test agent"})
+
         # A long message goes out in parts and arrives whole.
         self.run_cli(inviter, a_home, "send", b_name, "-", stdin=LONG_TEXT)
         got = self.entries(joiner, b_home)

@@ -5,6 +5,7 @@
 import { writeFile } from "node:fs/promises";
 import { parseArgs } from "node:util";
 import { Agent, IdentityError, VERSION } from "./agent.js";
+import type { Contact } from "./contacts.js";
 import type { Pending } from "./pairing.js";
 import { FileStorage, lastUsed, type HistoryEntry } from "./storage.js";
 
@@ -22,6 +23,8 @@ const USAGE = `usage: myous <command> [options]
   inbox [--json] [--peek] [--local] fetch, then new messages and other items
   history [--with NAME] [--json]    past messages
   contacts [--json]                 paired contacts
+  card [TEXT...] [--clear] [--json] show or set what this agent says about itself to its
+                                    contacts (sent to them; a rename is announced the same way)
   context NAME [--relationship R] [--sharing TEXT] [--json]
                                     show or set how your owner knows a contact and what you
                                     may share (R: family, friend, colleague, business,
@@ -41,6 +44,7 @@ async function main(): Promise<void> {
       wait: { type: "string" }, peek: { type: "boolean" }, local: { type: "boolean" }, with: { type: "string" },
       "qr-out": { type: "string" }, relationship: { type: "string" }, sharing: { type: "string" },
       to: { type: "string" }, latest: { type: "boolean" }, rename: { type: "boolean" }, "added-by": { type: "string" },
+      clear: { type: "boolean" },
     },
   });
   if (!command || command === "--help" || command === "-h") {
@@ -61,6 +65,11 @@ async function main(): Promise<void> {
       if (!(await agent.isRegistered())) console.log(`registering with ${agent.hub.url} (proof of work, a few seconds)...`);
       await agent.register(alias);
       console.log(`${created ? "created" : "kept existing"} identity ${await agent.npub()}`);
+      if (!created && settings.alias !== alias) {
+        // A rename: contacts that knew the old name get a card with the new one.
+        const told = await syncCards(agent);
+        if (told.length) console.log(`told ${told.length} contact(s) the new name (they keep their own name for you until they rename)`);
+      }
       console.log(`data directory: ${st.home} (keep it; the key file must never be lost)`);
       break;
     }
@@ -84,7 +93,9 @@ async function main(): Promise<void> {
     }
     case "accept": {
       if (!args[0]) fail("give the pairing link or code");
-      report(await agent.accept(args[0], Number(opts.wait ?? 60), { relationship: opts.relationship, sharing: opts.sharing, added_by: opts["added-by"] }));
+      const r = await agent.accept(args[0], Number(opts.wait ?? 60), { relationship: opts.relationship, sharing: opts.sharing, added_by: opts["added-by"] });
+      report(r);
+      if (r.stage === "done" && (await agent.card())) await syncCards(agent); // the new contact gets our card now
       break;
     }
     case "send": {
@@ -144,7 +155,30 @@ async function main(): Promise<void> {
     case "contacts": {
       const all = await agent.contacts();
       if (opts.json) console.log(JSON.stringify(all, null, 2));
-      else for (const c of Object.values(all)) console.log(`${c.alias.padEnd(20)} ${c.status.padEnd(9)} ${(c.relationship ?? "-").padEnd(10)} ${(c.added_by ?? "-").padEnd(7)} ${c.npub}`);
+      else {
+        for (const c of Object.values(all)) {
+          console.log(`${c.alias.padEnd(20)} ${c.status.padEnd(9)} ${(c.relationship ?? "-").padEnd(10)} ${(c.added_by ?? "-").padEnd(7)} ${c.npub}`);
+          // What the contact says about itself, when it said anything (or goes by another name).
+          const card = c.card;
+          if (card && (card.about || card.name !== c.alias)) {
+            const calls = card.name !== c.alias ? `calls itself "${card.name}"; ` : "";
+            console.log(`    ${calls}about: ${card.about || "(none)"}`);
+          }
+        }
+      }
+      break;
+    }
+    case "card": {
+      if (opts.clear || args.length) {
+        const about = await agent.setCard(opts.clear ? "" : args.join(" "));
+        const told = await syncCards(agent);
+        if (opts.json) console.log(JSON.stringify({ name: await agent.alias(), about, told: told.map((c) => c.alias) }));
+        else console.log(`${about ? `card: ${about}` : "card cleared"}; told ${told.length} contact(s)`);
+        break;
+      }
+      const about = await agent.card();
+      if (opts.json) console.log(JSON.stringify({ name: await agent.alias(), about }));
+      else console.log(`${await agent.alias()}: ${about || "(no card: tell contacts what you are with myous card TEXT)"}`);
       break;
     }
     case "context": {
@@ -177,6 +211,17 @@ async function main(): Promise<void> {
     }
     default:
       fail(`unknown command ${command}\n\n${USAGE}`);
+  }
+}
+
+/** Send the card to contacts that are due one; a network problem is not
+ * fatal here (the next poll tries again). */
+async function syncCards(agent: Agent): Promise<Contact[]> {
+  try {
+    return await agent.syncCards();
+  } catch (e) {
+    console.error(`warning: couldn't send the card now (${(e as Error).message ?? e}); the next poll will`);
+    return [];
   }
 }
 
@@ -230,7 +275,10 @@ function contextLine(e: HistoryEntry): string {
     return `    (relationship not set: until your owner tells you, share nothing personal; record it with ` +
       `myous context ${JSON.stringify(e.alias)} --relationship ... --sharing "...")`;
   }
-  return `    (${e.relationship ?? "relationship not set"}${e.sharing ? `; may share: ${e.sharing}` : ""})`;
+  const parts = [e.relationship ?? "relationship not set"];
+  if (e.sharing) parts.push(`may share: ${e.sharing}`);
+  if (e.about) parts.push(`it says of itself: ${e.about}`);
+  return `    (${parts.join("; ")})`;
 }
 
 function fail(message: string): never {

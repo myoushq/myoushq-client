@@ -8,6 +8,8 @@ History records, oldest first:
   {"seq", "type": "result"|"ack", "direction": "in", "peer", "alias", "id", ..., "text", "at"}
                                             a worker's reply (protocol.md 7.1)
   {"seq", "type": "paired"|"pairing_failed", "peer"?, "alias"?, "text", "at"}
+  {"seq", "type": "card", "direction": "in"|"out", "peer", "alias", "name", "about", "text", "at", "sent_at"?}
+                                            a contact's card (what it says about itself), or ours sent to it
   {"seq", "type": "fetched", "direction": "out", "of": <seq>, "path", "text", "at"}
 The "state" document keeps the last seq read and the gift wraps already
 handled.
@@ -114,7 +116,7 @@ def handle_wraps(st: Storage, keys: Keys, wraps: list[Event]) -> list[dict]:
                 continue  # waiting for the other parts
             text, sent_at, _ = done
             base["sent_at"] = sent_at
-        stored.append(record(st, _text_entry(base, text)))
+        stored.append(record(st, _text_entry(st, base, text, m.sender, now)))
     for sender, text, sent_at in parts.expire(buffer, now):
         contact = contacts.approved(st, sender)
         if contact:
@@ -127,9 +129,14 @@ def handle_wraps(st: Storage, keys: Keys, wraps: list[Event]) -> list[dict]:
     return stored
 
 
-def _text_entry(base: dict, text: str) -> dict:
-    """A history entry for a text message: a worker reply becomes its own
-    type, a worker request stays a message with the parsed request attached."""
+def _text_entry(st: Storage, base: dict, text: str, sender: str, now: int) -> dict:
+    """A history entry for a text message: a card is stored on the contact
+    and noted, a worker reply becomes its own type, a worker request stays
+    a message with the parsed request attached."""
+    card = contacts.parse_card(text)
+    if card:
+        _, line = contacts.receive_card(st, sender, card, now)
+        return dict(base, type="card", name=card["name"], about=card["about"], text=line)
     obj = parse_request(text)
     if obj and obj["myous"] in REPLY_OPS and _REQUEST_ID.match(obj["id"]):
         entry = dict(base, type=obj["myous"], text=text)

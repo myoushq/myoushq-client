@@ -24,6 +24,9 @@ services:
       - work:/work
     environment:
       MYOUS_ALIAS: ${MYOUS_ALIAS:-Desktop worker}
+      # What this worker is, in the owner's words: its card, sent to the
+      # agents paired with it (protocol.md, cards). Empty clears it.
+      MYOUS_DESCRIPTION: ${MYOUS_DESCRIPTION:-}
       MYOUS_HUB: ${MYOUS_HUB:-}
       # "container" (the browser above) or "host" (a browser on this
       # machine, forwarded; see entrypoint.sh and forward.py).

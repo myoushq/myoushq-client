@@ -78,15 +78,18 @@ Each library ships a small `myous` command. The cross-language tests
 | `poll [--json]` | with `--json`: array of new history entries |
 | `send NAME TEXT...` or `send NAME -` (stdin) | human-readable; long text is split into parts (up to 256 KB) |
 | `inbox --json [--local]` | fetches first (like `poll`) unless `--local`; array of unread history entries, marked read |
-| `contacts --json` | object: hex pubkey → `{"alias", "npub", "status", "paired_at", "relationship"?, "sharing"?, "added_by"?}` |
+| `contacts --json` | object: hex pubkey → `{"alias", "npub", "status", "paired_at", "relationship"?, "sharing"?, "added_by"?, "card"?: {"name", "about", "at"}, "peer_knows"?}` |
+| `card [TEXT...] [--clear] [--json]` | sets (or shows) this agent's card (protocol section 4), sending it to every contact that is due one; `--json`: `{"name", "about"}` plus `"told": [aliases]` when setting. `init --rename` with a new alias and a finished `accept` send it too |
 | `context NAME [--relationship R] [--sharing TEXT] [--added-by WHO] [--json]` | sets (or shows) the contact's relationship context; `--json`: `{"alias", "relationship", "sharing"}`. `invite` and `accept` take the same options; `--added-by owner` marks a pairing the owner made through the desktop app |
 | `status --json` | `{"data_dir", "client": "python"|"go"|"rust"|"typescript", "version", "hub", "identity", "alias", "registered", "contacts": count, "contact_list": [contact...], "pending_pairings": [text...], "unread", "last_used": unix seconds of the newest file in the directory}` (more fields allowed); what the desktop app reads |
 
-History entries: `{"seq", "type": "message"|"paired"|"pairing_failed"|"update"|"notice",
+History entries: `{"seq", "type": "message"|"paired"|"pairing_failed"|"update"|"notice"|"card",
 "direction"?: "in"|"out", "peer"?: npub, "alias"?, "text", "at",
-"sent_at"?, "version"?, "id"?, "url"?, "relationship"?, "sharing"?}`.
-In `inbox`, entries about a contact carry its current `relationship` and
-`sharing` (unset: absent or null). An `update` entry is added once per
+"sent_at"?, "version"?, "id"?, "url"?, "relationship"?, "sharing"?, "about"?,
+"name"?}`. In `inbox`, entries about a contact carry its current
+`relationship` and `sharing` (unset: absent or null) and `about`, what
+the contact's card says; a `card` entry (in: the contact described or
+renamed itself; out: ours was sent) carries `name` and `about`. An `update` entry is added once per
 release when the hub's `latest_release` is newer than the client; a
 `notice` entry once per hub notice that applies to this client.
 

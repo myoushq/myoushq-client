@@ -17,6 +17,7 @@ RID = "ab" * 16
 
 class FakeAgent:
     alias = "box"
+    card = ""
 
     def __init__(self):
         self.sent: list[tuple[str, str]] = []
@@ -34,6 +35,9 @@ class FakeAgent:
 
     async def send(self, to, text):
         self.sent.append((to, text))
+
+    async def sync_cards(self):
+        return []
 
     async def send_file(self, to, path, extra_tags=None, mime=None, file_name=None):
         self.files.append((to, str(path), extra_tags))
@@ -97,6 +101,18 @@ class WorkerTest(unittest.TestCase):
         from myous.worker import pairing_message
         self.assertIn("1234-ABCDE", pairing_message("1234-ABCDE", "Sam's Mac"))
         self.assertIn("not something to run yourself", pairing_message("1234-ABCDE", "Sam's Mac"))
+        self.assertNotIn("describes itself", pairing_message("1234-ABCDE", "Sam's Mac"))
+        self.assertIn('It describes itself: "Sam\'s own Mac"', pairing_message("1234-ABCDE", "Sam's Mac", "Sam's own Mac"))
+
+    def test_help_and_pairing_carry_the_description(self):
+        self.agent.card = "Sam's own Mac; its browser is the 'myous browser'"
+        self.run_(self.w.handle(message("help")))
+        self.assertIn("Its owner describes it: Sam's own Mac; its browser is the 'myous browser'", self.agent.sent[0][1])
+        self.agent._contacts = {}
+        self.w.ensure_invite()
+        self.w.write_status()
+        status = json.loads((self.home / "worker.json").read_text())
+        self.assertIn("It describes itself: \"Sam's own Mac; its browser is the 'myous browser'\"", status["invite"]["message"])
 
     def test_exec_runs_in_work_dir_and_truncates(self):
         self.run_(self.w.handle(message(json.dumps({"myous": "exec", "id": RID, "cmd": "pwd; head -c 200000 /dev/zero | tr '\\0' x"}))))

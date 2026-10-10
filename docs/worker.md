@@ -66,8 +66,14 @@ lines, the same one the Mac app bundles):
 mkdir -p ~/.myous-worker && cd ~/.myous-worker
 V=$(curl -fsS https://myoushq.com/config.json | python3 -c 'import json,sys; print(json.load(sys.stdin)["latest_release"].lstrip("v"))')
 curl -fsS "https://raw.githubusercontent.com/myoushq/myoushq-client/v$V/worker/mac/compose-image.yml" | sed "s/@VERSION@/$V/" > compose.yml
-MYOUS_ALIAS="Sam's Mac" docker compose -p myous-worker up -d
+MYOUS_ALIAS="Sam's Mac" MYOUS_DESCRIPTION="Sam's own Mac; its browser is where Sam logs into sites for you" docker compose -p myous-worker up -d
 ```
+
+`MYOUS_DESCRIPTION` is the worker's card (protocol.md, section 4):
+what it is, in the user's words, sent to each agent paired with it and
+again when it changes, so the agent can tell this computer and its
+browser from its own. Ask the user for a sentence, or offer one like
+the example; empty clears it.
 
 From source instead (after step 1):
 
@@ -133,9 +139,9 @@ cat ~/.myous-worker/worker.json
 
 `invite.code` is a pairing code like `4821-K7F3QX` (also `invite.link`),
 and `invite.message` is a sentence for the user to paste to their agent:
-it names the worker, gives the code, and says what to do with it, so the
-agent doesn't guess (one that was only given a code made itself a worker
-instead). The Mac app shows the same sentence with a copy button; the
+it names the worker, gives the code, carries the description, and says
+what to do with it, so the agent doesn't guess (one that was only given
+a code made itself a worker instead). The Mac app shows the same sentence with a copy button; the
 container's log prints it too.
 The worker makes one as long as it has no contacts, renewing it every 15
 minutes. Give it to the user and say: "Tell your Muse to accept this

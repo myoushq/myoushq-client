@@ -12,7 +12,9 @@ import (
 
 // Entry is one history record: a message ("message", direction "in" or
 // "out"), a file ("file"), a worker reply ("result", "ack"; see
-// protocol.md section 7) or a pairing result ("paired", "pairing_failed").
+// protocol.md section 7), a pairing result ("paired", "pairing_failed")
+// or a card ("card": what a contact says about itself, or ours sent to
+// it; protocol.md section 4).
 type Entry struct {
 	Seq       int    `json:"seq"`
 	Type      string `json:"type"`
@@ -23,15 +25,18 @@ type Entry struct {
 	At        int64  `json:"at"`
 	SentAt    int64  `json:"sent_at,omitempty"`
 	Version   string `json:"version,omitempty"` // "update" entries: the release announced
-	// The contact's current relationship context, filled in when read.
+	// The contact's current relationship context and what it says about
+	// itself, filled in when read. "card" entries carry their own About.
 	Relationship string `json:"relationship,omitempty"`
 	Sharing      string `json:"sharing,omitempty"`
+	About        string `json:"about,omitempty"`
 	// Incomplete marks a long message whose missing parts never arrived.
 	Incomplete bool   `json:"incomplete,omitempty"`
 	ID         string `json:"id,omitempty"`  // "notice": the notice's id; "result"/"ack": the request's id
 	URL        string `json:"url,omitempty"` // "notice": link for more detail; "file": the blob
 	// "file" entries: what's needed to fetch and decrypt the blob. The key
-	// and nonce stay in the history (private, like the messages).
+	// and nonce stay in the history (private, like the messages). Name is
+	// also a "card" entry's name (the sender's alias as it states it).
 	Name  string   `json:"name,omitempty"`
 	Mime  string   `json:"mime,omitempty"`
 	Size  int64    `json:"size,omitempty"`
@@ -186,7 +191,14 @@ func handleWraps(st Storage, sk string, wraps []*nostr.Event) ([]Entry, error) {
 			m = whole
 		}
 		entry := Entry{Type: "message", Direction: "in", Peer: c.Npub, Alias: c.Alias, Text: m.text, SentAt: m.sentAt, Incomplete: incomplete}
-		if kind, id, ok := workerReply(m.text); ok {
+		if name, about, ok := parseCard(m.text); ok {
+			// A card is kept on the contact; the entry says what changed.
+			_, line, err := receiveCard(st, m.sender, name, about, now)
+			if err != nil {
+				return err
+			}
+			entry.Type, entry.Name, entry.About, entry.Text = "card", name, about, line
+		} else if kind, id, ok := workerReply(m.text); ok {
 			entry.Type, entry.ID = kind, id
 		}
 		e, err := record(st, entry)
@@ -233,7 +245,7 @@ func unread(st Storage, markRead bool) ([]Entry, error) {
 		if e.Seq > s.ReadSeq && e.Direction != "out" && !e.consumedByCommand() {
 			if e.Peer != "" {
 				// So the agent has it when it answers.
-				e.Relationship, e.Sharing = contextOf(st, e.Peer)
+				e.Relationship, e.Sharing, e.About = contextOf(st, e.Peer)
 			}
 			entries = append(entries, e)
 		}

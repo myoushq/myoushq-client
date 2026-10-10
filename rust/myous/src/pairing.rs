@@ -185,6 +185,8 @@ pub struct Pending {
     pub context: crate::contacts::ContactContext,
 }
 
+// One result per pairing, never stored in bulk: the Contact's size is fine here.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum Outcome {
     /// Still waiting for the other side.
@@ -376,6 +378,8 @@ impl<'a> Pairing<'a> {
             if !p.context.is_empty() {
                 contact = contacts::set_context(&*self.st, pubkey, &p.context)?;
             }
+            // They learned our alias from the payload; a card follows if we have one.
+            contacts::peer_knows(&*self.st, pubkey, &self.alias, "")?;
             self.st.delete(&format!("pending/{}", p.nameplate))?;
             let mut text = format!("paired with {} (verification code {verify})", contact.alias);
             if contact.relationship.is_none() {

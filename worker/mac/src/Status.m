@@ -91,6 +91,7 @@ NSDictionary *dict(id v) { return [v isKindOfClass:[NSDictionary class]] ? v : n
     c.repo = str(d[@"repo"]);
     c.mode = str(d[@"mode"]);
     c.name = str(d[@"name"]);
+    c.descriptionText = str(d[@"description"]);
     c.browser = str(d[@"browser"]);
     c.browserApp = str(d[@"browser_app"]);
     if (num(d[@"browser_hidden"])) c.browserHidden = num(d[@"browser_hidden"]).boolValue;
@@ -115,6 +116,7 @@ NSDictionary *dict(id v) { return [v isKindOfClass:[NSDictionary class]] ? v : n
     if (self.repo) d[@"repo"] = self.repo;
     if (self.mode) d[@"mode"] = self.mode;
     if (self.name) d[@"name"] = self.name;
+    if (self.descriptionText) d[@"description"] = self.descriptionText;
     if (self.browser) d[@"browser"] = self.browser;
     if (self.browserApp) d[@"browser_app"] = self.browserApp;
     d[@"browser_hidden"] = @(self.browserHidden);

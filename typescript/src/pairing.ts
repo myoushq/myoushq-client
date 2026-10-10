@@ -273,6 +273,8 @@ export class Pairing {
         let contact = await contacts.add(this.st, payload.pubkey, String(payload.alias ?? "").slice(0, 64));
         const fields = contacts.contextFields(p.context);
         if (Object.keys(fields).length) contact = await contacts.update(this.st, payload.pubkey, fields);
+        // They learned our alias from the payload; a card follows if we have one.
+        await contacts.peerKnows(this.st, payload.pubkey, this.alias, "");
         p.stage = "done";
         p.contact = contact;
         p.verify = verifyCode(key);

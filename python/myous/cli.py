@@ -33,7 +33,36 @@ def cmd_init(agent: Agent, st: FileStorage, args) -> None:
     asyncio.run(agent.register(alias))
     print(("created" if created else "kept existing") + f" identity {agent.keys.public_key().to_bech32()}")
     print(f"alias: {alias}")
+    if not created and stored != alias:
+        told = _sync_cards(agent)
+        if told:
+            print(f"told {len(told)} contact(s) the new name (they keep their own name for you until they rename)")
     print(f"data directory: {st.home} (keep it; the key file must never be lost)")
+
+
+def _sync_cards(agent: Agent) -> list[dict]:
+    """Send the card to contacts that are due one; a network problem is
+    not fatal here (the next poll tries again)."""
+    try:
+        return asyncio.run(agent.sync_cards())
+    except (HubError, RelayError, OSError) as e:
+        print(f"warning: couldn't send the card now ({e}); the next poll will", file=sys.stderr)
+        return []
+
+
+def cmd_card(agent: Agent, st: FileStorage, args) -> None:
+    if args.clear or args.text:
+        about = agent.set_card("" if args.clear else " ".join(args.text))
+        told = _sync_cards(agent)
+        if args.json:
+            print(json.dumps({"name": agent.alias, "about": about, "told": [c["alias"] for c in told]}))
+            return
+        print(("card cleared" if not about else f"card: {about}") + f"; told {len(told)} contact(s)")
+        return
+    if args.json:
+        print(json.dumps({"name": agent.alias, "about": agent.card}))
+        return
+    print(f"{agent.alias}: {agent.card or '(no card: tell contacts what you are with myous card TEXT)'}")
 
 
 def cmd_invite(agent: Agent, st: FileStorage, args) -> None:
@@ -76,6 +105,8 @@ def cmd_accept(agent: Agent, st: FileStorage, args) -> None:
               "or listens (result in `myous inbox`)")
         return
     _report_pairing(r)
+    if r["stage"] == "done" and agent.card:
+        _sync_cards(agent)
 
 
 def _report_pairing(r: dict) -> None:
@@ -107,6 +138,8 @@ def context_line(e: dict) -> str | None:
     parts = [e.get("relationship") or "relationship not set"]
     if e.get("sharing"):
         parts.append(f"may share: {e['sharing']}")
+    if e.get("about"):
+        parts.append(f"it says of itself: {e['about']}")
     return f"    ({'; '.join(parts)})"
 
 
@@ -223,6 +256,8 @@ def cmd_worker(agent: Agent, st: FileStorage, args) -> None:
         print(f"registering with {agent.hub.url}...", flush=True)
         asyncio.run(agent.register(alias, about=ABOUT))
     print(f"worker {agent.alias} ({agent.keys.public_key().to_bech32()}), work directory {args.work}", flush=True)
+    if args.description is not None:
+        agent.set_card(args.description)   # reaches paired agents at the first sync
     worker = Worker(agent, st, args.work, review_cmd=args.review, pause_file=args.pause_file,
                     allow_absolute=args.allow_absolute, notes=args.note)
     try:
@@ -240,6 +275,10 @@ def cmd_contacts(agent: Agent, st: FileStorage, args) -> None:
         print("no contacts yet; pair with `myous invite` or `myous accept`")
     for c in all_contacts.values():
         print(f"{c['alias']:<20} {c['status']:<9} {c.get('relationship') or '-':<10} {c.get('added_by') or '-':<7} {c['npub']}")
+        card = c.get("card") or {}
+        if card.get("about") or (card.get("name") and card["name"] != c["alias"]):
+            calls = f"calls itself \"{card['name']}\"; " if card.get("name") != c["alias"] else ""
+            print(f"    {calls}about: {card.get('about') or '(none)'}")
 
 
 def cmd_context(agent: Agent, st: FileStorage, args) -> None:
@@ -432,6 +471,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = add("worker", cmd_worker, "be a worker: run commands and move files for paired contacts")
     p.add_argument("--alias", help="the worker's name (needed the first time)")
+    p.add_argument("--description", help="what this worker is, in the owner's words: its card, sent to the agents paired with it")
     p.add_argument("--work", default=os.environ.get("MYOUS_WORK", "work"), help="work directory (default ./work or $MYOUS_WORK)")
     p.add_argument("--review", metavar="CMD", help="review hook: a command that reads the request as JSON and exits 0 to allow")
     p.add_argument("--pause-file", help="refuse requests while this file exists (default $MYOUS_HOME/worker.paused)")
@@ -450,6 +490,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--json", action="store_true")
 
     p = add("contacts", cmd_contacts, "list paired contacts")
+    p.add_argument("--json", action="store_true")
+
+    p = add("card", cmd_card, "show or set what this agent says about itself to its contacts (sent to them)")
+    p.add_argument("text", nargs="*", help="the description, in your owner's words (up to 500 characters)")
+    p.add_argument("--clear", action="store_true")
     p.add_argument("--json", action="store_true")
 
     p = add("context", cmd_context, "show or set how your owner knows a contact and what you may share with it")

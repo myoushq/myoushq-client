@@ -86,6 +86,40 @@ class Inbox(unittest.TestCase):
         self.assertEqual([e["type"] for e in shown], ["message", "file", "message"])
         self.assertEqual(inbox.unread(self.st), [])
 
+    def test_cards(self):
+        peer_hex = self.peer.public_key().to_hex()
+        card = json.dumps({"myous": "card", "name": "peer", "about": "Sam's own Mac; the 'myous browser' is its browser"})
+        (e,) = self.handle(wrap(self.peer, self.me, relay.KIND_CHAT, card, []))
+        self.assertEqual(e["type"], "card")
+        self.assertEqual(e["about"], "Sam's own Mac; the 'myous browser' is its browser")
+        self.assertIn("peer describes itself: Sam's own Mac", e["text"])
+        self.assertNotIn("calls itself", e["text"])
+        self.assertEqual(contacts.load(self.st)[peer_hex]["card"]["about"], "Sam's own Mac; the 'myous browser' is its browser")
+        # A rename is announced, never applied: the alias is ours.
+        renamed = json.dumps({"myous": "card", "name": "Sam's Mac", "about": "Sam's own Mac; the 'myous browser' is its browser"})
+        (e,) = self.handle(wrap(self.peer, self.me, relay.KIND_CHAT, renamed, []))
+        self.assertIn('peer now calls itself "Sam\'s Mac"; you call it "peer"', e["text"])
+        self.assertIn('myous rename "peer" "Sam\'s Mac"', e["text"])
+        self.assertEqual(contacts.load(self.st)[peer_hex]["alias"], "peer")
+        self.assertEqual(contacts.load(self.st)[peer_hex]["card"]["name"], "Sam's Mac")
+        # The same card again: noted as unchanged. A cleared description is noted too.
+        (e,) = self.handle(wrap(self.peer, self.me, relay.KIND_CHAT, renamed, []))
+        self.assertIn("unchanged", e["text"])
+        (e,) = self.handle(wrap(self.peer, self.me, relay.KIND_CHAT, json.dumps({"myous": "card", "name": "Sam's Mac", "about": ""}), []))
+        self.assertIn("cleared its description", e["text"])
+        # Incoming messages carry the contact's description, like the owner's context.
+        self.handle(wrap(self.peer, self.me, relay.KIND_CHAT, json.dumps({"myous": "card", "name": "Sam's Mac", "about": "a Mac"}), []))
+        self.handle(wrap(self.peer, self.me, relay.KIND_CHAT, "hello", []))
+        unread = inbox.unread(self.st)
+        self.assertEqual(unread[-1]["text"], "hello")
+        self.assertEqual(unread[-1]["about"], "a Mac")
+        # Malformed cards are plain messages: no name, a long name, a long about, wrong types.
+        for bad in ({"myous": "card", "about": "x"}, {"myous": "card", "name": "n" * 65, "about": ""},
+                    {"myous": "card", "name": "n", "about": "a" * 501}, {"myous": "card", "name": 3, "about": ""}):
+            (e,) = self.handle(wrap(self.peer, self.me, relay.KIND_CHAT, json.dumps(bad), []))
+            self.assertEqual(e["type"], "message", bad)
+        self.assertEqual(contacts.load(self.st)[peer_hex]["card"]["about"], "a Mac")
+
     def test_strangers_bad_files_and_foreign_stores_are_dropped(self):
         enc = files.encrypt(b"payload")
         tags = files.file_tags(enc, "doc.txt", "text/plain")

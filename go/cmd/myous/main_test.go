@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	myous "github.com/myoushq/myoushq-client/go"
 )
 
 func TestLastUsed(t *testing.T) {
@@ -31,5 +33,33 @@ func TestLastUsed(t *testing.T) {
 		if got := lastUsed(dir); got != tc.want {
 			t.Fatalf("after %s: lastUsed = %d, want %d", tc.file, got, tc.want)
 		}
+	}
+}
+
+func TestCardAndContextLines(t *testing.T) {
+	c := myous.Contact{Alias: "peer"}
+	if got := cardLine(c); got != "" {
+		t.Fatalf("no card: %q", got)
+	}
+	c.Card = &myous.Card{Name: "peer", About: ""}
+	if got := cardLine(c); got != "" {
+		t.Fatalf("same name, no about: %q", got)
+	}
+	c.Card = &myous.Card{Name: "peer", About: "a Mac"}
+	if got := cardLine(c); got != "    about: a Mac" {
+		t.Fatalf("got %q", got)
+	}
+	c.Card = &myous.Card{Name: "Sam's Mac", About: ""}
+	if got := cardLine(c); got != `    calls itself "Sam's Mac"; about: (none)` {
+		t.Fatalf("got %q", got)
+	}
+
+	e := myous.Entry{Alias: "peer", Relationship: "friend", Sharing: "the weather", About: "a Mac"}
+	if got := contextLine(e); got != "    (friend; may share: the weather; it says of itself: a Mac)" {
+		t.Fatalf("got %q", got)
+	}
+	e.Sharing = ""
+	if got := contextLine(e); got != "    (friend; it says of itself: a Mac)" {
+		t.Fatalf("got %q", got)
 	}
 }

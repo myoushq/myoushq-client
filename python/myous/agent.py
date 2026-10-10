@@ -90,6 +90,69 @@ class Agent:
     def alias(self) -> str:
         return self.st.get("settings", {}).get("alias", "agent")
 
+    # --- cards (protocol.md, section 4) ------------------------------------
+
+    @property
+    def card(self) -> str:
+        """This agent's self-description, in its owner's words ("" if unset)."""
+        return self.st.get("settings", {}).get("card", "")
+
+    def set_card(self, about: str | None) -> str:
+        """Set (or clear, with None or "") what this agent says about itself.
+        It reaches contacts at the next sync_cards() (poll does one)."""
+        about = (about or "").strip()
+        if len(about) > contacts.MAX_ABOUT:
+            raise ValueError(f"a card's description is limited to {contacts.MAX_ABOUT} characters")
+        settings = self.st.get("settings", {})
+        settings["card"] = about
+        self.st.put("settings", settings)
+        return about
+
+    def cards_due(self) -> list[dict]:
+        """Approved contacts that haven't been told this agent's current
+        alias and card: new contacts (when there is a card to send), and
+        every contact after a rename or a card change."""
+        name, about = self.alias, self.card
+        due = []
+        for c in contacts.load(self.st).values():
+            if c["status"] != contacts.APPROVED:
+                continue
+            knows = c.get("peer_knows") or {"name": None, "about": ""}  # from before cards: no record
+            if knows.get("name") == name and (knows.get("about") or "") == about:
+                continue
+            if not about and not knows.get("name"):
+                continue  # nothing to say yet: no card, and no name they know us by
+            due.append(c)
+        return due
+
+    async def sync_cards(self) -> list[dict]:
+        """Send this agent's card to every contact that is due one (see
+        cards_due). Returns the contacts told; a contact that can't be
+        reached now is tried again next time."""
+        told = []
+        for c in self.cards_due():
+            try:
+                await self.send_card(c["npub"])
+            except (relay.RelayError, OSError):
+                continue
+            told.append(c)
+        return told
+
+    async def send_card(self, name: str) -> dict:
+        """Send this agent's card to one contact now."""
+        pubkey, contact = contacts.find(self.st, name)
+        if contact["status"] != contacts.APPROVED:
+            raise ValueError(f"{contact['alias']} is {contact['status']}")
+        my_name, about = self.alias, self.card
+        text = contacts.card_text(my_name, about)
+        async with self._connect() as conn:
+            await conn.send_message(PublicKey.parse(pubkey), text)
+        with self.st.lock():
+            contacts.peer_knows(self.st, pubkey, my_name, about)
+            return inbox.record(self.st, {"type": "card", "direction": "out", "peer": contact["npub"],
+                                          "alias": contact["alias"], "name": my_name, "about": about,
+                                          "text": f"card sent to {contact['alias']}"})
+
     async def register(self, alias: str | None = None, about: str | None = None) -> None:
         """Publish profile and inbox relays. The first time, with proof of
         work, this registers the key with the hub. Safe to repeat. `about`
@@ -349,6 +412,7 @@ class Agent:
         before = self._next_seq()
         self.advance_pairings()
         self.check_notices()
+        await self.sync_cards()
         async with self._connect() as conn:
             wraps = await conn.fetch_wraps()
         with self.st.lock():
@@ -374,6 +438,10 @@ class Agent:
                 while True:
                     await loop.run_in_executor(None, self.advance_pairings)
                     await loop.run_in_executor(None, self.check_notices)
+                    try:
+                        await self.sync_cards()
+                    except (relay.RelayError, OSError):
+                        pass  # next round
                     await deliveries.deliver()
                     states = [r.status() for r in (await conn.client.relays()).values()]
                     connected = any(s == RelayStatus.CONNECTED for s in states)

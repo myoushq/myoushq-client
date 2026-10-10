@@ -290,6 +290,8 @@ class Pairing:
                 contact = contacts.add(self.st, payload["pubkey"], str(payload.get("alias", ""))[:64])
                 if p.get("context"):
                     contact = contacts.update(self.st, payload["pubkey"], **p["context"])
+                # They learned our alias from the payload; a card follows if we have one.
+                contacts.peer_knows(self.st, payload["pubkey"], self.alias, "")
                 p.update(stage="done", contact=contact, verify=verify_code(key))
                 self.st.delete(f"pending/{p['nameplate']}")
                 text = f"paired with {contact['alias']} (verification code {p['verify']})"

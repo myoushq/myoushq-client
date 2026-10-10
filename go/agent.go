@@ -155,6 +155,121 @@ func (a *Agent) Alias() string {
 	return "agent"
 }
 
+// --- cards (protocol.md, section 4) ---------------------------------
+
+// Card is this agent's self-description, in its owner's words ("" if unset).
+func (a *Agent) Card() string {
+	settings, _ := loadSettings(a.st)
+	about, _ := settings["card"].(string)
+	return about
+}
+
+// SetCard sets (or clears, with "") what this agent says about itself. It
+// reaches contacts at the next SyncCards (Poll does one). It returns the
+// text as stored.
+func (a *Agent) SetCard(about string) (string, error) {
+	about = strings.TrimSpace(about)
+	if len([]rune(about)) > maxAbout {
+		return "", fmt.Errorf("a card's description is limited to %d characters", maxAbout)
+	}
+	settings, err := loadSettings(a.st)
+	if err != nil {
+		return "", err
+	}
+	settings["card"] = about
+	return about, a.st.Put("settings", settings)
+}
+
+// CardsDue lists the approved contacts that haven't been told this agent's
+// current alias and card: new contacts (when there is a card to send), and
+// every contact after a rename or a card change.
+func (a *Agent) CardsDue() ([]Contact, error) {
+	contacts, err := loadContacts(a.st)
+	if err != nil {
+		return nil, err
+	}
+	name, about := a.Alias(), a.Card()
+	var due []Contact
+	for _, c := range contacts {
+		if c.Status != Approved {
+			continue
+		}
+		var knows PeerKnows // from before cards: no record
+		if c.PeerKnows != nil {
+			knows = *c.PeerKnows
+		}
+		if knows.Name == name && knows.About == about {
+			continue
+		}
+		if about == "" && knows.Name == "" {
+			continue // nothing to say yet: no card, and no name they know us by
+		}
+		due = append(due, c)
+	}
+	return due, nil
+}
+
+// SyncCards sends this agent's card to every contact that is due one (see
+// CardsDue). It returns the contacts told; a contact that can't be reached
+// now is tried again next time.
+func (a *Agent) SyncCards(ctx context.Context) ([]Contact, error) {
+	due, err := a.CardsDue()
+	if err != nil || len(due) == 0 {
+		return nil, err
+	}
+	conn, err := a.connect(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.close()
+	var told []Contact
+	for _, c := range due {
+		pk, _, err := findContact(a.st, c.Npub)
+		if err != nil {
+			return told, err
+		}
+		if _, err := a.sendCard(ctx, conn, pk, c); err != nil {
+			continue
+		}
+		told = append(told, c)
+	}
+	return told, nil
+}
+
+// SendCard sends this agent's card to one approved contact now.
+func (a *Agent) SendCard(ctx context.Context, name string) (Entry, error) {
+	pk, c, err := findContact(a.st, name)
+	if err != nil {
+		return Entry{}, err
+	}
+	if c.Status != Approved {
+		return Entry{}, fmt.Errorf("%s is %s", c.Alias, c.Status)
+	}
+	conn, err := a.connect(ctx, nil)
+	if err != nil {
+		return Entry{}, err
+	}
+	defer conn.close()
+	return a.sendCard(ctx, conn, pk, c)
+}
+
+func (a *Agent) sendCard(ctx context.Context, conn *connection, pk string, c Contact) (Entry, error) {
+	name, about := a.Alias(), a.Card()
+	if _, err := conn.sendMessage(ctx, pk, cardText(name, about), nil, nil); err != nil {
+		return Entry{}, err
+	}
+	unlock, _, err := lock(a.st, "state", true)
+	if err != nil {
+		return Entry{}, err
+	}
+	defer unlock()
+	if err := peerKnows(a.st, pk, name, about); err != nil {
+		return Entry{}, err
+	}
+	return record(a.st, Entry{Type: "card", Direction: "out", Peer: c.Npub, Alias: c.Alias,
+		Name: name, About: about, Text: "card sent to " + c.Alias})
+}
+
 func (a *Agent) IsRegistered() bool {
 	s, err := loadState(a.st)
 	return err == nil && s.Registered
@@ -491,6 +606,9 @@ func (a *Agent) Poll(ctx context.Context) ([]Entry, error) {
 	}
 	a.AdvancePairings(ctx)
 	a.checkNotices(ctx)
+	if _, err := a.SyncCards(ctx); err != nil {
+		return nil, err
+	}
 	conn, err := a.connect(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -548,6 +666,7 @@ func (a *Agent) Listen(ctx context.Context, onNew func([]Entry), onTick func(), 
 			if err == nil {
 				a.AdvancePairings(ctx)
 				a.checkNotices(ctx)
+				a.SyncCards(ctx) // a network problem: next round
 				if entries, err := a.entriesSince(before); err == nil {
 					notify(entries)
 				}

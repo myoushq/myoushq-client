@@ -77,7 +77,10 @@ clears anything older. The mode and checkout path are in
 `notifications` with `notify` per kind, `auto_update`, `show_agents`,
 `agent_homes`, and what the owner has already seen); per worker also
 `browser` ("mac" or "container"), `browser_app` (the bundle id of the
-Mac browser to run) and `browser_hidden`.
+Mac browser to run), `browser_hidden`, and `description` (what the agent
+is told this computer is: the worker's card, `MYOUS_DESCRIPTION` in the
+container; absent means the app's default sentence, which names the
+worker and says "the myous browser" means its browser).
 
 ## What the window shows, screen by screen
 

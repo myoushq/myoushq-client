@@ -100,6 +100,82 @@ impl Agent {
         Ok(settings["alias"].as_str().unwrap_or("agent").to_string())
     }
 
+    // --- cards (protocol.md, section 4) ------------------------------------
+
+    /// This agent's self-description, in its owner's words ("" if unset).
+    pub fn card(&self) -> Result<String> {
+        let settings = self.storage.get("settings")?.unwrap_or(json!({}));
+        Ok(settings["card"].as_str().unwrap_or("").to_string())
+    }
+
+    /// Set (or clear, with None or "") what this agent says about itself.
+    /// It reaches contacts at the next sync_cards() (poll does one).
+    pub fn set_card(&self, about: Option<&str>) -> Result<String> {
+        let about = about.unwrap_or("").trim().to_string();
+        if about.chars().count() > contacts::MAX_ABOUT {
+            bail!("a card's description is limited to {} characters", contacts::MAX_ABOUT);
+        }
+        let mut settings = self.storage.get("settings")?.unwrap_or(json!({}));
+        settings["card"] = json!(about);
+        self.storage.put("settings", &settings)?;
+        Ok(about)
+    }
+
+    /// Approved contacts that haven't been told this agent's current alias
+    /// and card: new contacts (when there is a card to send), and every
+    /// contact after a rename or a card change.
+    pub fn cards_due(&self) -> Result<Vec<Contact>> {
+        let (name, about) = (self.alias()?, self.card()?);
+        Ok(contacts::load(&*self.storage)?.into_values().filter(|c| {
+            if c.status != contacts::APPROVED {
+                return false;
+            }
+            // A contact from before cards has no record: it knows no name.
+            let (known_name, known_about) = match &c.peer_knows {
+                Some(k) => (Some(k.name.as_str()).filter(|n| !n.is_empty()), k.about.as_str()),
+                None => (None, ""),
+            };
+            if known_name == Some(name.as_str()) && known_about == about {
+                return false;
+            }
+            // Nothing to say yet: no card, and no name they know us by.
+            !(about.is_empty() && known_name.is_none())
+        }).collect())
+    }
+
+    /// Send this agent's card to every contact that is due one (see
+    /// cards_due). Returns the contacts told; a contact that can't be
+    /// reached now is tried again next time.
+    pub async fn sync_cards(&self) -> Result<Vec<Contact>> {
+        let mut told = vec![];
+        for c in self.cards_due()? {
+            if self.send_card(&c.npub).await.is_ok() {
+                told.push(c);
+            }
+        }
+        Ok(told)
+    }
+
+    /// Send this agent's card to one contact now.
+    pub async fn send_card(&self, name: &str) -> Result<Value> {
+        let (pubkey, contact) = contacts::find(&*self.storage, name)?;
+        if contact.status != contacts::APPROVED {
+            bail!("{} is {}", contact.alias, contact.status);
+        }
+        let (my_name, about) = (self.alias()?, self.card()?);
+        let text = contacts::card_text(&my_name, &about);
+        let conn = self.connect().await?;
+        let sent = conn.send_message(PublicKey::from_hex(&pubkey)?, &text, vec![], None).await;
+        conn.close().await;
+        sent?;
+        let _lock = self.storage.lock("state", true)?;
+        contacts::peer_knows(&*self.storage, &pubkey, &my_name, &about)?;
+        inbox::record(&*self.storage, json!({
+            "type": "card", "direction": "out", "peer": contact.npub, "alias": contact.alias,
+            "name": my_name, "about": about, "text": format!("card sent to {}", contact.alias),
+        }))
+    }
+
     /// Publish profile and inbox relays. The first time, with proof of
     /// work, this registers the key with the hub. Safe to repeat.
     pub async fn register(&self, alias: Option<&str>) -> Result<()> {
@@ -337,6 +413,7 @@ impl Agent {
         let before = self.next_seq()?;
         self.advance_pairings().await?;
         self.check_notices().await;
+        self.sync_cards().await?;
         let conn = self.connect().await?;
         let wraps = conn.fetch_wraps().await;
         conn.close().await;
@@ -354,7 +431,9 @@ impl Agent {
     /// Stay connected and handle messages as they arrive, until the
     /// connection is lost for two minutes. Calls `on_new` with new messages
     /// and pairing results, and `on_tick` every `tick`. Pending pairings are
-    /// advanced every few seconds, so ones started meanwhile finish quickly.
+    /// advanced every few seconds, so ones started meanwhile finish quickly;
+    /// cards due (a rename, a new description) go out at the start and
+    /// every `tick`, a failure waiting for the next round.
     pub async fn listen(&self, mut on_new: impl FnMut(Vec<Value>), mut on_tick: impl FnMut(), tick: Duration) -> Result<()> {
         const STEP: Duration = Duration::from_secs(3);
         let keys = self.keys()?;
@@ -362,6 +441,7 @@ impl Agent {
         let mut wraps = Box::pin(conn.stream_wraps().await?);
         let mut steps = tokio::time::interval(STEP);
         let (mut down_for, mut since_tick) = (Duration::ZERO, Duration::ZERO);
+        let _ = self.sync_cards().await;
         let result = loop {
             tokio::select! {
                 wrap = wraps.next() => {
@@ -391,6 +471,7 @@ impl Agent {
                     since_tick += STEP;
                     if since_tick >= tick {
                         since_tick = Duration::ZERO;
+                        let _ = self.sync_cards().await;
                         on_tick();
                     }
                 }
@@ -516,4 +597,62 @@ fn unused_path(dir: &Path, name: &str) -> PathBuf {
         _ => (name.to_string(), String::new()),
     };
     (2..).map(|n| dir.join(format!("{stem}-{n}{ext}"))).find(|p| !p.exists()).unwrap()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::FileStorage;
+
+    /// Which contacts are told this agent's card, and when.
+    fn cards_setup() -> (tempfile::TempDir, Agent) {
+        let dir = tempfile::tempdir().unwrap();
+        let st = Arc::new(FileStorage::new(Some(dir.path().to_path_buf())).unwrap());
+        st.put("settings", &json!({"alias": "Max's Muse"})).unwrap();
+        let agent = Agent::new(st.clone(), None).unwrap();
+        contacts::add(&*st, &"a".repeat(64), "old friend").unwrap();        // from before cards: nothing recorded
+        contacts::add(&*st, &"b".repeat(64), "new friend").unwrap();
+        contacts::peer_knows(&*st, &"b".repeat(64), "Max's Muse", "").unwrap(); // paired now: knows the alias
+        contacts::add(&*st, &"c".repeat(64), "blocked one").unwrap();
+        contacts::set_status(&*st, "blocked one", contacts::BLOCKED).unwrap();
+        (dir, agent)
+    }
+
+    fn due(agent: &Agent) -> Vec<String> {
+        let mut d: Vec<String> = agent.cards_due().unwrap().into_iter().map(|c| c.alias).collect();
+        d.sort();
+        d
+    }
+
+    #[test]
+    fn no_card_nothing_to_say() {
+        let (_dir, agent) = cards_setup();
+        assert_eq!(agent.card().unwrap(), "");
+        assert!(due(&agent).is_empty());
+    }
+
+    #[test]
+    fn a_card_goes_to_everyone_once() {
+        let (_dir, agent) = cards_setup();
+        agent.set_card(Some("Max's own assistant")).unwrap();
+        assert_eq!(agent.card().unwrap(), "Max's own assistant");
+        assert_eq!(due(&agent), ["new friend", "old friend"]);
+        contacts::peer_knows(&*agent.storage, &"b".repeat(64), "Max's Muse", "Max's own assistant").unwrap();
+        assert_eq!(due(&agent), ["old friend"]);
+    }
+
+    #[test]
+    fn a_rename_is_announced_to_those_who_knew_the_old_name() {
+        let (_dir, agent) = cards_setup();
+        agent.storage.put("settings", &json!({"alias": "Max's Assistant"})).unwrap();
+        assert_eq!(due(&agent), ["new friend"]); // the old friend never recorded a name; nothing to correct
+    }
+
+    #[test]
+    fn card_limits() {
+        let (_dir, agent) = cards_setup();
+        assert!(agent.set_card(Some(&"x".repeat(501))).is_err());
+        assert_eq!(agent.set_card(Some("  spaced  ")).unwrap(), "spaced");
+        assert_eq!(agent.set_card(None).unwrap(), "");
+    }
 }

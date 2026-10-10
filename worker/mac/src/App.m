@@ -97,7 +97,17 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
 @property (nonatomic, strong) NSArray<NSView *> *pairMessageViews;
 @property (nonatomic, strong) NSButton *pairLocalButton, *settingsAgents;
 @property (nonatomic, strong) NSTextField *pairLocalNote;
+@property (nonatomic, strong) NSTextField *descriptionField, *settingsDescription;   // the worker's card: what the agent is told this computer is
 @end
+
+/// What the agent is told this computer is when the owner writes nothing:
+/// enough to bind the owner's words ("the myous browser") to this worker
+/// rather than to the agent's own environment.
+static NSString *defaultDescription(NSString *name) {
+    return [NSString stringWithFormat:@"My own computer, %@. Its browser is where I log into sites for you: when I say "
+            "\"the myous browser\" or \"the worker browser\", I mean that one, never your own. Commands you send run in a container on it.",
+            name ?: @"this Mac"];
+}
 
 @implementation AppDelegate
 @dynamic config, status, requests, requestsDirDate, screen, launchStage, launchedAt, stopping, stoppedAt, wasRunning, direct, approvals, paths, appConfig;
@@ -212,6 +222,23 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
     l.preferredMaxLayoutWidth = kInner - 40;
     l.selectable = YES;
     return l;
+}
+
+/// An editable, wrapping text field of a few lines (for the description).
+- (NSTextField *)textArea:(CGFloat)width {
+    NSTextField *f = [NSTextField wrappingLabelWithString:@""];
+    f.editable = YES;
+    f.selectable = YES;
+    f.bezeled = YES;
+    f.bezelStyle = NSTextFieldSquareBezel;
+    f.drawsBackground = YES;
+    f.font = [NSFont systemFontOfSize:12];
+    f.preferredMaxLayoutWidth = width - 8;
+    [f.widthAnchor constraintEqualToConstant:width].active = YES;
+    // Room for five lines of 12 pt: the default description is four.
+    [f.heightAnchor constraintGreaterThanOrEqualToConstant:84].active = YES;
+    [f setContentCompressionResistancePriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationVertical];
+    return f;
 }
 
 - (NSButton *)button:(NSString *)title action:(SEL)action {
@@ -541,6 +568,11 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
     NSTextField *hint = [self wrap:@"Already have an agent on this Mac? It installs the myous client itself (see the skill). This app runs workers: computers an agent can use."];
     hint.textColor = [NSColor secondaryLabelColor];
     hint.font = [NSFont systemFontOfSize:12];
+    NSTextField *dq = [self label:@"How should it describe this computer to your agent?" size:13 weight:NSFontWeightRegular];
+    self.descriptionField = [self textArea:420];
+    NSTextField *dhint = [self wrap:@"Sent to the agent when they pair, and again when you change it: it is how the agent tells this computer, and its browser, from its own."];
+    dhint.textColor = [NSColor secondaryLabelColor];
+    dhint.font = [NSFont systemFontOfSize:12];
     NSTextField *bq = [self label:@"Where should its browser run?" size:13 weight:NSFontWeightRegular];
     self.setupBrowser = [NSPopUpButton new];
     self.setupBrowserHint = [self wrap:@""];
@@ -554,7 +586,7 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
     self.setupStart = [self button:@"Start the worker" action:@selector(setupStart:)];
     self.setupStart.keyEquivalent = @"\r";
     self.setupRemove = [self button:@"Remove this worker" action:@selector(removeWorker)];
-    NSStackView *col = [self column:@[self.setupRuntime, q, self.nameField, bq, [self row:@[self.setupBrowser, self.setupGetBrowser]], self.setupBrowserHint, hint, [self buttons:@[self.setupRemove, self.setupStart]]]];
+    NSStackView *col = [self column:@[self.setupRuntime, q, self.nameField, dq, self.descriptionField, dhint, bq, [self row:@[self.setupBrowser, self.setupGetBrowser]], self.setupBrowserHint, hint, [self buttons:@[self.setupRemove, self.setupStart]]]];
     self.setupCard = [self card:@"Set up" content:col];
 }
 
@@ -1164,11 +1196,11 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
             NSString *app = self.current.browser.appName ?: [MacBrowser find:self.config.browserApp][@"name"] ?: @"the browser";
             BOOL up = self.current.browser.port > 0 || self.fake;
             self.browserText.stringValue = up
-                ? [NSString stringWithFormat:@"Your agent uses %@ on this Mac, with its own profile kept to the worker's folder. Log into sites there; it is you at the keyboard, so sites behave.", app]
+                ? [NSString stringWithFormat:@"Your agent uses %@ on this Mac, with its own profile kept to the worker's folder. Log into sites there; it is you at the keyboard, so sites behave. Say \"%@'s browser\" to your agent when you mean this one.", app, self.config.name ?: @"the worker"]
                 : [NSString stringWithFormat:@"Starting %@ on this Mac… (browser.log in the worker folder says why if it doesn't).", app];
             self.browserOpen.title = @"Show browser";
         } else {
-            self.browserText.stringValue = @"Your agent can use sites you're logged into here. Open it to log in or to watch.";
+            self.browserText.stringValue = [NSString stringWithFormat:@"Your agent can use sites you're logged into here. Open it to log in or to watch. Say \"%@'s browser\" to your agent when you mean this one.", self.config.name ?: @"the worker"];
             self.browserOpen.title = @"Open browser";
         }
     }
@@ -1258,6 +1290,7 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
     if (self.nameField.stringValue.length == 0) {
         NSString *host = [[NSHost currentHost] localizedName] ?: @"My Mac";
         self.nameField.stringValue = host;
+        self.descriptionField.stringValue = defaultDescription(host);
     }
     self.setupRuntime.stringValue = [self.runtimeState isEqualToString:@"ok"]
         ? [NSString stringWithFormat:@"✓ %@ found. The worker runs in a container there, so your agent's commands stay inside it.", self.runtimeName]
@@ -1728,6 +1761,8 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
     NSString *name = [self.nameField.stringValue stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
     if (!name.length) { [self.window makeFirstResponder:self.nameField]; return; }
     self.config.name = name;
+    NSString *desc = [self.descriptionField.stringValue stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    self.config.descriptionText = desc.length ? desc : nil;   // nil: the default, which follows the name
     if ([self.config usesDocker]) {
         NSInteger at = MAX(0, self.setupBrowser.indexOfSelectedItem);
         NSString *bid = at < (NSInteger)self.setupBrowserIds.count ? self.setupBrowserIds[at] : @"";
@@ -1753,6 +1788,7 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
 - (NSDictionary *)composeEnv {
     NSMutableDictionary *env = [NSMutableDictionary new];
     if (self.config.name) env[@"MYOUS_ALIAS"] = self.config.name;
+    env[@"MYOUS_DESCRIPTION"] = self.config.descriptionText ?: defaultDescription(self.config.name);
     env[@"MYOUS_WORKER_HOME"] = [self.paths home];
     env[@"MYOUS_BROWSER"] = [self.config macBrowser] ? @"host" : @"container";
     env[@"MYOUS_TZ"] = [NSTimeZone localTimeZone].name ?: @"UTC";
@@ -2121,9 +2157,15 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
         self.settingsWindow.releasedWhenClosed = NO;
         self.settingsName = [NSTextField textFieldWithString:@""];
         [self.settingsName.widthAnchor constraintEqualToConstant:260].active = YES;
-        NSTextField *nameHint = [self wrap:@"The name your agent sees. A new name applies at the next start."];
+        NSTextField *nameHint = [self wrap:@"The name your agent sees. A new name applies at the next start, and the agent is told (it keeps its own name for this computer until it renames)."];
         nameHint.font = [NSFont systemFontOfSize:11];
         nameHint.textColor = [NSColor secondaryLabelColor];
+        nameHint.preferredMaxLayoutWidth = 380;
+        self.settingsDescription = [self textArea:380];
+        NSTextField *descHint = [self wrap:@"How it describes this computer to your agent (its card). Sent at the next start."];
+        descHint.font = [NSFont systemFontOfSize:11];
+        descHint.textColor = [NSColor secondaryLabelColor];
+        descHint.preferredMaxLayoutWidth = 380;
         nameHint.preferredMaxLayoutWidth = 380;
         self.settingsReview = [NSPopUpButton new];
         [self.settingsReview addItemsWithTitles:@[@"Trust my agent: everything it asks runs",
@@ -2161,6 +2203,7 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
         save.keyEquivalent = @"\r";
         NSButton *cancel = [self button:@"Cancel" action:@selector(closeSettings)];
         NSStackView *col = [self column:@[[self row:@[[self label:@"Worker name" size:13 weight:NSFontWeightRegular], self.settingsName]], nameHint,
+                                          [self label:@"Description" size:13 weight:NSFontWeightRegular], self.settingsDescription, descHint,
                                           [self label:@"Review" size:13 weight:NSFontWeightRegular], self.settingsReview, reviewHint,
                                           self.settingsBrowserHidden, self.settingsBrowserHiddenHint, self.settingsDock, self.settingsLogin, self.settingsNotify, kindsCol, self.settingsUpdate, self.settingsAgents, [self row:@[cancel, save]]]];
         col.edgeInsets = NSEdgeInsetsMake(16, 20, 16, 20);
@@ -2174,6 +2217,7 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
         ]];
     }
     self.settingsName.stringValue = self.config.name ?: @"";
+    self.settingsDescription.stringValue = self.config.descriptionText ?: defaultDescription(self.config.name);
     [self.settingsReview selectItemAtIndex:[@[@"trust", @"changes", @"all"] indexOfObject:reviewLevel(self.paths)]];
     self.settingsDock.state = self.appConfig.dock ? NSControlStateValueOn : NSControlStateValueOff;
     self.settingsNotify.state = self.appConfig.notifications ? NSControlStateValueOn : NSControlStateValueOff;
@@ -2197,6 +2241,8 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
 - (void)saveSettings {
     NSString *name = [self.settingsName.stringValue stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
     if (name.length) self.config.name = name;
+    NSString *desc = [self.settingsDescription.stringValue stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    self.config.descriptionText = desc.length && ![desc isEqualToString:defaultDescription(self.config.name)] ? desc : nil;
     self.appConfig.dock = self.settingsDock.state == NSControlStateValueOn;
     self.appConfig.notifications = self.settingsNotify.state == NSControlStateValueOn;
     NSMutableDictionary *kinds = [NSMutableDictionary new];

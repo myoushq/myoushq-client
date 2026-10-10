@@ -52,6 +52,16 @@ enum Command {
         #[command(flatten)]
         context: ContextArgs,
     },
+    /// Show or set what this agent says about itself to its contacts (sent to them)
+    Card {
+        /// The description, in your owner's words (up to 500 characters)
+        text: Vec<String>,
+        /// Remove the description
+        #[arg(long)]
+        clear: bool,
+        #[arg(long)]
+        json: bool,
+    },
     /// Show or set how your owner knows a contact and what you may share with it
     Context {
         name: String,
@@ -145,8 +155,9 @@ async fn run(cli: Cli) -> Result<()> {
     match cli.command {
         Command::Init { alias, rename, .. } => {
             let settings = st.storage_get("settings");
+            let stored = settings["alias"].as_str().map(String::from);
             let created = !agent.has_identity()?;
-            guard_home(!created, settings["alias"].as_str(), alias.as_deref(), rename)?;
+            guard_home(!created, stored.as_deref(), alias.as_deref(), rename)?;
             let Some(alias) = alias.or_else(|| settings["alias"].as_str().map(String::from)) else {
                 bail!("give this agent a friendly name: myous init --alias NAME");
             };
@@ -160,7 +171,35 @@ async fn run(cli: Cli) -> Result<()> {
             let npub = agent.keys()?.public_key().to_bech32()?;
             println!("{} identity {npub}", if created { "created" } else { "kept existing" });
             println!("alias: {alias}");
+            if !created && stored.as_deref() != Some(alias.as_str()) {
+                let told = sync_cards(&agent).await;
+                if !told.is_empty() {
+                    println!("told {} contact(s) the new name (they keep their own name for you until they rename)", told.len());
+                }
+            }
             println!("data directory: {} (keep it; the key file must never be lost)", st.home.display());
+        }
+        Command::Card { text, clear, json } => {
+            if clear || !text.is_empty() {
+                let text = text.join(" ");
+                let about = agent.set_card(if clear { None } else { Some(&text) })?;
+                let told = sync_cards(&agent).await;
+                if json {
+                    let aliases: Vec<&str> = told.iter().map(|c| c.alias.as_str()).collect();
+                    println!("{}", json!({"name": agent.alias()?, "about": about, "told": aliases}));
+                } else {
+                    let what = if about.is_empty() { "card cleared".to_string() } else { format!("card: {about}") };
+                    println!("{what}; told {} contact(s)", told.len());
+                }
+                return Ok(());
+            }
+            let about = agent.card()?;
+            if json {
+                println!("{}", json!({"name": agent.alias()?, "about": about}));
+            } else {
+                let about = if about.is_empty() { "(no card: tell contacts what you are with myous card TEXT)" } else { &about };
+                println!("{}: {about}", agent.alias()?);
+            }
         }
         Command::Invite { json, wait, context } => {
             let inv = agent.invite(context.into()).await?;
@@ -197,7 +236,14 @@ async fn run(cli: Cli) -> Result<()> {
                 "the other agent hasn't answered yet; it finishes the next time this agent polls or listens \
                  (result in `myous inbox`)"
             ),
-            outcome => report(outcome)?,
+            outcome => {
+                let done = matches!(outcome, Outcome::Done { .. });
+                report(outcome)?;
+                // The new contact learned our alias while pairing; a card follows if we have one.
+                if done && !agent.card()?.is_empty() {
+                    sync_cards(&agent).await;
+                }
+            }
         },
         Command::Send { to, text } => {
             let text = if text == ["-"] {
@@ -272,6 +318,9 @@ async fn run(cli: Cli) -> Result<()> {
                 for c in contacts.values() {
                     println!("{:<20} {:<9} {:<10} {:<8} {}", c.alias, c.status, c.relationship.as_deref().unwrap_or("-"),
                         c.added_by.as_deref().unwrap_or("-"), c.npub);
+                    if let Some(line) = card_line(c) {
+                        println!("    {line}");
+                    }
                 }
             }
         }
@@ -328,6 +377,31 @@ async fn run(cli: Cli) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Send the card to contacts that are due one; a network problem is not
+/// fatal here (the next poll tries again).
+async fn sync_cards(agent: &Agent) -> Vec<myous::contacts::Contact> {
+    match agent.sync_cards().await {
+        Ok(told) => told,
+        Err(e) => {
+            eprintln!("warning: couldn't send the card now ({e}); the next poll will");
+            vec![]
+        }
+    }
+}
+
+/// What a contact says about itself, for the listing: its own name when it
+/// differs from our alias for it, and its description.
+fn card_line(c: &myous::contacts::Contact) -> Option<String> {
+    let card = c.card.as_ref()?;
+    let renamed = card.name != c.alias;
+    if card.about.is_empty() && !renamed {
+        return None;
+    }
+    let calls = if renamed { format!("calls itself {:?}; ", card.name) } else { String::new() };
+    let about = if card.about.is_empty() { "(none)" } else { &card.about };
+    Some(format!("{calls}about: {about}"))
 }
 
 /// `init` must not quietly turn one agent's home into another's: a different
@@ -445,8 +519,9 @@ impl From<ContextArgs> for myous::contacts::ContactContext {
     }
 }
 
-/// How the owner knows the sender of an incoming message and what may be
-/// shared, so the agent has it when it answers.
+/// How the owner knows the sender of an incoming message, what may be
+/// shared, and what the sender says of itself, so the agent has them when
+/// it answers.
 fn context_line(e: &Value) -> String {
     let (relationship, sharing) = (e["relationship"].as_str(), e["sharing"].as_str());
     if relationship.is_none() && sharing.is_none() {
@@ -456,6 +531,9 @@ fn context_line(e: &Value) -> String {
     let mut line = relationship.unwrap_or("relationship not set").to_string();
     if let Some(s) = sharing {
         line += &format!("; may share: {s}");
+    }
+    if let Some(a) = e["about"].as_str().filter(|a| !a.is_empty()) {
+        line += &format!("; it says of itself: {a}");
     }
     format!("    ({line})")
 }
@@ -473,5 +551,23 @@ mod tests {
         assert!(guard_home(true, Some("alice"), None, false).is_ok(), "no alias given");
         assert!(guard_home(true, None, Some("bob"), false).is_ok(), "no stored alias");
         assert!(guard_home(false, Some("alice"), Some("bob"), false).is_ok(), "no identity yet");
+    }
+
+    #[test]
+    fn cards_in_listings() {
+        let e = json!({"alias": "peer", "relationship": "friend", "sharing": "plans", "about": "a Mac"});
+        assert_eq!(context_line(&e), "    (friend; may share: plans; it says of itself: a Mac)");
+        let e = json!({"alias": "peer", "relationship": "friend", "about": ""});
+        assert_eq!(context_line(&e), "    (friend)");
+
+        let mut c = myous::contacts::add(&FileStorage::new(Some(tempfile::tempdir().unwrap().path().into())).unwrap(),
+                                         &"a".repeat(64), "peer").unwrap();
+        assert_eq!(card_line(&c), None);
+        c.card = Some(myous::contacts::Card { name: "peer".into(), about: String::new(), at: 1 });
+        assert_eq!(card_line(&c), None, "nothing new to show");
+        c.card = Some(myous::contacts::Card { name: "Sam's Mac".into(), about: String::new(), at: 1 });
+        assert_eq!(card_line(&c).unwrap(), "calls itself \"Sam's Mac\"; about: (none)");
+        c.card = Some(myous::contacts::Card { name: "peer".into(), about: "a Mac".into(), at: 1 });
+        assert_eq!(card_line(&c).unwrap(), "about: a Mac");
     }
 }

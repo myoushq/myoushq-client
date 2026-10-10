@@ -38,7 +38,7 @@ export interface Storage {
 
 export interface HistoryEntry {
   seq: number;
-  type: "message" | "file" | "result" | "ack" | "paired" | "pairing_failed" | "update" | "notice";
+  type: "message" | "file" | "result" | "ack" | "paired" | "pairing_failed" | "card" | "update" | "notice";
   direction?: "in" | "out";
   peer?: string;
   alias?: string;
@@ -50,13 +50,17 @@ export interface HistoryEntry {
   /** The contact's current relationship context, filled in when read. */
   relationship?: string | null;
   sharing?: string | null;
+  /** What the contact says about itself (its card), filled in when read;
+   * on "card" entries, the card's description (protocol section 4). */
+  about?: string | null;
   /** A long message whose missing parts never arrived. */
   incomplete?: boolean;
   /** "notice" entries: the notice's id and an optional link; worker replies: the request's id. */
   id?: string;
   url?: string;
   /** "file" entries (protocol section 6): what the message says about the blob. The
-   * key and nonce stay here, in the private history, like the messages. */
+   * key and nonce stay here, in the private history, like the messages.
+   * On "card" entries, the name in the card. */
   name?: string;
   mime?: string;
   size?: number;
