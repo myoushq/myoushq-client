@@ -60,6 +60,7 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
 @property (nonatomic, strong) NSPopUpButton *setupBrowser;
 @property (nonatomic, strong) NSTextField *setupBrowserHint, *browserText;
 @property (nonatomic, strong) NSButton *browserOpen, *setupGetChrome, *settingsBrowserHidden;
+@property (nonatomic, strong) NSTextField *settingsBrowserHiddenHint;
 @property (nonatomic, strong) NSButton *setupStart, *getDockerButton, *getOrbButton, *openRuntimeButton, *directToggle, *directStart;
 @property (nonatomic, strong) NSArray<NSTextField *> *startRows;
 @property (nonatomic, strong) NSTextField *startNote;
@@ -2099,13 +2100,18 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
         kindsCol.spacing = 4;
         self.settingsUpdate = [NSButton checkboxWithTitle:@"Check for a new version daily" target:nil action:nil];
         self.settingsAgents = [NSButton checkboxWithTitle:@"Show the agents on this Mac (their myous folders)" target:nil action:nil];
-        self.settingsBrowserHidden = [NSButton checkboxWithTitle:@"Start this worker's browser hidden; Show browser brings it up (it works either way)" target:nil action:nil];
+        // A title wider than the window would push the column out of line.
+        self.settingsBrowserHidden = [NSButton checkboxWithTitle:@"Start this worker's browser hidden" target:nil action:nil];
+        self.settingsBrowserHiddenHint = [self wrap:@"It works while hidden; Show browser brings it up."];
+        self.settingsBrowserHiddenHint.font = [NSFont systemFontOfSize:11];
+        self.settingsBrowserHiddenHint.textColor = [NSColor secondaryLabelColor];
+        self.settingsBrowserHiddenHint.preferredMaxLayoutWidth = 380;
         NSButton *save = [self button:@"Save" action:@selector(saveSettings)];
         save.keyEquivalent = @"\r";
         NSButton *cancel = [self button:@"Cancel" action:@selector(closeSettings)];
         NSStackView *col = [self column:@[[self row:@[[self label:@"Worker name" size:13 weight:NSFontWeightRegular], self.settingsName]], nameHint,
                                           [self label:@"Review" size:13 weight:NSFontWeightRegular], self.settingsReview, reviewHint,
-                                          self.settingsBrowserHidden, self.settingsDock, self.settingsLogin, self.settingsNotify, kindsCol, self.settingsUpdate, self.settingsAgents, [self row:@[cancel, save]]]];
+                                          self.settingsBrowserHidden, self.settingsBrowserHiddenHint, self.settingsDock, self.settingsLogin, self.settingsNotify, kindsCol, self.settingsUpdate, self.settingsAgents, [self row:@[cancel, save]]]];
         col.edgeInsets = NSEdgeInsetsMake(16, 20, 16, 20);
         col.translatesAutoresizingMaskIntoConstraints = NO;
         [self.settingsWindow.contentView addSubview:col];
@@ -2124,7 +2130,7 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
     self.settingsUpdate.state = self.appConfig.autoUpdate ? NSControlStateValueOn : NSControlStateValueOff;
     self.settingsAgents.state = self.appConfig.showAgents ? NSControlStateValueOn : NSControlStateValueOff;
     self.settingsBrowserHidden.state = self.config.browserHidden ? NSControlStateValueOn : NSControlStateValueOff;
-    self.settingsBrowserHidden.hidden = ![self.config macBrowser];
+    self.settingsBrowserHidden.hidden = self.settingsBrowserHiddenHint.hidden = ![self.config macBrowser];
     if (@available(macOS 13.0, *)) {
         self.settingsLogin.state = SMAppService.mainAppService.status == SMAppServiceStatusEnabled ? NSControlStateValueOn : NSControlStateValueOff;
         self.settingsLogin.enabled = YES;
