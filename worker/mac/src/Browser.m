@@ -29,18 +29,37 @@ static int freePort(void) {
     return self;
 }
 
-+ (NSDictionary *)find {
-    for (NSString *bid in @[@"com.google.Chrome", @"com.microsoft.edgemac", @"com.brave.Browser", @"org.chromium.Chromium"]) {
-        NSURL *u = [[NSWorkspace sharedWorkspace] URLForApplicationWithBundleIdentifier:bid];
++ (NSArray<NSDictionary *> *)known {
+    // All Chromium-based, all free, all speaking the same DevTools protocol
+    // and taking the same flags. Names as the owner knows them.
+    return @[@{@"id": @"com.google.Chrome", @"name": @"Google Chrome", @"url": @"https://www.google.com/chrome/"},
+             @{@"id": @"com.microsoft.edgemac", @"name": @"Microsoft Edge", @"url": @"https://www.microsoft.com/edge/download"},
+             @{@"id": @"com.brave.Browser", @"name": @"Brave", @"url": @"https://brave.com/download/"},
+             @{@"id": @"org.chromium.Chromium", @"name": @"Chromium", @"url": @"https://www.chromium.org/getting-involved/download-chromium/"}];
+}
+
++ (NSArray<NSDictionary *> *)installed {
+    NSMutableArray *out = [NSMutableArray new];
+    for (NSDictionary *k in [self known]) {
+        NSURL *u = [[NSWorkspace sharedWorkspace] URLForApplicationWithBundleIdentifier:k[@"id"]];
         if (!u) continue;
         NSBundle *b = [NSBundle bundleWithURL:u];
         NSString *exe = b.executableURL.path;
         if (!exe) continue;
-        NSString *name = [b objectForInfoDictionaryKey:@"CFBundleDisplayName"] ?: [b objectForInfoDictionaryKey:@"CFBundleName"]
-            ?: [u.lastPathComponent stringByDeletingPathExtension];
-        return @{@"id": bid, @"name": name, @"exe": exe, @"bundle": u.path};
+        NSString *name = [b objectForInfoDictionaryKey:@"CFBundleDisplayName"] ?: [b objectForInfoDictionaryKey:@"CFBundleName"] ?: k[@"name"];
+        [out addObject:@{@"id": k[@"id"], @"name": name, @"exe": exe, @"bundle": u.path}];
     }
-    return nil;
+    return out;
+}
+
++ (NSDictionary *)find:(NSString *)bundleId {
+    NSArray *all = [self installed];
+    for (NSDictionary *b in all) if (bundleId && [b[@"id"] isEqualToString:bundleId]) return b;
+    return all.firstObject;
+}
+
+- (NSString *)profileDirFor:(NSDictionary *)browser {
+    return [[self.paths browserDir] stringByAppendingPathComponent:browser[@"id"]];
 }
 
 + (BOOL)canSandbox {
@@ -57,7 +76,8 @@ static int freePort(void) {
 }
 
 + (NSString *)unavailableReason {
-    if (![self find]) return @"no Chrome, Edge, Brave or Chromium found";
+    // Short: it goes in a pop-up title. The screens around it name the browsers.
+    if (![self installed].count) return @"no browser it can run is installed";
     if (![self canSandbox]) return @"this macOS can't sandbox it";
     return nil;
 }
@@ -84,6 +104,23 @@ static int freePort(void) {
         ";; Nothing on this Mac's local ports (the owner's services, Docker, dev servers).\n"
         "(deny network-outbound (remote ip \"localhost:*\"))\n",
         home, home, [self.paths browserDir], [self.paths downloads], home, home, home, browser[@"id"], browser[@"bundle"]];
+}
+
+/// Profiles used to live in browser/ itself (the first browser found); now
+/// each browser has browser/<bundle id>. Move an old one into place, once.
+- (void)migrateProfile {
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSString *old = [self.paths browserDir];
+    NSDictionary *first = [MacBrowser find:nil];
+    if (!first) return;
+    NSString *profile = [self profileDirFor:first];
+    if (![fm fileExistsAtPath:[old stringByAppendingPathComponent:@"Default"]] || [fm fileExistsAtPath:profile]) return;
+    NSString *moving = [old stringByAppendingString:@".moving"];
+    [fm removeItemAtPath:moving error:nil];
+    if (![fm moveItemAtPath:old toPath:moving error:nil]) return;
+    [fm createDirectoryAtPath:old withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions: @0700} error:nil];
+    if ([fm moveItemAtPath:moving toPath:profile error:nil]) [self say:[NSString stringWithFormat:@"moved the profile into %@", profile]];
+    else [fm moveItemAtPath:moving toPath:old error:nil];
 }
 
 - (void)say:(NSString *)line { if (self.log) self.log([@"browser: " stringByAppendingString:line]); }
@@ -117,13 +154,13 @@ static int freePort(void) {
     return [[NSURL fileURLWithPath:path] absoluteString];
 }
 
-- (void)seedPreferences:(NSString *)startURL {
+- (void)seedPreferences:(NSString *)startURL profile:(NSString *)profile {
     // Set once, before the profile exists; afterwards the owner's own
     // choices in the browser's settings stand. Downloads into the worker
     // folder (inside the sandbox, and mounted in the container); a profile
     // name, avatar and toolbar colour that say "myous", so the window is
     // told apart from the owner's own browser; the start page as home.
-    NSString *def = [[self.paths browserDir] stringByAppendingPathComponent:@"Default"];
+    NSString *def = [profile stringByAppendingPathComponent:@"Default"];
     NSString *prefs = [def stringByAppendingPathComponent:@"Preferences"];
     NSFileManager *fm = [NSFileManager defaultManager];
     if ([fm fileExistsAtPath:prefs]) return;
@@ -138,21 +175,24 @@ static int freePort(void) {
 }
 
 - (BOOL)start:(NSError **)error {
-    NSDictionary *b = [MacBrowser find];
+    NSDictionary *b = [MacBrowser find:self.bundleId];
     NSString *why = [MacBrowser unavailableReason];
     if (why) {
         if (error) *error = [NSError errorWithDomain:@"myous" code:1 userInfo:@{NSLocalizedDescriptionKey:
-            [NSString stringWithFormat:@"Can't run the browser on this Mac: %@. Install Google Chrome (or Edge, Brave, Chromium), or choose the browser in the container.", why]}];
+            [NSString stringWithFormat:@"Can't run the browser on this Mac: %@. Install Google Chrome, Microsoft Edge, Brave or Chromium (all free), or choose the browser in the container.", why]}];
         return NO;
     }
+    if (self.bundleId && ![b[@"id"] isEqualToString:self.bundleId]) [self say:[NSString stringWithFormat:@"%@ isn't installed; using %@", self.bundleId, b[@"name"]]];
     self.appName = b[@"name"];
     self.wanted = YES;
     self.shown = NO;
     NSFileManager *fm = [NSFileManager defaultManager];
-    for (NSString *dir in @[[self.paths browserDir], [self.paths downloads]])
+    NSString *profile = [self profileDirFor:b];
+    [self migrateProfile];
+    for (NSString *dir in @[[self.paths browserDir], profile, [self.paths downloads]])
         [fm createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions: @0700} error:nil];
     NSString *startURL = [self startPage];
-    [self seedPreferences:startURL];
+    [self seedPreferences:startURL profile:profile];
     [[[self seatbeltFor:b] dataUsingEncoding:NSUTF8StringEncoding] writeToFile:[self.paths browserSeatbelt] atomically:YES];
     [fm removeItemAtPath:[self.paths browserJSON] error:nil];
     self.port = 0;
@@ -167,8 +207,8 @@ static int freePort(void) {
     t.arguments = @[@"-f", [self.paths browserSeatbelt], b[@"exe"],
                     @"--no-sandbox",             // no sandbox inside a sandbox on macOS; the seatbelt is the sandbox (Chrome shows a bar about it; --test-type would hide it but marks every page as automated)
                     @"--use-mock-keychain",      // never the login keychain (which the seatbelt hides)
-                    [@"--user-data-dir=" stringByAppendingString:[self.paths browserDir]],
-                    [@"--disk-cache-dir=" stringByAppendingString:[[self.paths browserDir] stringByAppendingPathComponent:@"cache"]],
+                    [@"--user-data-dir=" stringByAppendingString:profile],
+                    [@"--disk-cache-dir=" stringByAppendingString:[profile stringByAppendingPathComponent:@"cache"]],
                     [NSString stringWithFormat:@"--remote-debugging-port=%d", port],
                     @"--no-first-run", @"--no-default-browser-check", @"--disable-search-engine-choice-screen",
                     // Keep working while hidden or behind other windows (the agent's pages still render and run).
@@ -201,7 +241,7 @@ static int freePort(void) {
         return NO;
     }
     self.task = t;
-    [self say:[NSString stringWithFormat:@"%@ started (pid %d), profile %@, sandboxed to it; output in browser.log", self.appName, t.processIdentifier, [self.paths browserDir]]];
+    [self say:[NSString stringWithFormat:@"%@ started (pid %d), profile %@, sandboxed to the worker's browser folder; output in browser.log", self.appName, t.processIdentifier, profile]];
     [self pollPort:0 expecting:port];
     return YES;
 }

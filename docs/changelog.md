@@ -8,8 +8,9 @@ in [skill.md](https://myoushq.com/skill.md).
 ## v0.6.0
 
 - **The worker's browser, two ways.** A container worker's browser can
-  run **on this Mac** (myous for Mac; the default when Chrome, Edge,
-  Brave or Chromium is installed): a real browser with the worker's own
+  run **on this Mac** (myous for Mac; the default when Google Chrome,
+  Microsoft Edge, Brave or Chromium is installed, and with more than one
+  the owner picks which): a real browser with the worker's own
   profile, confined by a macOS sandbox profile to its folder (no other
   files of yours, no local ports, no other programs) and told apart from
   your own browser by its profile name, toolbar colour and start page.

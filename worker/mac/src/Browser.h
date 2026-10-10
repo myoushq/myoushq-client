@@ -1,7 +1,8 @@
-// "Browser: on this Mac". A real browser on the Mac (Google Chrome, Edge,
-// Brave or Chromium, whichever is installed) run by the app for one
-// worker, with the worker's own profile folder and nothing of the owner's:
-// never the owner's everyday profile. It runs under a seatbelt sandbox
+// "Browser: on this Mac". A real browser on the Mac (Google Chrome,
+// Microsoft Edge, Brave or Chromium: the owner picks one of those
+// installed, else the first found) run by the app for one worker, with the
+// worker's own profile folder (one per browser, under browser/) and nothing
+// of the owner's: never the owner's everyday profile. It runs under a seatbelt sandbox
 // profile (sandbox-exec) that keeps it to its folder: no reading or
 // writing elsewhere under the home folder (not even the worker's key,
 // next door), no mounted volumes, no programs outside its own bundle, no
@@ -20,15 +21,23 @@
 @property (nonatomic, strong, readonly) Paths *paths;
 @property (nonatomic, strong) NSTask *task;           // nil when not running
 @property (nonatomic) int port;                       // 0 until the browser reported it
+@property (nonatomic, copy) NSString *bundleId;       // the browser to run (nil: the first installed)
 @property (nonatomic, copy) NSString *appName;        // "Google Chrome"
 @property (nonatomic) BOOL wanted;                    // restart it when it exits
 @property (nonatomic, copy) void (^log)(NSString *line);
 @property (nonatomic, copy) NSString *workerName;     // for the profile name and start page
 @property (nonatomic) BOOL hidden;                    // launch hidden (Cmd+H), until "Show browser"
 @property (nonatomic) BOOL shown;                     // the owner asked for it since this launch: stop hiding
-/// The first installed browser the app can run: {"id", "name", "exe",
-/// "bundle"}, or nil when none of Chrome, Edge, Brave, Chromium is there.
-+ (NSDictionary *)find;
+/// The browsers the app knows how to run, in preference order, installed
+/// or not: {"id", "name", "url"} (url: where to get it).
++ (NSArray<NSDictionary *> *)known;
+/// Those installed, in that order: {"id", "name", "exe", "bundle"}.
++ (NSArray<NSDictionary *> *)installed;
+/// The browser with this bundle id if installed, else the first installed,
+/// else nil.
++ (NSDictionary *)find:(NSString *)bundleId;
+/// Where this worker's profile for a browser lives: browser/<bundle id>.
+- (NSString *)profileDirFor:(NSDictionary *)browser;
 /// Whether this macOS can confine the browser (sandbox-exec is there and
 /// accepts a profile). Without it the choice is disabled: the app never
 /// runs the Mac browser unconfined.

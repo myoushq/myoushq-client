@@ -92,6 +92,7 @@ NSDictionary *dict(id v) { return [v isKindOfClass:[NSDictionary class]] ? v : n
     c.mode = str(d[@"mode"]);
     c.name = str(d[@"name"]);
     c.browser = str(d[@"browser"]);
+    c.browserApp = str(d[@"browser_app"]);
     if (num(d[@"browser_hidden"])) c.browserHidden = num(d[@"browser_hidden"]).boolValue;
     if (num(d[@"dock"])) c.dock = num(d[@"dock"]).boolValue;
     if (num(d[@"notifications"])) c.notifications = num(d[@"notifications"]).boolValue;
@@ -115,6 +116,7 @@ NSDictionary *dict(id v) { return [v isKindOfClass:[NSDictionary class]] ? v : n
     if (self.mode) d[@"mode"] = self.mode;
     if (self.name) d[@"name"] = self.name;
     if (self.browser) d[@"browser"] = self.browser;
+    if (self.browserApp) d[@"browser_app"] = self.browserApp;
     d[@"browser_hidden"] = @(self.browserHidden);
     d[@"dock"] = @(self.dock);
     d[@"notifications"] = @(self.notifications);

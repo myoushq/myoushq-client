@@ -59,7 +59,9 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
 @property (nonatomic, strong) NSButton *setupRemove, *stoppedRemove;
 @property (nonatomic, strong) NSPopUpButton *setupBrowser;
 @property (nonatomic, strong) NSTextField *setupBrowserHint, *browserText;
-@property (nonatomic, strong) NSButton *browserOpen, *setupGetChrome, *settingsBrowserHidden;
+@property (nonatomic, strong) NSButton *browserOpen, *settingsBrowserHidden;
+@property (nonatomic, strong) NSPopUpButton *setupGetBrowser;      // "Get a browser…": where each known one is downloaded
+@property (nonatomic, strong) NSArray<NSString *> *setupBrowserIds; // one per setupBrowser item: a bundle id, or "" for the container
 @property (nonatomic, strong) NSTextField *settingsBrowserHiddenHint;
 @property (nonatomic, strong) NSButton *setupStart, *getDockerButton, *getOrbButton, *openRuntimeButton, *directToggle, *directStart;
 @property (nonatomic, strong) NSArray<NSTextField *> *startRows;
@@ -378,12 +380,19 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
         if ([self.config usesDocker]) {
             NSMenuItem *bi = [sub addItemWithTitle:@"Browser" action:nil keyEquivalent:@""];
             NSMenu *bm = [NSMenu new];
-            NSDictionary *found = [MacBrowser find];
+            // One entry per installed browser, the chosen one ticked (or the
+            // first, which is what runs when none was chosen), then the container.
+            NSArray *installed = [MacBrowser installed];
             NSString *why = [MacBrowser unavailableReason];
-            NSMenuItem *mac = [bm addItemWithTitle:!why ? [NSString stringWithFormat:@"On this Mac, in %@", found[@"name"]] : [NSString stringWithFormat:@"On this Mac (%@)", why] action:@selector(chooseMacBrowser) keyEquivalent:@""];
-            mac.enabled = why == nil;
-            mac.state = [self.config macBrowser] ? NSControlStateValueOn : NSControlStateValueOff;
-            NSMenuItem *cont = [bm addItemWithTitle:@"In the container" action:@selector(chooseContainerBrowser) keyEquivalent:@""];
+            NSString *chosen = [MacBrowser find:self.config.browserApp][@"id"];
+            if (why) [bm addItemWithTitle:[NSString stringWithFormat:@"On this Mac (%@)", why] action:nil keyEquivalent:@""].enabled = NO;
+            for (NSDictionary *b in why ? @[] : installed) {
+                NSMenuItem *it = [bm addItemWithTitle:[NSString stringWithFormat:@"On this Mac, in %@", b[@"name"]] action:@selector(chooseBrowserItem:) keyEquivalent:@""];
+                it.representedObject = b[@"id"];
+                it.state = [self.config macBrowser] && [b[@"id"] isEqualToString:chosen] ? NSControlStateValueOn : NSControlStateValueOff;
+            }
+            NSMenuItem *cont = [bm addItemWithTitle:@"In the container" action:@selector(chooseBrowserItem:) keyEquivalent:@""];
+            cont.representedObject = @"";
             cont.state = [self.config macBrowser] ? NSControlStateValueOff : NSControlStateValueOn;
             bi.submenu = bm;
         }
@@ -537,11 +546,15 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
     self.setupBrowserHint = [self wrap:@""];
     self.setupBrowserHint.textColor = [NSColor secondaryLabelColor];
     self.setupBrowserHint.font = [NSFont systemFontOfSize:12];
-    self.setupGetChrome = [self button:@"Get Google Chrome" action:@selector(getChrome)];
+    // A pull-down of the browsers the app can run, each to its download page.
+    self.setupGetBrowser = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:YES];
+    [self.setupGetBrowser addItemWithTitle:@"Get a browser…"];
+    for (NSMenuItem *it in [self getBrowserMenu].itemArray) { [[self.setupGetBrowser menu] addItem:[it copy]]; }
+    [self.setupGetBrowser setContentCompressionResistancePriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
     self.setupStart = [self button:@"Start the worker" action:@selector(setupStart:)];
     self.setupStart.keyEquivalent = @"\r";
     self.setupRemove = [self button:@"Remove this worker" action:@selector(removeWorker)];
-    NSStackView *col = [self column:@[self.setupRuntime, q, self.nameField, bq, [self row:@[self.setupBrowser, self.setupGetChrome]], self.setupBrowserHint, hint, [self buttons:@[self.setupRemove, self.setupStart]]]];
+    NSStackView *col = [self column:@[self.setupRuntime, q, self.nameField, bq, [self row:@[self.setupBrowser, self.setupGetBrowser]], self.setupBrowserHint, hint, [self buttons:@[self.setupRemove, self.setupStart]]]];
     self.setupCard = [self card:@"Set up" content:col];
 }
 
@@ -1050,8 +1063,10 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
         if (self.stoppedAt && now - self.stoppedAt > 90 && now - self.stoppedAt < 120) { attention = @"The worker didn't stop. The log says why."; attentionButton = @"Show log"; }
         NSString *why = [self.config macBrowser] && !self.fake ? [MacBrowser unavailableReason] : nil;
         if (why && !attention) {
-            attention = [NSString stringWithFormat:@"The worker's browser can't run on this Mac: %@. Install Google Chrome, or choose the browser in the container (Advanced › Browser).", why];
-            attentionButton = [why containsString:@"sandbox"] ? @"Show log" : @"Get Chrome";
+            attention = [why containsString:@"sandbox"]
+                ? [NSString stringWithFormat:@"The worker's browser can't run on this Mac: %@. Choose the browser in the container (Advanced › Browser).", why]
+                : @"The worker's browser can't run on this Mac: none of Google Chrome, Microsoft Edge, Brave or Chromium is installed. Any one will do (all free); or choose the browser in the container (Advanced › Browser).";
+            attentionButton = [why containsString:@"sandbox"] ? @"Show log" : @"Get a browser…";
         }
     } else {
         screen = ScreenStopped;
@@ -1146,7 +1161,7 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
     self.browserCard.hidden = self.requestsCard.hidden || [self.config isDirect];
     if (!self.browserCard.hidden) {
         if ([self.config macBrowser]) {
-            NSString *app = self.current.browser.appName ?: [MacBrowser find][@"name"] ?: @"Chrome";
+            NSString *app = self.current.browser.appName ?: [MacBrowser find:self.config.browserApp][@"name"] ?: @"the browser";
             BOOL up = self.current.browser.port > 0 || self.fake;
             self.browserText.stringValue = up
                 ? [NSString stringWithFormat:@"Your agent uses %@ on this Mac, with its own profile kept to the worker's folder. Log into sites there; it is you at the keyboard, so sites behave.", app]
@@ -1247,31 +1262,57 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
     self.setupRuntime.stringValue = [self.runtimeState isEqualToString:@"ok"]
         ? [NSString stringWithFormat:@"✓ %@ found. The worker runs in a container there, so your agent's commands stay inside it.", self.runtimeName]
         : @"✓ Ready.";
-    BOOL fakeSetup = [self.fake isEqualToString:@"setup"];
-    NSDictionary *found = fakeSetup ? @{@"name": @"Google Chrome"} : [MacBrowser find];
-    NSString *why = fakeSetup ? nil : [MacBrowser unavailableReason];
-    if (why) found = nil;
-    NSArray *titles = @[found ? [NSString stringWithFormat:@"On this Mac, in %@ (recommended)", found[@"name"]] : [NSString stringWithFormat:@"On this Mac (%@)", why],
-                        @"In the container"];
+    // One choice per installed browser ("On this Mac, in …", the first
+    // recommended), then the container. With none installed, one disabled
+    // line says so, and "Get a browser…" lists where each one is.
+    BOOL fakeSetup = [self.fake hasPrefix:@"setup"];   // "setup": Chrome and Edge there; "setupnobrowser": none
+    BOOL fakeNone = [self.fake isEqualToString:@"setupnobrowser"];
+    NSArray *installed = fakeSetup ? @[@{@"id": @"com.google.Chrome", @"name": @"Google Chrome"}, @{@"id": @"com.microsoft.edgemac", @"name": @"Microsoft Edge"}] : [MacBrowser installed];
+    NSString *why = fakeNone ? @"no browser it can run is installed" : fakeSetup ? nil : [MacBrowser unavailableReason];
+    if (why) installed = @[];
+    NSMutableArray *titles = [NSMutableArray new], *ids = [NSMutableArray new];
+    if (why) { [titles addObject:[NSString stringWithFormat:@"On this Mac (%@)", why]]; [ids addObject:@""]; }
+    for (NSDictionary *b in installed) {
+        [titles addObject:[NSString stringWithFormat:@"On this Mac, in %@%@", b[@"name"], b == installed.firstObject ? @" (recommended)" : @""]];
+        [ids addObject:b[@"id"]];
+    }
+    [titles addObject:@"In the container"];
+    [ids addObject:@""];
     if (![self.setupBrowser.itemTitles isEqualToArray:titles]) {
         [self.setupBrowser removeAllItems];
         [self.setupBrowser addItemsWithTitles:titles];
-        [self.setupBrowser itemAtIndex:0].enabled = found != nil;
-        BOOL mac = self.config.browser ? [self.config.browser isEqualToString:@"mac"] : found != nil;
-        [self.setupBrowser selectItemAtIndex:mac && found ? 0 : 1];
+        self.setupBrowserIds = ids;
+        if (why) [self.setupBrowser itemAtIndex:0].enabled = NO;
+        BOOL mac = self.config.browser ? [self.config.browser isEqualToString:@"mac"] : installed.count > 0;
+        NSString *want = fakeSetup ? nil : [MacBrowser find:self.config.browserApp][@"id"];
+        NSUInteger at = want ? [ids indexOfObject:want] : NSNotFound;
+        [self.setupBrowser selectItemAtIndex:mac && installed.count ? (at == NSNotFound ? 0 : (NSInteger)at) : (NSInteger)titles.count - 1];
     }
-    self.setupGetChrome.hidden = found != nil || [why containsString:@"sandbox"];
-    self.setupBrowserHint.stringValue = self.setupBrowser.indexOfSelectedItem == 0
+    self.setupGetBrowser.hidden = installed.count > 0 || [why containsString:@"sandbox"];
+    BOOL macChosen = [self.setupBrowserIds[MAX(0, self.setupBrowser.indexOfSelectedItem)] length] > 0;
+    self.setupBrowserHint.stringValue = macChosen
         ? @"A real browser with its own profile, kept to the worker's folder by a sandbox: sites see an ordinary Mac, and you use the window itself."
         : why && ![why containsString:@"sandbox"]
-        ? @"A Chromium inside the container, shown through a window in your browser. Some sites take it for a bot, even when it's you. To run a real browser on this Mac instead, install Google Chrome (or Edge, Brave, Chromium): the choice above turns on by itself."
+        ? @"A Chromium inside the container, shown through a window in your browser. Some sites take it for a bot, even when it's you. To run a real browser on this Mac instead, install any of Google Chrome, Microsoft Edge, Brave or Chromium (all free): the choice above turns on by itself."
         : @"A Chromium inside the container, shown through a window in your browser. Some sites take it for a bot, even when it's you.";
     self.setupBrowser.target = self;
     self.setupBrowser.action = @selector(setupBrowserChanged);
 }
 
 - (void)setupBrowserChanged { [self render]; }
-- (void)getChrome { [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:@"https://www.google.com/chrome/"]]; }
+
+/// Where to get each browser the app can run (for the Set up pull-down and
+/// the banner's button).
+- (NSMenu *)getBrowserMenu {
+    NSMenu *m = [NSMenu new];
+    for (NSDictionary *k in [MacBrowser known]) {
+        NSMenuItem *it = [m addItemWithTitle:k[@"name"] action:@selector(getBrowser:) keyEquivalent:@""];
+        it.target = self;
+        it.representedObject = k[@"url"];
+    }
+    return m;
+}
+- (void)getBrowser:(NSMenuItem *)item { [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:item.representedObject]]; }
 
 - (void)fillRuntime {
     BOOL stopped = [self.runtimeState isEqualToString:@"stopped"];
@@ -1459,7 +1500,7 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
     self.config.seenPairedAt = now;
     StatusFile *st = [StatusFile new];
     st.modified = [NSDate date];
-    if ([f isEqualToString:@"setup"]) { self.config.name = nil; [s removeObjectForKey:@"alias"]; }
+    if ([f hasPrefix:@"setup"]) { self.config.name = nil; [s removeObjectForKey:@"alias"]; }
     else if ([f isEqualToString:@"noruntime"]) { self.config.name = nil; [s removeObjectForKey:@"alias"]; self.runtimeState = @"missing"; }
     else if ([f isEqualToString:@"stoppedruntime"]) { self.runtimeState = @"stopped"; }
     else if ([f isEqualToString:@"starting"]) { s[@"phase"] = @"browser"; s[@"contacts"] = @0; self.launchedAt = now - 75; }
@@ -1687,7 +1728,12 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
     NSString *name = [self.nameField.stringValue stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
     if (!name.length) { [self.window makeFirstResponder:self.nameField]; return; }
     self.config.name = name;
-    if ([self.config usesDocker]) self.config.browser = self.setupBrowser.indexOfSelectedItem == 0 && ![MacBrowser unavailableReason] ? @"mac" : @"container";
+    if ([self.config usesDocker]) {
+        NSInteger at = MAX(0, self.setupBrowser.indexOfSelectedItem);
+        NSString *bid = at < (NSInteger)self.setupBrowserIds.count ? self.setupBrowserIds[at] : @"";
+        self.config.browser = bid.length && ![MacBrowser unavailableReason] ? @"mac" : @"container";
+        if (bid.length) self.config.browserApp = bid;
+    }
     [self.config write];
     [self start];
 }
@@ -1723,6 +1769,7 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
         w.browser.log = ^(NSString *line) { [weak append:line]; };
     }
     w.browser.workerName = w.config.name;
+    w.browser.bundleId = w.config.browserApp;
     w.browser.hidden = w.config.browserHidden;
     if (w.browser.running) return;
     NSError *err;
@@ -1853,7 +1900,7 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
     NSString *t = self.bannerButton.title;
     if ([t isEqualToString:@"Start"]) [self start];
     else if ([t isEqualToString:@"Download"]) [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:@"https://myoushq.com/download/mac"]];
-    else if ([t isEqualToString:@"Get Chrome"]) [self getChrome];
+    else if ([t hasPrefix:@"Get a browser"]) [[self getBrowserMenu] popUpMenuPositioningItem:nil atLocation:NSMakePoint(0, self.bannerButton.bounds.size.height) inView:self.bannerButton];
     else [self openLog];
 }
 
@@ -1895,13 +1942,17 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
     [self append:@"mode: direct (no container)"];
     [self refresh];
 }
-- (void)chooseMacBrowser { [self chooseBrowser:@"mac"]; }
-- (void)chooseContainerBrowser { [self chooseBrowser:@"container"]; }
-- (void)chooseBrowser:(NSString *)which {
-    if ([self.config.browser ?: @"container" isEqualToString:which]) return;
+/// Advanced › Browser: the item's representedObject is a bundle id (a
+/// browser on this Mac) or "" (the container).
+- (void)chooseBrowserItem:(NSMenuItem *)item {
+    NSString *bid = item.representedObject;
+    NSString *which = bid.length ? @"mac" : @"container";
+    NSString *current = [MacBrowser find:self.config.browserApp][@"id"] ?: @"";
+    if ([self.config.browser ?: @"container" isEqualToString:which] && (!bid.length || [bid isEqualToString:current])) return;
     self.config.browser = which;
+    if (bid.length) self.config.browserApp = bid;
     [self.config write];
-    [self append:[NSString stringWithFormat:@"browser: %@", [which isEqualToString:@"mac"] ? @"on this Mac" : @"in the container"]];
+    [self append:[NSString stringWithFormat:@"browser: %@", bid.length ? [NSString stringWithFormat:@"on this Mac, in %@", [MacBrowser find:bid][@"name"]] : @"in the container"]];
     BOOL up = self.screen == ScreenRunning || self.screen == ScreenPair || self.screen == ScreenPaired || self.screen == ScreenStarting;
     if (up) {
         NSAlert *a = [NSAlert new];

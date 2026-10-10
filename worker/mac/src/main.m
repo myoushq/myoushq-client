@@ -21,6 +21,7 @@ int main(int argc, const char *argv[]) {
             MacBrowser *b = [[MacBrowser alloc] initWithPaths:[[Paths alloc] initWithHome:[[NSString stringWithUTF8String:argv[2]] stringByExpandingTildeInPath]]];
             b.log = ^(NSString *line) { fprintf(stderr, "%s\n", line.UTF8String); };
             b.hidden = getenv("MYOUS_BROWSER_HIDDEN") != NULL;   // MYOUS_BROWSER_HIDDEN=1: launch hidden, as the app does by default
+            if (getenv("MYOUS_BROWSER_APP")) b.bundleId = [NSString stringWithUTF8String:getenv("MYOUS_BROWSER_APP")];   // a bundle id, e.g. com.microsoft.edgemac
             NSError *err;
             if (![b start:&err]) { fprintf(stderr, "browser-test: %s\n", err.localizedDescription.UTF8String); return 1; }
             NSDate *until = [NSDate dateWithTimeIntervalSinceNow:20];

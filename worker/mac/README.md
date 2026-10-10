@@ -76,7 +76,8 @@ clears anything older. The mode and checkout path are in
 `~/.myous-worker/app.json` with the app's settings (`name`, `dock`,
 `notifications` with `notify` per kind, `auto_update`, `show_agents`,
 `agent_homes`, and what the owner has already seen); per worker also
-`browser` ("mac" or "container") and `browser_hidden`.
+`browser` ("mac" or "container"), `browser_app` (the bundle id of the
+Mac browser to run) and `browser_hidden`.
 
 ## What the window shows, screen by screen
 
@@ -97,10 +98,14 @@ clears anything older. The mode and checkout path are in
   Pause / Resume creates or removes `~/.myous-worker/worker.paused`.
 - **Browser:** two places it can run, chosen on the Set up card and under
   Advanced › Browser (a change applies at the next start; each browser
-  keeps its own logins). **On this Mac** (the default when Google Chrome,
-  Edge, Brave or Chromium is installed, else disabled with "Get Google
-  Chrome"): the app runs that browser with the worker's own profile in
-  `~/.myous-worker/browser` (never your everyday profile), under a
+  keeps its own logins). **On this Mac, in …** one entry per installed
+  browser the app can run (Google Chrome, Microsoft Edge, Brave or
+  Chromium; the first is recommended), else one disabled line and a
+  "Get a browser…" pull-down with each one's download page: the app runs
+  the chosen browser with the worker's own profile in
+  `~/.myous-worker/browser/<bundle id>` (never your everyday profile;
+  one profile per browser, so switching browsers means logging in
+  again), under a
   seatbelt sandbox profile (`browser.sb`, run with `sandbox-exec`) that
   keeps it to its folder: nothing else under your home folder (not even
   the worker's key next door), no mounted volumes, no programs outside
@@ -112,7 +117,8 @@ clears anything older. The mode and checkout path are in
   every page as automated) is written to `browser.json`, and the
   container's `forward.py` relays `localhost:9222` to it, so agents'
   scripts need no change. It starts hidden (Cmd+H) and keeps working
-  there; "Show browser" brings it up. The setting "Start this worker's
+  there; "Show browser" brings it up (so does Cmd+Tab: hidden is the
+  Cmd+H state, not invisible). The setting "Start this worker's
   browser hidden" turns that off for a worker. macOS
   allows no sandbox inside a sandbox, so Chrome's own helper sandbox is
   off (`--no-sandbox`, as in the container, where the container is the
@@ -159,7 +165,7 @@ so and to close it. If
 Checking the layout without a worker: `build/myous.app/Contents/MacOS/myous
 --snapshot /tmp/window.png` renders the window (a PDF next to it carries
 the text) and exits; `MYOUS_FAKE_STATE=setup|noruntime|stoppedruntime|
-starting|pair|paired|running|paused|stopping|stopped|approval|busy|agents|agent|pairlocal|workers|macbrowser`
+setupnobrowser|starting|pair|paired|running|paused|stopping|stopped|approval|busy|agents|agent|pairlocal|workers|macbrowser`
 (`MYOUS_SNAPSHOT_WORKER=<n>` shows the n-th worker)
 shows each screen with made-up data, `MYOUS_WORKER_HOME=<dir>` points at
 another worker's home, `MYOUS_AGENT_HOMES=<dir>:<dir>` replaces the search
