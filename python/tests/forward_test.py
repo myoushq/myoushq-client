@@ -1,14 +1,16 @@
 """worker/forward.py: the container's 127.0.0.1:9222 relayed to the port in
-browser.json (the browser on the host)."""
+browser.json (the browser on the host). Standard library only, like the
+forwarder itself."""
 import asyncio
 import json
 import os
 import socket
 import subprocess
 import sys
+import tempfile
 import time
-
-import pytest
+import unittest
+from pathlib import Path
 
 FORWARD = os.path.join(os.path.dirname(__file__), "..", "..", "worker", "forward.py")
 
@@ -42,60 +44,63 @@ def wait_listening(port, seconds=5):
     return False
 
 
-@pytest.fixture
-def forwarder(tmp_path):
-    port = free_port()
-    proc = subprocess.Popen([sys.executable, FORWARD], env={**os.environ, "MYOUS_HOME": str(tmp_path), "MYOUS_CDP_PORT": str(port)},
-                            stderr=subprocess.PIPE, text=True)
-    assert wait_listening(port)
-    assert "goes to the host" in proc.stderr.readline()
-    yield port, tmp_path, proc
-    proc.terminate()
-    proc.wait(5)
+class Forwarder(unittest.TestCase):
+    """One forwarder per test, on a free port, with a fresh worker home."""
 
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.home = Path(self.tmp.name)
+        self.port = free_port()
+        self.proc = subprocess.Popen([sys.executable, FORWARD],
+                                     env={**os.environ, "MYOUS_HOME": str(self.home), "MYOUS_CDP_PORT": str(self.port)},
+                                     stderr=subprocess.PIPE, text=True)
+        self.assertTrue(wait_listening(self.port), "the forwarder didn't listen")
+        self.assertIn("goes to the host", self.proc.stderr.readline())
 
-def test_relays_to_the_port_in_browser_json(forwarder):
-    port, home, _ = forwarder
+    def tearDown(self):
+        self.proc.terminate()
+        self.proc.wait(5)
+        self.tmp.cleanup()
 
-    async def run():
-        server = await asyncio.start_server(echo, "127.0.0.1", 0)
-        target = server.sockets[0].getsockname()[1]
-        (home / "browser.json").write_text(json.dumps({"host": "127.0.0.1", "port": target}))
-        async with server:
-            r, w = await asyncio.open_connection("127.0.0.1", port)
-            w.write(b"GET /json/version\r\n")
-            await w.drain()
-            got = await asyncio.wait_for(r.read(64), 5)
-            w.close()
-            return got
-
-    assert asyncio.run(run()) == b"echo:GET /json/version\r\n"
-
-
-def test_without_browser_json_the_connection_is_closed(forwarder):
-    port, _, proc = forwarder
-    s = socket.create_connection(("127.0.0.1", port), 2)
-    s.settimeout(5)
-    assert s.recv(16) == b""
-    s.close()
-    assert "no browser.json" in proc.stderr.readline()
-
-
-def test_browser_json_is_read_per_connection(forwarder):
-    port, home, _ = forwarder
-
-    async def run():
-        out = []
-        for n in (1, 2):
+    def test_relays_to_the_port_in_browser_json(self):
+        async def run():
             server = await asyncio.start_server(echo, "127.0.0.1", 0)
             target = server.sockets[0].getsockname()[1]
-            (home / "browser.json").write_text(json.dumps({"host": "127.0.0.1", "port": target}))
+            (self.home / "browser.json").write_text(json.dumps({"host": "127.0.0.1", "port": target}))
             async with server:
-                r, w = await asyncio.open_connection("127.0.0.1", port)
-                w.write(b"%d" % n)
+                r, w = await asyncio.open_connection("127.0.0.1", self.port)
+                w.write(b"GET /json/version\r\n")
                 await w.drain()
-                out.append(await asyncio.wait_for(r.read(64), 5))
+                got = await asyncio.wait_for(r.read(64), 5)
                 w.close()
-        return out
+                return got
 
-    assert asyncio.run(run()) == [b"echo:1", b"echo:2"]
+        self.assertEqual(asyncio.run(run()), b"echo:GET /json/version\r\n")
+
+    def test_without_browser_json_the_connection_is_closed(self):
+        s = socket.create_connection(("127.0.0.1", self.port), 2)
+        s.settimeout(5)
+        self.assertEqual(s.recv(16), b"")
+        s.close()
+        self.assertIn("no browser.json", self.proc.stderr.readline())
+
+    def test_browser_json_is_read_per_connection(self):
+        async def run():
+            out = []
+            for n in (1, 2):
+                server = await asyncio.start_server(echo, "127.0.0.1", 0)
+                target = server.sockets[0].getsockname()[1]
+                (self.home / "browser.json").write_text(json.dumps({"host": "127.0.0.1", "port": target}))
+                async with server:
+                    r, w = await asyncio.open_connection("127.0.0.1", self.port)
+                    w.write(b"%d" % n)
+                    await w.drain()
+                    out.append(await asyncio.wait_for(r.read(64), 5))
+                    w.close()
+            return out
+
+        self.assertEqual(asyncio.run(run()), [b"echo:1", b"echo:2"])
+
+
+if __name__ == "__main__":
+    unittest.main()
