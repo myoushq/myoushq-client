@@ -16,7 +16,16 @@ run() {
 run "govulncheck go" sh -c "cd go && go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./..."
 
 if [ ! -x "$TOOLS/py/bin/pip-audit" ]; then
-	python3 -m venv "$TOOLS/py" && "$TOOLS/py/bin/pip" install -q "pip-audit==2.9.0"
+	# A venv left in /tmp can outlive the Python it was made from (a macOS
+	# or tools update), and re-creating over it doesn't restore pip: start
+	# clean, with the newest Python 3 around, and stop here if that fails.
+	rm -rf "$TOOLS/py"
+	PY=python3
+	for cand in python3.13 python3.12 python3.11 python3.10; do
+		command -v "$cand" >/dev/null 2>&1 && { PY=$cand; break; }
+	done
+	"$PY" -m venv --clear "$TOOLS/py" && "$TOOLS/py/bin/pip" install -q "pip-audit==2.9.0" \
+		|| { echo "audit: couldn't set up pip-audit in $TOOLS/py (Python: $PY)" >&2; exit 1; }
 fi
 for lock in python/requirements.lock python/requirements-qr.lock; do
 	run "pip-audit $lock" "$TOOLS/py/bin/pip-audit" --require-hashes --disable-pip -r "$lock"
