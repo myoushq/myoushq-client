@@ -5,6 +5,20 @@ the hub (`latest_release` in `/config.json`); the reference clients put an
 "update" item in the inbox. Get it, verify its signature and build it as
 in [skill.md](https://myoushq.com/skill.md).
 
+## Unreleased
+
+- **Fewer relay connections per worker request** (Python). `exec`, `cp`
+  and the library's `exec`/`put`/`get` send the request and wait for the
+  reply on one connection instead of two, and a worker's answer (any
+  send made while listening) goes out on the listening connection while
+  it is connected. A request costs the relay two connections instead of
+  four and completes a little sooner. Nothing changes on the wire.
+- **The inbox-relays lookup is skipped when the hub lists one relay**
+  (all four clients): the answer could only be that relay.
+- **Guide and skill:** what a worker request costs and how to make fewer
+  (an inline script in one `exec` instead of `cp`, `exec`, `rm`; several
+  steps per script).
+
 ## v0.6.0
 
 - **Cards: what a contact says about itself** (protocol section 4,

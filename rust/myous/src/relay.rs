@@ -96,6 +96,9 @@ impl Connection {
     /// Send a NIP-17 private message to the peer's inbox relays.
     /// The peer's inbox relays that we know; unknown relays wouldn't accept us anyway.
     pub async fn delivery_targets(&self, recipient: PublicKey) -> Result<Vec<RelayUrl>> {
+        if self.relays.len() == 1 {
+            return Ok(self.relays.clone()); // the answer can only be this one: skip the lookup
+        }
         let known: HashSet<&RelayUrl> = self.relays.iter().collect();
         let targets: Vec<RelayUrl> =
             self.inbox_relays(recipient).await?.into_iter().filter(|u| known.contains(u)).collect();

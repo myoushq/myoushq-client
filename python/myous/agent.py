@@ -15,6 +15,7 @@ Network calls to relays are async; hub calls are plain blocking HTTPS.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import re
@@ -58,6 +59,7 @@ class Agent:
             self.st.put("settings", settings)
         self.hub = Hub(storage)
         self._keys: Keys | None = None
+        self._live: relay.Connection | None = None  # the connection listen() holds, while it runs
 
     # --- identity ----------------------------------------------------------
 
@@ -218,13 +220,13 @@ class Agent:
 
     # --- messages ----------------------------------------------------------
 
-    async def send(self, name: str, text: str) -> dict:
+    async def send(self, name: str, text: str, conn: relay.Connection | None = None) -> dict:
         pubkey, contact = contacts.find(self.st, name)
         if contact["status"] != contacts.APPROVED:
             raise ValueError(f"{contact['alias']} is {contact['status']}")
         chunks = parts.split(text)  # ValueError if it's too long to send
         recipient = PublicKey.parse(pubkey)
-        async with self._connect() as conn:
+        async with self._use(conn) as conn:
             if len(chunks) == 1:
                 await conn.send_message(recipient, text)
             else:
@@ -245,7 +247,8 @@ class Agent:
         return files.BlobClient(self.keys, self.hub.config().get("blob_api"))
 
     async def send_file(self, name: str, path: str | os.PathLike, extra_tags: list[list[str]] | None = None,
-                        mime: str | None = None, file_name: str | None = None) -> dict:
+                        mime: str | None = None, file_name: str | None = None,
+                        conn: relay.Connection | None = None) -> dict:
         """Encrypt a file, store the blob on the hub, and send the file
         message that carries the key. `extra_tags` is for worker semantics
         (["w", ...]). Returns the history entry."""
@@ -266,7 +269,7 @@ class Agent:
         url = f"{blobs.url}/{enc.x}"
         mime = mime or files.DEFAULT_MIME
         tags = files.file_tags(enc, file_name, mime, extra_tags)
-        async with self._connect() as conn:
+        async with self._use(conn) as conn:
             await conn.send_file_message(PublicKey.parse(pubkey), url, tags)
         entry = {"type": "file", "direction": "out", "peer": contact["npub"], "alias": contact["alias"],
                  "name": file_name, "mime": mime, "size": len(enc.ciphertext), "x": enc.x, "ox": enc.ox,
@@ -335,21 +338,24 @@ class Agent:
         reply arrives in time; WorkerError if the worker refused."""
         rid = new_request_id()
         body = json.dumps({"myous": "exec", "id": rid, "cmd": cmd, "timeout": int(timeout)})
-        await self.send(name, body)
-        return self._check(await self._await_reply(rid, timeout + 30, self._npub(name)))
+        async with self._connect() as conn:
+            await self.send(name, body, conn)
+            return self._check(await self._await_reply(rid, timeout + 30, self._npub(name), conn))
 
     async def put(self, name: str, local_path: str | os.PathLike, remote_path: str, timeout: float = 300) -> dict:
         """Push a file to a worker and wait until it is written there."""
         rid = new_request_id()
-        await self.send_file(name, local_path, extra_tags=[["w", "put", rid, remote_path]])
-        return self._check(await self._await_reply(rid, timeout, self._npub(name)))
+        async with self._connect() as conn:
+            await self.send_file(name, local_path, extra_tags=[["w", "put", rid, remote_path]], conn=conn)
+            return self._check(await self._await_reply(rid, timeout, self._npub(name), conn))
 
     async def get(self, name: str, remote_path: str, local_path: str | os.PathLike | None = None,
                   timeout: float = 300) -> str:
         """Pull a file from a worker. Returns where it was written."""
         rid = new_request_id()
-        await self.send(name, json.dumps({"myous": "get", "id": rid, "path": remote_path}))
-        reply = self._check(await self._await_reply(rid, timeout, self._npub(name)))
+        async with self._connect() as conn:
+            await self.send(name, json.dumps({"myous": "get", "id": rid, "path": remote_path}), conn)
+            reply = self._check(await self._await_reply(rid, timeout, self._npub(name), conn))
         return self.fetch(reply, local_path)
 
     def _npub(self, name: str) -> str:
@@ -373,10 +379,15 @@ class Agent:
                 return e
         return None
 
-    async def _await_reply(self, rid: str, timeout: float, npub: str) -> dict:
+    async def _await_reply(self, rid: str, timeout: float, npub: str,
+                           conn: relay.Connection | None = None) -> dict:
         """Listen until the reply with this id, from this contact, is in
         the history. Another process (a watcher) may store it first; the
-        history is checked on every tick as well as on arrival."""
+        history is checked on every tick as well as on arrival. `conn` is
+        the connection the request went out on: the wait starts there (one
+        connection per request; the subscription's replay of the inbox
+        covers a reply that arrived in between), and a fresh one takes
+        over if it drops."""
         since = 1
         found = asyncio.get_running_loop().create_future()
 
@@ -386,9 +397,14 @@ class Agent:
                 found.set_result(reply)
 
         async def listen_forever() -> None:
+            first = conn
             while True:
                 try:
-                    await self.listen(on_new=check, on_tick=check, tick=2)
+                    if first is not None:
+                        first, c = None, first
+                        await self._listen_on(c, on_new=check, on_tick=check, tick=2)
+                    else:
+                        await self.listen(on_new=check, on_tick=check, tick=2)
                 except (OSError, relay.RelayError):
                     await self.poll()
                     check()
@@ -428,10 +444,17 @@ class Agent:
         connection is lost for good or the task is cancelled. Calls
         on_new(entries) for new messages and pairing results, and on_tick()
         every `tick` seconds (3 while a pairing is pending)."""
+        async with self._connect() as conn:
+            await self._listen_on(conn, on_new, on_tick, tick)
+
+    async def _listen_on(self, conn: relay.Connection, on_new=None, on_tick=None, tick: float = 20) -> None:
+        """listen() on a connection already open. While it runs, sends from
+        this agent (a reply from on_new, a card) go out on this connection
+        instead of opening another: see _use()."""
         loop = asyncio.get_running_loop()
         deliveries = _Deliveries(self, on_new)
-
-        async with self._connect() as conn:
+        outer, self._live = self._live, conn
+        try:
 
             async def housekeeping() -> None:
                 down_since = None
@@ -462,6 +485,8 @@ class Agent:
                         task.result()
             finally:
                 task.cancel()
+        finally:
+            self._live = outer
 
     def unread(self, mark_read: bool = True) -> list[dict]:
         """Unread items already stored. This doesn't fetch: call poll()
@@ -544,6 +569,22 @@ class Agent:
 
     def _connect(self, cfg: dict | None = None) -> relay.Connection:
         return relay.Connection(self.keys, (cfg or self.hub.config())["relays"])
+
+    @contextlib.asynccontextmanager
+    async def _use(self, conn: relay.Connection | None = None):
+        """A connection to publish on: the one given; else the listening
+        connection while it is up and connected (a worker's result, or any
+        reply sent from on_new, then costs the relay no extra connection);
+        else a fresh one, closed afterwards. A listening connection that is
+        reconnecting is not used: the send would fail where a fresh
+        connection succeeds."""
+        if conn is None and self._live is not None and await self._live.connected():
+            conn = self._live
+        if conn is not None:
+            yield conn
+            return
+        async with self._connect() as fresh:
+            yield fresh
 
     def _next_seq(self) -> int:
         return self.st.get("state", {}).get("next_seq", 1)

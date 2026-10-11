@@ -173,6 +173,9 @@ func (c *connection) inboxRelays(ctx context.Context, pubkey string) ([]string, 
 // deliveryTargets returns the peer's inbox relays that we know; unknown
 // relays wouldn't accept us anyway.
 func (c *connection) deliveryTargets(ctx context.Context, recipient string) ([]string, error) {
+	if len(c.relays) == 1 {
+		return []string{c.relays[0].URL}, nil // the answer can only be this one: skip the lookup
+	}
 	var known, targets []string
 	for _, r := range c.relays {
 		known = append(known, r.URL)

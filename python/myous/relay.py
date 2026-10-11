@@ -19,6 +19,7 @@ from nostr_sdk import (
     MultiThreadPow,
     Proxy,
     PublicKey,
+    RelayStatus,
     RelayUrl,
     ReqTarget,
     SendEventTarget,
@@ -80,6 +81,11 @@ class Connection:
     async def __aexit__(self, *exc) -> None:
         await self.client.shutdown()
 
+    async def connected(self) -> bool:
+        """Whether at least one relay is connected right now."""
+        statuses = [r.status() for r in (await self.client.relays()).values()]
+        return any(s == RelayStatus.CONNECTED for s in statuses)
+
     async def publish(self, event: Event, relays: list[RelayUrl] | None = None) -> None:
         target = SendEventTarget.to(relays or self.relays)
         out = await self.client.send_event(event, target)
@@ -109,6 +115,8 @@ class Connection:
 
     async def delivery_targets(self, recipient: PublicKey) -> list[RelayUrl]:
         """The peer's inbox relays that we know; unknown relays wouldn't accept us anyway."""
+        if len(self.relays) == 1:
+            return list(self.relays)  # the answer can only be this one: skip the lookup
         known = {str(u): u for u in self.relays}
         return [u for u in await self.inbox_relays(recipient) if str(u) in known] or self.relays
 

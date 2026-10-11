@@ -74,6 +74,7 @@ export class Connection {
   /** Send a NIP-17 private message to the peer's inbox relays. */
   /** The peer's inbox relays that we know; unknown relays wouldn't accept us anyway. */
   async deliveryTargets(recipient: string): Promise<Relay[]> {
+    if (this.relays.length === 1) return this.relays; // the answer can only be this one: skip the lookup
     const known = new Set(this.relays.map((r) => r.url));
     const inbox = (await this.inboxRelays(recipient)).map(normalizeUrl).filter((u) => known.has(u));
     return inbox.length ? this.relays.filter((r) => inbox.includes(r.url)) : this.relays;

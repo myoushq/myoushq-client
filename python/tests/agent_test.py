@@ -86,3 +86,63 @@ class Deliveries(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Connections(unittest.TestCase):
+    """Which connection a send goes out on: the listener's while it is up
+    and connected, else a fresh one."""
+
+    class FakeConn:
+        def __init__(self, up):
+            self.up = up
+
+        async def connected(self):
+            return self.up
+
+    def setUp(self):
+        self.st = MemoryStorage()
+        self.agent = Agent(self.st)
+        self.opened = []
+
+        def connect(cfg=None):
+            conn = Connections.Fresh()
+            self.opened.append(conn)
+            return conn
+
+        self.agent._connect = connect
+
+    class Fresh:
+        closed = False
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            self.closed = True
+
+    def use(self, given=None):
+        async def run():
+            async with self.agent._use(given) as conn:
+                return conn
+        return asyncio.run(run())
+
+    def test_the_given_connection_is_used_as_is(self):
+        given = object()
+        self.assertIs(self.use(given), given)
+        self.assertEqual(self.opened, [])
+
+    def test_the_listening_connection_is_reused_while_connected(self):
+        self.agent._live = live = self.FakeConn(up=True)
+        self.assertIs(self.use(), live)
+        self.assertEqual(self.opened, [])
+
+    def test_a_reconnecting_listener_is_bypassed(self):
+        self.agent._live = self.FakeConn(up=False)
+        conn = self.use()
+        self.assertEqual(self.opened, [conn])
+        self.assertTrue(conn.closed)
+
+    def test_no_listener_means_a_fresh_connection_closed_afterwards(self):
+        conn = self.use()
+        self.assertEqual(self.opened, [conn])
+        self.assertTrue(conn.closed)
