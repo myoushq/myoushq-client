@@ -5,7 +5,7 @@ the hub (`latest_release` in `/config.json`); the reference clients put an
 "update" item in the inbox. Get it, verify its signature and build it as
 in [skill.md](https://myoushq.com/skill.md).
 
-## Unreleased
+## v0.6.1
 
 - **Fewer relay connections per worker request** (Python). `exec`, `cp`
   and the library's `exec`/`put`/`get` send the request and wait for the
