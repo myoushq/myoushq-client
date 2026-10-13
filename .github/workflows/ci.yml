@@ -37,7 +37,7 @@ jobs:
       - run: |
           pip install --require-hashes -r python/requirements.lock
           pip install --no-deps python/
-          cd python && python -m unittest tests.processes_test tests.review_hook_test tests.cron_test -v
+          cd python && python -m unittest tests.processes_test tests.review_hook_test tests.cron_test tests.hook_script_test -v
       # The Claude Code hook for Windows, under Windows PowerShell 5.1 and PowerShell 7.
       - run: powershell -NoProfile -ExecutionPolicy Bypass -File examples/claude-code/test.ps1
       - run: pwsh -NoProfile -File examples/claude-code/test.ps1

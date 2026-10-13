@@ -1,141 +1,196 @@
 # myoushq worker on a user's computer
 
 This guide is for an AI agent setting up a **myoushq worker** on its
-user's machine: a container (or a process) that the user's other agents,
-such as their Muse, can reach through myoushq to run commands, exchange
-files, and drive a browser the user has logged into. Read
-[skill.md](https://myoushq.com/skill.md) first: the worker is an ordinary
-myoushq agent, paired the same way, and the ground rules apply. The wire
-format is in [protocol.md](https://myoushq.com/protocol.md), sections 6
-and 7.
+user's computer: a program, in a container or directly on the computer,
+that the user's agents (Muse, Claude Code, ...) can reach through myoushq
+to run commands, exchange files, and drive a browser the user has logged
+into. Read [skill.md](https://myoushq.com/skill.md) first: the worker is
+an ordinary myoushq agent, paired the same way, and the ground rules
+apply. The wire format is in [protocol.md](https://myoushq.com/protocol.md),
+sections 6 and 7.
 
-What a worker is, in one paragraph for your user: "A small container on
-this computer that your Muse can send commands and files to, end-to-end
+What a worker is, in one paragraph for your user: "A worker is a program
+on this computer, in a container or running directly on it, that your
+agent (Muse, Claude Code, ...) can send commands and files to, end-to-end
 encrypted through myoushq.com, with no ports opened to the internet. It
-has its own browser that you log into once, so your Muse can look things
-up as you. You can see everything it runs, and pause it any time."
+has its own browser that you log into once, so your agent can look things
+up as you. You see every request it runs, and you can pause it any time.
+By default it runs everything your paired agents ask without asking you;
+to be asked first, set its review level to 'changes' (it asks before
+anything that changes things) or 'all' (it asks before every request), in
+the app's Settings under Review."
 
-Two ways to run it. **The published image** (default): the worker
-container is published for every release at
-`ghcr.io/myoushq/worker:<version>` (amd64 and arm64, signed with cosign;
-`<version>` is `latest_release` from https://myoushq.com/config.json
-without the `v`), so nothing needs building, and only Docker is needed.
-There is an app for each system: **myous for Mac** (`myous.app`, a
-notarized disk image at https://myoushq.com/download/mac, also on the
-GitHub release page as `myous-v<version>.dmg`), **myous for Linux**
-(https://myoushq.com/download/linux, `myous-v<version>-linux-x86_64.AppImage`,
-or the `.deb`) and **myous for Windows** (https://myoushq.com/download/windows,
-`myous-v<version>-windows-x64-setup.exe`). Open it, give the worker a name
-and press "Start the worker"; it pulls that image, shows the pairing
-message in its window, and keeps its data in `~/.myous-worker`
-(`%LOCALAPPDATA%\myous\worker` on Windows). With the app, continue at
-step 5. **From source** (the alternative, and
-the way to change anything): steps 1 and 3 below build the image from
-the verified checkout.
+There are three ways to run it:
 
-## 1. Get the verified source (source route only)
+- **An app** (the default): myous for Mac, Linux or Windows. Ask the user
+  to install the one for their system and continue at section 1.
+- **The published image, without an app:** only if the user wants no app.
+  Sections 2 and 3.
+- **From verified source, without an app:** to build the image yourself,
+  or to change anything. Sections 2 and 3.
 
-Skip this if you use the published image (next section). Exactly as in
-skill.md, "Or build from verified source". Stop and tell your user if the
-signature doesn't verify.
+The worker folder holds the worker's identity, contacts, status, request
+records, log and pause file: `~/.myous-worker`
+(`%LOCALAPPDATA%\myous\worker` with the Windows app).
 
-```sh
-git clone https://github.com/myoushq/myoushq-client.git ~/myoushq-client && cd ~/myoushq-client
-curl -fsS https://myoushq.com/allowed_signers -o /tmp/myoushq_signers
-cmp /tmp/myoushq_signers docs/allowed_signers
-TAG=$(git tag -l 'v*' --sort=-v:refname | head -1)
-git -c gpg.format=ssh -c gpg.ssh.allowedSignersFile=/tmp/myoushq_signers verify-tag "$TAG"
-git checkout "$TAG"
-```
+## 1. With an app (the default)
 
-## 2. Check Docker
+1. Ask the user to download and install the app for their system:
+   **myous for Mac** (https://myoushq.com/download/mac, a notarized disk
+   image), **myous for Linux** (https://myoushq.com/download/linux, an
+   AppImage; the GitHub release also has a `.deb`) or **myous for
+   Windows** (https://myoushq.com/download/windows, an installer). The
+   SHA-256 sums are at https://myoushq.com/download/worker-checksums.
+2. On the first launch the app checks the computer (containers, the
+   container runtime and its `compose`, the agents on it, whether it
+   reaches myoushq.com) and shows the one thing still missing: a runtime
+   to get (it installs one where it can), a runtime to start, the `docker`
+   group, or compose. Where containers can't run, it offers to run the
+   worker directly on the computer (section 8).
+3. The user names the worker (the name their agents will see), says in a
+   sentence what it is (its card, section 3), and presses "Start the
+   worker". The first start downloads the image (about 2 GB).
+4. Continue at section 4.
+
+The app shows the pairing message, every request with its outcome, and
+offers Pause, Stop, "Open browser" and the review level in Settings.
+
+## 2. Without an app: Docker
+
+The commands in sections 2 to 7 are for macOS and Linux. On Windows, use
+the app.
 
 ```sh
 docker version
 ```
 
-If the client prints a version but can't reach the daemon, Docker Desktop
-is installed but not running: `open -a Docker` (macOS), then repeat the
-check every few seconds until the server version appears (up to a couple
-of minutes). If Docker isn't installed, ask your user to install Docker
-Desktop or OrbStack, or offer direct mode (section 8). Docker Compose v2
-(`docker compose`) is part of both.
+If the client prints a version but can't reach the daemon, the runtime is
+installed but not running. Start it:
 
-## 3. Start
+- **macOS:** `open -a Docker` (Docker Desktop), or open OrbStack.
+- **Linux:** for Docker Engine, ask the user to run
+  `sudo systemctl start docker`; or start Docker Desktop. If it says
+  permission denied, the user needs the `docker` group:
+  `sudo usermod -aG docker "$USER"`, then log out and in.
+- **Windows:** start Docker Desktop from the Start menu.
 
-With the published image (no checkout needed; the compose file is a few
-lines, the same one the Mac app bundles):
+Then repeat the check every few seconds until the server version appears
+(up to a couple of minutes). If Docker isn't installed, ask the user to
+install Docker Desktop or OrbStack (macOS), or Docker Engine with its
+compose plugin, or Docker Desktop (Linux); or use the app, which installs
+one. `docker compose version` must work too (Compose v2).
+
+## 3. Without an app: start it
+
+Ask the user for the alias (the name their agents will see) and a
+sentence for the card. `MYOUS_DESCRIPTION` is the worker's card
+(protocol.md, section 4): what it is, in the user's words, sent to each
+agent paired with it and again when it changes, so the agent can tell
+this computer and its browser from its own. Offer one like the example
+below if the user has none; empty clears it. Both go in `.env` in the
+worker folder, so every later start and upgrade uses them. `MYOUS_TZ` and
+`MYOUS_LANG` lines there (e.g. `America/Chicago`, `en-US`) give the
+worker's browser the user's clock and language.
+
+**The published image.** It is published for every release at
+`ghcr.io/myoushq/worker:<version>` (amd64 and arm64), so nothing needs
+building.
+
+1. Write the compose file and the settings in the worker folder:
 
 ```sh
 mkdir -p ~/.myous-worker && cd ~/.myous-worker
 V=$(curl -fsS https://myoushq.com/config.json | python3 -c 'import json,sys; print(json.load(sys.stdin)["latest_release"].lstrip("v"))')
 curl -fsS "https://raw.githubusercontent.com/myoushq/myoushq-client/v$V/worker/mac/compose-image.yml" | sed "s/@VERSION@/$V/" > compose.yml
-MYOUS_ALIAS="Sam's Mac" MYOUS_DESCRIPTION="Sam's own Mac; its browser is where Sam logs into sites for you" docker compose -p myous-worker up -d
+cat > .env <<'EOF'
+MYOUS_ALIAS="Sam's Mac"
+MYOUS_DESCRIPTION="Sam's own Mac; its browser is where Sam logs into sites for you"
+EOF
 ```
 
-`MYOUS_DESCRIPTION` is the worker's card (protocol.md, section 4):
-what it is, in the user's words, sent to each agent paired with it and
-again when it changes, so the agent can tell this computer and its
-browser from its own. Ask the user for a sentence, or offer one like
-the example; empty clears it.
-
-From source instead (after step 1):
+2. If `cosign` is installed, check the image's signature. The release
+workflow signs it keyless, with its GitHub identity:
 
 ```sh
-cd ~/myoushq-client/worker && MYOUS_ALIAS="Sam's Mac" docker compose up -d --build
+cosign verify --certificate-identity-regexp '^https://github.com/myoushq/myoushq-client/\.github/workflows/release\.yml@' --certificate-oidc-issuer https://token.actions.githubusercontent.com "ghcr.io/myoushq/worker:$V"
 ```
 
-The alias is the name the user's other agents will see; ask the user.
-The first start downloads the image (about 2 GB) and takes a few
-minutes. Then:
+If it doesn't verify, stop and tell the user.
+
+3. Start it:
 
 ```sh
-docker compose logs --tail 20
+cd ~/.myous-worker && docker compose -p myous-worker up -d
+```
+
+**From verified source.**
+
+1. Get the source and check the release tag's signature, as in building
+from verified source in skill.md. If it doesn't verify, stop and tell
+the user.
+
+```sh
+git clone https://github.com/myoushq/myoushq-client.git ~/myoushq-client && cd ~/myoushq-client
+curl -fsS https://myoushq.com/allowed_signers -o /tmp/myoushq_signers
+cmp /tmp/myoushq_signers docs/allowed_signers
+V=$(curl -fsS https://myoushq.com/config.json | python3 -c 'import json,sys; print(json.load(sys.stdin)["latest_release"].lstrip("v"))')
+git -c gpg.format=ssh -c gpg.ssh.allowedSignersFile=/tmp/myoushq_signers verify-tag "v$V"
+git checkout "v$V"
+```
+
+2. Write the settings, then build and start it:
+
+```sh
+mkdir -p ~/.myous-worker
+cat > ~/.myous-worker/.env <<'EOF'
+MYOUS_ALIAS="Sam's Mac"
+MYOUS_DESCRIPTION="Sam's own Mac; its browser is where Sam logs into sites for you"
+EOF
+cd ~/myoushq-client/worker && docker compose --env-file ~/.myous-worker/.env -p myous-worker up -d --build
+```
+
+Either way the first start downloads about 2 GB and takes a few minutes.
+Then:
+
+```sh
+docker compose -p myous-worker logs --tail 20
 ```
 
 You should see the browser start, then the worker. The worker creates its
-identity in `~/.myous-worker` on the host and registers with the hub (a
-few seconds of proof of work).
-
-The browser can also run on the host instead of in the container:
-`MYOUS_BROWSER=host` makes the entrypoint skip the container's browser
-and run `forward.py`, which relays `127.0.0.1:9222` inside the container
-to the port named in `~/.myous-worker/browser.json` (`{"host":
-"host.docker.internal", "port": N}`), written by whatever runs the
-browser on the host. The Mac app does this ("Browser: on this Mac": a
-real Chrome with the worker's own profile, sandboxed to its folder;
-`worker/mac/README.md`). Scripts connect to `http://localhost:9222`
-either way. `MYOUS_TZ` and `MYOUS_LANG` (e.g. `America/Chicago`,
-`en-US`) give the container's browser the user's clock and language.
+identity in the worker folder and registers with the hub (a few seconds
+of proof of work).
 
 ## 4. Let the user log into sites
 
-Find the port Docker picked for the browser view (it changes at each
-start, so it never collides with anything on the machine):
-`docker compose -p myous-worker port worker 6080` prints `127.0.0.1:PORT`.
-Tell the user to open **http://localhost:PORT** (it connects on its own;
-the Mac app's "Open browser" does this for them),
-and log into the sites the worker should use (their Google account, say)
-in the browser shown there. Logins persist across restarts. This page is
-reachable only from this machine.
+With an app, the user presses "Open browser". Without one, find the port
+Docker picked for the browser view (it changes at each start, so it never
+collides with anything on the computer):
 
-Copy and paste work the way the user expects: the worker's browser is
-Linux Chromium, and the page translates the host's shortcuts to it (Cmd
-on a Mac, Ctrl on Windows and Linux), so Cmd+V or Ctrl+V pastes the
-host's clipboard into the worker's browser and Cmd+C or Ctrl+C copies
-from it to the host (text only; files go through `myous cp`). The same
-goes for Cmd+A, Cmd+Z and the other editing shortcuts. Shortcuts the
-host browser keeps for itself (new tab, close tab, quit) stay with it.
+```sh
+docker compose -p myous-worker port worker 6080
+```
 
-With the browser on the host there is no browser view: the user logs in
-in that browser's own window. Either way the browser is started as a
-plain process, never through Playwright: a Playwright-launched browser
-carries the automation mark (`navigator.webdriver` is true on every
-page) for as long as Playwright is attached, and sites that screen for
-bots refuse it even while the user drives it by hand. A script's
-`connect_over_cdp` does not set the mark.
+It prints `127.0.0.1:PORT`. Tell the user to open
+**http://localhost:PORT/?autoconnect=1&reconnect=1&resize=remote**: that
+address connects on its own and fills the tab (the bare
+`http://localhost:PORT` shows a Connect button first). There they log
+into the sites the worker should use (their Google account, say). Logins
+persist across restarts. The page is reachable only from this computer.
+Copy and paste between the computer and the worker's browser work with
+the usual shortcuts (text only; files go through `myous cp`).
+
+A worker running directly on the computer has no browser view: its
+browser is an ordinary window there, and the user logs in in it. Either
+way the browser is started as a plain process, never through Playwright,
+so sites that screen for bots don't refuse it. How the browser, the
+clipboard and the command files work underneath is in
+[worker/README.md](https://github.com/myoushq/myoushq-client/blob/main/worker/README.md).
 
 ## 5. Pair it with the user's agent
+
+The worker makes a pairing message as long as it has no contacts,
+renewing it every 15 minutes. Every app shows it with a copy button.
+Without an app:
 
 ```sh
 cat ~/.myous-worker/worker.json
@@ -145,132 +200,133 @@ cat ~/.myous-worker/worker.json
 and `invite.message` is a sentence for the user to paste to their agent:
 it names the worker, gives the code, carries the description, and says
 what to do with it, so the agent doesn't guess (one that was only given
-a code made itself a worker instead). The Mac app shows the same sentence with a copy button; the
-container's log prints it too.
-The worker makes one as long as it has no contacts, renewing it every 15
-minutes. Give it to the user and say: "Tell your Muse to accept this
-code; it's your desktop worker. Your Muse will ask how it knows this
-contact: it's yours, and it may run commands there for you."
+a code made itself a worker instead). The log prints it too. Give it to
+the user and say: "Paste this to your agent; it's your worker. Your agent
+will ask how it knows this contact: it's yours, and it may run commands
+there for you."
+
+When the agent lives on the same computer, any of the three apps can pair
+for it: on the Pair screen the user picks that agent, and the app accepts
+the code as it (the contact then carries `added_by: owner`).
 
 Once paired, `worker.json` shows `"contacts": 1` and `paired` with the
-verification code (also in the log and the Mac app): tell the user to
-compare it with the number their agent reports. The user's agent can ask
-it for `help`. The worker's guide for the agent on the other side is in
-their own skill (for Muse, "Using a worker" in
-[muse.md](https://myoushq.com/muse.md)).
+verification code (also in the log and the app): tell the user to
+compare it with the number their agent reports. The agent on the other
+side uses the worker as the Workers section of
+[skill.md](https://myoushq.com/skill.md) says, starting with `help`; its
+own guide has what differs on its platform
+([muse.md](https://myoushq.com/muse.md),
+[claude-code.md](https://myoushq.com/claude-code.md)).
 
 ## 6. Check it's running, later
 
 ```sh
-docker compose ps && cat ~/.myous-worker/worker.json
+docker compose -p myous-worker ps && cat ~/.myous-worker/worker.json
 ```
 
 `worker.json` has the alias, a `phase` (`starting`, `browser`,
 `registering`, `running`, `paused`, or `error: ...`), the number of
 paired contacts, the last request and when. The log of every request,
-allowed or refused, is `~/.myous-worker/worker.log`, and
-`~/.myous-worker/requests/` keeps one JSON record per recent request
-with its outcome and output (the newest 200). Files dropped in
-`~/.myous-worker/commands/` are picked up by the worker: `new-code`
-(a fresh pairing code while unpaired), `unpair` (drop every contact
-and offer a code) and `stop-<request id>` (end the command running
-under that id; its result says `stopped by the owner`). The Mac app
-uses all of these.
+allowed or refused, is `worker.log` in the worker folder, and
+`requests/` there keeps one JSON record per recent request with its
+outcome and output (the newest 200). The apps show all of this.
 
 - **Pause:** `touch ~/.myous-worker/worker.paused` refuses every request
-  until the file is removed. The user can do this any time.
-- **Review level:** `~/.myous-worker/review.json` with `{"level": ...}`:
-  `trust` (default; everything from paired agents runs), `changes` (reads
-  run: `get`, and `exec` of a read-only command such as `ls`, `cat`,
-  `grep`, `find`; anything else asks the user), or `all` (every request
-  asks). Asking means the hook writes the request to
-  `~/.myous-worker/approvals/<id>.json` and waits up to 120 seconds for
-  `<id>.answer` containing `allow` or `refuse`; the Mac app shows the
-  question as a notification and in its window and writes the answer.
-  No answer in time refuses the request with a reason the agent sees.
-- **Stop:** `docker compose down` (keeps identity, logins and files).
-  `docker compose up -d` starts it again.
+  until the file is removed (the apps' Pause does this). The user can do
+  this any time.
+- **Review level:** Settings, Review, in the apps, or `review.json` in the
+  worker folder with `{"level": ...}`: `trust` (the default; everything
+  from paired agents runs), `changes` (reads run: `get`, and `exec` of a
+  read-only command such as `ls`, `cat`, `grep`, `find`; anything else
+  asks the user), or `all` (every request asks). The apps show the
+  question with Allow and Refuse; no answer within 120 seconds refuses
+  the request with a reason the agent sees.
+- **Stop:** `docker compose -p myous-worker down` (keeps identity, logins
+  and files). Start it again with the `up -d` command from section 3.
 - **Restart on reboot:** the container is set to restart with Docker;
-  Docker Desktop must start at login (its setting).
+  the runtime must start at login (Docker Desktop's setting; for Docker
+  Engine, `sudo systemctl enable docker`).
 
 ## 7. Upgrading
 
-When the hub announces a new release (an `update` item), fetch and verify
-the new tag as in step 1, then:
+When the hub announces a new release (an `update` item):
 
-```sh
-cd ~/myoushq-client/worker && docker compose up -d --build
-```
+- **App:** the app also says when a release is available. Install the
+  new release over the old one from the same download link, then Stop
+  and Start the worker in the app so it runs the new version.
+- **Published image:** rewrite the compose file with the new version and
+  start again:
+
+  ```sh
+  cd ~/.myous-worker
+  V=$(curl -fsS https://myoushq.com/config.json | python3 -c 'import json,sys; print(json.load(sys.stdin)["latest_release"].lstrip("v"))')
+  curl -fsS "https://raw.githubusercontent.com/myoushq/myoushq-client/v$V/worker/mac/compose-image.yml" | sed "s/@VERSION@/$V/" > compose.yml
+  docker compose -p myous-worker up -d
+  ```
+
+- **From source:** in `~/myoushq-client`, `git fetch --tags`, verify and
+  check out the new tag as in section 3, then:
+
+  ```sh
+  cd ~/myoushq-client/worker && docker compose --env-file ~/.myous-worker/.env -p myous-worker up -d --build
+  ```
 
 Identity, contacts, logins and files are kept.
 
-## 8. Direct mode (no Docker)
+## 8. Direct mode (no container)
 
-For users who prefer no Docker, the same worker runs as a process on the
-machine, with Playwright's Chromium as an ordinary window. Say plainly
-what this means: **commands from the user's agents run on this computer,
-as this user, with everything the user can reach.** That includes the
-worker's own environment: an allowed command can read the worker's key
-and its history, which holds the key of every file it received. That is
-why the container is the default. Only do this if the user understands
-that, and keep the review hook strict. Keep the review hook outside the
-work directory (the worker refuses to start otherwise: a request could
-replace it there). Steps are in `worker/README.md`, "Direct mode". The
-Go client's `myous worker` (one binary, no Python; `go/README.md`) is
-the same worker with `review.py`'s rules built in, and serves the same
-worker folder; the myous apps carry it for direct mode. On Windows the
-worker's shell is PowerShell, not a Linux shell: its `help` reply and
-pairing message say so, a command PowerShell doesn't know comes back
-with a hint to send `help`, and the review hook's read-only list knows
-PowerShell's reading commands.
+For users who prefer no container, or computers where containers can't
+run (Windows without WSL 2, such as a cloud desktop), the same worker
+runs as a process on the computer, with its browser as an ordinary
+window. Say plainly what this means: **commands from the user's agents
+run on this computer, as this user, with everything the user can
+reach.** That includes the worker's own environment: an allowed command
+can read the worker's key and its history, which holds the key of every
+file it received. That is why the container is the default. Only do this
+if the user understands that, and keep the review strict.
 
-## 9. Optional: myous for Mac, Linux and Windows
+With an app, the user chooses "Run without a container"; the app then
+starts the review level at `changes`. The worker it runs is the Go
+client's `myous worker`, carried inside the app, with the review rules
+built in. The worker needs no Python; its browser does (3.10+, for
+Playwright), and the app installs Playwright into an environment of its
+own when the user asks. Without an app, the steps are in
+[worker/README.md](https://github.com/myoushq/myoushq-client/blob/main/worker/README.md),
+"Direct mode"; keep any review hook of your own outside the work
+directory (the worker refuses to start otherwise: a request could
+replace it there).
 
-`worker/mac/make-app.sh` builds `myous.app` from source with the clang
-that comes with Xcode's command line tools (Objective-C, no Xcode, no
-Swift toolchain needed; a few seconds). It lives in the menu bar, shows
-whether the worker is running and what phase it is in, the pairing
-message, every request with its outcome, and offers Pause, Start/Stop
-and "Open browser" (or "Show browser" when the worker's browser is a
-Chrome on the Mac, sandboxed to the worker's folder). It also lists the agents whose myous directories are
-on this Mac and can accept a pairing code on their behalf (the contact
-then carries `added_by: owner`). Details in `worker/mac/README.md`.
+On Windows the worker's shell is PowerShell, not a Linux shell: its
+`help` reply and pairing message say so, a command PowerShell doesn't
+know comes back with a hint to send `help`, and the review's read-only
+list knows PowerShell's reading commands.
+
+## 9. Building the apps from source
+
+`worker/mac/make-app.sh` builds `myous.app` (myous for Mac) with the
+clang that comes with Xcode's command line tools (Objective-C, no Xcode,
+no Swift toolchain), and Go for the worker it carries. Details in
+[worker/mac/README.md](https://github.com/myoushq/myoushq-client/blob/main/worker/mac/README.md).
 
 `worker/desktop` is myous for Linux and Windows, the same screens over
 the same worker folder, built with Tauri (Rust, and the window in the
-system's web view): `npm ci && npx tauri build` there, on the system you
-build for. Its browser is the container's, shown through the browser
-view. Where containers can't run (Windows without WSL 2, such as a cloud
-desktop) it says so and offers direct mode instead. All three apps carry
-the Go worker for direct mode (`myous-worker`, of the app's own version),
-so it needs no Python. Without a container the app runs the worker's
-browser on the computer itself (Edge or Chrome, with a profile of its
-own) and installs Playwright into an environment of its own, which needs
-Python 3.10 or newer on the computer; the worker's `help` tells agents
-the browser's address and that Python (and that the plain `python` has
-no Playwright), reading the browser's record at each `help`, so a
-browser opened after the worker started is in the next one; and when
-the browser becomes ready the worker tells its paired agents so, with
-the same lines, once per browser. Details in `worker/desktop/README.md`.
-
-On the first launch every app checks the computer before it asks
-anything (containers, the runtime and its `compose`, the agents on it,
-whether it reaches myoushq.com) and shows the answers as a short list on
-the Set up card, then the one thing still missing: a runtime to get (the
-app installs it with winget, Homebrew, or the distribution's packages
-through pkexec where those are there, else opens its page), a runtime to
-start, the `docker` group, or compose.
+system's web view): build the worker it carries with
+`worker/build-worker.sh`, then `npm ci && npx tauri build` there, on the
+system you build for. Details in
+[worker/desktop/README.md](https://github.com/myoushq/myoushq-client/blob/main/worker/desktop/README.md).
 
 ## When something's wrong
 
-- `docker compose logs --tail 50`: the worker and browser log here.
+- `docker compose -p myous-worker logs --tail 50`: the worker and browser
+  log here. With an app, use its Show log.
 - "init failed" repeating: the container can't reach myoushq.com; check
   the network (a proxy? set `HTTPS_PROXY` in `compose.yml`'s environment).
 - No pairing code in `worker.json`: the worker already has a contact
   (`paired` > 0) and makes no new invites on its own. To pair another
-  agent: `docker compose exec worker myous invite`.
+  agent: `docker compose -p myous-worker exec worker myous invite`.
 - The browser view is blank: wait a few seconds; `browser.py` restarts
-  Chromium if it exits. Click Connect in noVNC.
+  Chromium if it exits. If it shows a Connect button, press it, or open
+  the address from section 4.
 - The user's agent says the worker doesn't answer: the worker only
   answers approved contacts; check `paired` in `worker.json`, and that
   the pause file isn't there.

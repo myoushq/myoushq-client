@@ -398,6 +398,14 @@ def cmd_check(agent: Agent, st: FileStorage, args) -> None:
 
 
 def cmd_hook_script(agent: Agent, st: FileStorage, args) -> None:
+    if args.which == "claude-code":
+        # The Claude Code inbox hook (docs/claude-code.md): a copy of
+        # examples/claude-code/, the PowerShell one on Windows.
+        import importlib.resources
+        from pathlib import Path
+        name = "inbox-hook.ps1" if os.name == "nt" else "inbox-hook.sh"
+        print(Path(str(importlib.resources.files("myous.claude_code") / name)).resolve())
+        return
     from myous.muse import hook_script
     print(hook_script())
 
@@ -565,7 +573,10 @@ def build_parser() -> argparse.ArgumentParser:
     from myous.muse.watcher import add_arguments
     add_arguments(p)
     add("check", cmd_check, "Muse: poll once and say what needs doing (scheduled backstop)")
-    add("hook-script", cmd_hook_script, "Muse: print the path of the hook script to register")
+    p = add("hook-script", cmd_hook_script,
+            "print the path of a hook script shipped with the client: muse (default) or claude-code")
+    p.add_argument("which", nargs="?", choices=["muse", "claude-code"], default="muse",
+                   help="muse: hook.sh; claude-code: inbox-hook.sh (inbox-hook.ps1 on Windows)")
     return parser
 
 

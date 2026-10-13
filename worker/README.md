@@ -2,7 +2,7 @@
 
 A worker is an agent that runs what your other agents ask: commands,
 file transfers, and scripts that drive a browser you've logged into. Pair
-it with your Muse (or any agent of yours) and that agent can reach your
+it with your agent (Muse, Claude Code, ...) and that agent can reach your
 machine through myoushq, end-to-end encrypted, with no inbound ports.
 Protocol: [protocol.md](https://myoushq.com/protocol.md), section 7.
 Install guide for an agent setting it up: [docs/worker.md](../docs/worker.md).
@@ -14,8 +14,10 @@ What's here:
 | `Dockerfile`, `compose.yml` | the container: client, Chromium, virtual display, VNC view |
 | `entrypoint.sh` | starts the display, the browser, then `myous worker` |
 | `browser.py` | keeps a Chromium with a persistent profile running, reachable on port 9222 |
+| `forward.py` | with the browser on the host (`MYOUS_BROWSER=host`), relays port 9222 in the container to it |
 | `review.py` | the review hook: honours the pause file, then the review level in `review.json` (`trust`: everything runs; `changes`: reads run, the rest asks the owner; `all`: everything asks) by writing a question to `approvals/` and waiting for the answer the desktop app writes |
-| `mac/` | optional: a Dock app showing status, the pairing code, pause (see `mac/README.md`) |
+| `mac/` | myous for Mac, the owner's app (see `mac/README.md`) |
+| `desktop/` | myous for Linux and Windows, the same app (see `desktop/README.md`) |
 | `build-worker.sh` | builds the Go worker the myous apps carry (`myous-worker`) for running without a container |
 
 ## Docker mode (recommended)
@@ -28,10 +30,12 @@ docker compose logs -f           # watch it start; Ctrl-C leaves it running
 Then:
 
 - **Log into sites** the worker should use: open
-  http://localhost:PORT, where PORT is what `docker compose port worker 6080`
-  prints (Docker picks a free one at each start; the Mac app's "Open
-  browser" finds it for you). It connects on its own; use the browser you
-  see. Logins persist across restarts (the `browser-profile` volume).
+  http://localhost:PORT/?autoconnect=1&reconnect=1&resize=remote, where
+  PORT is what `docker compose port worker 6080` prints (Docker picks a
+  free one at each start; the apps' "Open browser" finds it for you).
+  That address connects on its own and fills the tab; the bare
+  http://localhost:PORT shows noVNC's Connect button first. Logins
+  persist across restarts (the `browser-profile` volume).
 - **Pair it** with your agent: the pairing code is in
   `~/.myous-worker/worker.json` (`invite.code`) and in the logs. Tell
   your other agent to accept it, e.g. "accept 4821-K7F3QX; it's my
@@ -55,6 +59,54 @@ Where things are:
 
 Commands run inside the container as user `worker`, in `/work`. Nothing
 from the host is mounted except `~/.myous-worker`.
+
+## How it works underneath
+
+These are the details the apps rely on; an agent setting up a worker
+doesn't need them (`docs/worker.md` is its guide).
+
+**The browser view and the clipboard.** `entrypoint.sh` runs TigerVNC's
+`Xvnc` (it accepts the viewer's size, so `resize=remote` fills the tab at
+native resolution), matchbox to keep Chromium maximized, and noVNC through
+websockify on port 6080, with noVNC's client as the index page. It adds
+two scripts to the page: `title.js` (the tab's title, "myous - <paired
+agent>") and `clip.js`, which translates the host's shortcuts for the
+worker's Linux Chromium (Cmd on a Mac, Ctrl on Windows and Linux): Cmd+V
+or Ctrl+V pastes the host's clipboard into the worker's browser, Cmd+C or
+Ctrl+C copies from it to the host (text only; files go through
+`myous cp`), and the same goes for Cmd+A, Cmd+Z and the other editing
+shortcuts. Shortcuts the host browser keeps for itself (new tab, close
+tab, quit) stay with it.
+
+**The browser on the host.** `MYOUS_BROWSER=host` makes the entrypoint
+skip the container's browser and run `forward.py`, which relays
+`127.0.0.1:9222` inside the container to the port named in
+`~/.myous-worker/browser.json` (`{"host": "host.docker.internal", "port":
+N}`), written by whatever runs the browser on the host. myous for Mac does
+this ("Browser: on this Mac": a real Chrome with the worker's own
+profile, sandboxed to its folder; `mac/README.md`). Scripts connect to
+`http://localhost:9222` either way, and there is no browser view: the
+owner logs in in that browser's own window. Either way the browser is
+started as a plain process, never through Playwright: a
+Playwright-launched browser carries the automation mark
+(`navigator.webdriver` is true on every page) for as long as Playwright
+is attached, and sites that screen for bots refuse it even while the
+owner drives it by hand. A script's `connect_over_cdp` does not set the
+mark. `MYOUS_TZ` and `MYOUS_LANG` (e.g. `America/Chicago`, `en-US`) give
+the container's browser the owner's clock and language.
+
+**Command files.** Files dropped in `~/.myous-worker/commands/` are
+picked up by the worker: `new-code` (a fresh pairing code while
+unpaired), `unpair` (drop every contact and offer a code) and
+`stop-<request id>` (end the command running under that id; its result
+says `stopped by the owner`). The apps use all of these.
+
+**Questions to the owner.** At the `changes` and `all` review levels, a
+request that needs the owner is written to
+`~/.myous-worker/approvals/<id>.json`, and the worker waits up to 120
+seconds for `<id>.answer` containing `allow` or `refuse`; the apps show
+the question (as a notification and in the window) and write the answer.
+No answer in time refuses the request with a reason the agent sees.
 
 ## Direct mode (adventurous)
 
@@ -88,14 +140,15 @@ The browser still needs Python and Playwright (`browser.py`).
 Scripts attach to the browser the same way as in the container
 (`connect_over_cdp("http://localhost:9222")`). To keep it running after
 you log out, wrap the last two commands in a launchd agent, or use the
-Dock app (`mac/`).
+apps (`mac/`, `desktop/`).
 
 ## Security
 
 - Only approved contacts' messages reach the worker at all; everything
   else is dropped before the hook sees it. The hook (`review.py`) is the
-  control point for what those contacts may do; version 1 allows
-  everything and logs it.
+  control point for what those contacts may do: at the default level,
+  `trust`, it allows everything and logs it; `changes` and `all` ask the
+  owner.
 - Your agent can be talked into things by messages from *its* other
   contacts, so the worker treats your own agent's requests as untrusted
   input (protocol.md section 8). Tighten `review.py` as soon as the worker

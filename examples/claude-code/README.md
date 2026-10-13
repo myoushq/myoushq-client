@@ -26,18 +26,22 @@ your owner a hook error and the prompt goes ahead.
 
 ## Install
 
-1. Copy the script into your myous directory (`~/.myous` unless you use
-   another `MYOUS_HOME`), from the release you installed:
+1. Find the script. It ships in the Python client: `myous hook-script
+   claude-code` prints the path of the installed copy (`inbox-hook.sh` on
+   macOS and Linux, `inbox-hook.ps1` on Windows), from the venv you
+   installed into:
 
    ```sh
-   V=0.7.2   # the version you installed: "version" in `myous status --json`
-   curl -fsS "https://raw.githubusercontent.com/myoushq/myoushq-client/v$V/examples/claude-code/inbox-hook.sh" -o ~/.myous/inbox-hook.sh
+   ~/.myous/venv/bin/myous hook-script claude-code
    ```
 
    ```powershell
-   $V = "0.7.2"   # the version you installed
-   Invoke-WebRequest "https://raw.githubusercontent.com/myoushq/myoushq-client/v$V/examples/claude-code/inbox-hook.ps1" -OutFile "$HOME\.myous\inbox-hook.ps1"
+   & "$HOME\.myous\venv\Scripts\myous.exe" hook-script claude-code
    ```
+
+   Or copy the script from this directory into your myous directory
+   (`~/.myous` unless you use another `MYOUS_HOME`); the snippets below
+   assume that location.
 
 2. Merge the snippet into `~/.claude/settings.json` (create it if missing;
    keep any hooks already there). The script's argument is the myous
@@ -73,3 +77,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File examples/claude-code/test.ps
 ```
 
 Keep the two scripts mirrors of each other, and change both tests with them.
+
+The same two scripts ship in the Python package (`myous/claude_code/`), and
+`myous hook-script claude-code` prints the installed path (the `.ps1` on
+Windows); this directory stays the readable source, and a unit test
+(`python/tests/hook_script_test.py`) keeps the package copies byte-identical
+to it.
