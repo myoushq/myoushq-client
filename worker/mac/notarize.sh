@@ -36,7 +36,16 @@ if [ "$STATUS" != "Accepted" ]; then
 	xcrun notarytool log "$ID" --key "$KEY" --key-id "$KEY_ID" --issuer "$ISSUER" >&2 || true
 	exit 1
 fi
-# Staple the ticket so the app opens without a network check.
-xcrun stapler staple "$APP"
+# Staple the ticket so the app opens without a network check. Right
+# after acceptance the ticket is not always on Apple's servers yet, and
+# the stapler then fails with "The network connection was lost" (error
+# 68), so try for up to ten minutes before giving up.
+n=0
+until xcrun stapler staple "$APP"; do
+	n=$((n + 1))
+	[ "$n" -lt 20 ] || { echo "stapling failed $n times" >&2; exit 1; }
+	echo "stapling failed (attempt $n), retrying in 30 s" >&2
+	sleep 30
+done
 xcrun stapler validate "$APP"
 echo "notarized and stapled: $APP (submission $ID)"
