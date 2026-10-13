@@ -113,5 +113,6 @@ json.dump(cfg, open(p, "w"), indent=2, sort_keys=True)
 PY
 	echo "built $APP $VERSION (mode $MODE, repo $REPO)"
 else
-	echo "built $APP $VERSION (${SIGN:+signed as $SIGN}${SIGN:-ad-hoc signed}, app.json untouched)"
+	if [ -n "${SIGN:-}" ]; then how="signed as $SIGN"; else how="ad-hoc signed"; fi
+	echo "built $APP $VERSION ($how, app.json untouched)"
 fi
