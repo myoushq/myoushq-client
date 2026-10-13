@@ -79,12 +79,12 @@ def start_listener(st: FileStorage) -> None:
         created = processes.created_at(pid)
         if created is None or created <= info.get("heartbeat", 0) + 5:
             processes.terminate(pid)
-    log = open(st.path("listener.log"), "a")
-    processes.spawn_background(
-        [sys.executable, "-m", "myous", "listen"],
-        stdin=subprocess.DEVNULL, stdout=log, stderr=log,
-        env=dict(os.environ, MYOUS_HOME=str(st.home)),
-    )
+    with open(st.path("listener.log"), "a") as log:   # the child keeps its own handle
+        processes.spawn_background(
+            [sys.executable, "-m", "myous", "listen"],
+            stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+            env=dict(os.environ, MYOUS_HOME=str(st.home)),
+        )
     # Provisional heartbeat so a second `ensure` doesn't start another one.
     st.put("listener", {"pid": None, "heartbeat": int(time.time())})
 

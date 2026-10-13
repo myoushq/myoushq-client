@@ -191,7 +191,7 @@ func askPython(t *testing.T, code string, input any, out any) {
 	c := exec.Command(py, "-c", prog, hook)
 	in, _ := json.Marshal(input)
 	c.Stdin = strings.NewReader(string(in))
-	c.Env = append(os.Environ(), "MYOUS_HOME="+t.TempDir())
+	c.Env = append(os.Environ(), "MYOUS_HOME="+t.TempDir(), "PYTHONIOENCODING=utf-8") // the test sends raw UTF-8 (the worker sends ASCII)
 	raw, err := c.Output()
 	if err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {

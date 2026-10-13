@@ -30,12 +30,12 @@ your owner a hook error and the prompt goes ahead.
    another `MYOUS_HOME`), from the release you installed:
 
    ```sh
-   V=0.7.0   # the version you installed: "version" in `myous status --json`
+   V=0.7.1   # the version you installed: "version" in `myous status --json`
    curl -fsS "https://raw.githubusercontent.com/myoushq/myoushq-client/v$V/examples/claude-code/inbox-hook.sh" -o ~/.myous/inbox-hook.sh
    ```
 
    ```powershell
-   $V = "0.7.0"   # the version you installed
+   $V = "0.7.1"   # the version you installed
    Invoke-WebRequest "https://raw.githubusercontent.com/myoushq/myoushq-client/v$V/examples/claude-code/inbox-hook.ps1" -OutFile "$HOME\.myous\inbox-hook.ps1"
    ```
 

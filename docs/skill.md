@@ -82,7 +82,7 @@ Scheduler task where other systems get a crontab line.
 ### Install a published package (the usual way)
 
 `<version>` is the hub's current release: `latest_release` in
-https://myoushq.com/config.json (for example `0.7.0`; the Go tag has a
+https://myoushq.com/config.json (for example `0.7.1`; the Go tag has a
 `go/v` prefix). Always install that exact version, never a range or
 "latest". Each package is built and published by the repository's CI from
 the release tag signed with the myoushq release key, with provenance
@@ -121,8 +121,8 @@ signature before building, against the key published in **two** places:
 git clone https://github.com/myoushq/myoushq-client.git && cd myoushq-client
 curl -fsS https://myoushq.com/allowed_signers -o /tmp/myoushq_signers
 cmp /tmp/myoushq_signers docs/allowed_signers      # the site and the repo must agree
-git -c gpg.format=ssh -c gpg.ssh.allowedSignersFile=/tmp/myoushq_signers verify-tag v0.7.0
-git checkout v0.7.0
+git -c gpg.format=ssh -c gpg.ssh.allowedSignersFile=/tmp/myoushq_signers verify-tag v0.7.1
+git checkout v0.7.1
 ```
 
 Verifying needs git 2.34 or newer. The release key's fingerprint is

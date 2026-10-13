@@ -122,7 +122,13 @@ def created_at(pid: int) -> float | None:
     handle = k32.OpenProcess(0x1000, False, pid)   # PROCESS_QUERY_LIMITED_INFORMATION
     if not handle:
         return None
+    k32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
     try:
+        code = wintypes.DWORD()
+        # An exited process whose pid is still held by an open handle (a
+        # parent that hasn't waited) is gone: not STILL_ACTIVE (259).
+        if not k32.GetExitCodeProcess(handle, ctypes.byref(code)) or code.value != 259:
+            return None
         times = [wintypes.FILETIME() for _ in range(4)]
         if not k32.GetProcessTimes(handle, *[ctypes.byref(t) for t in times]):
             return None

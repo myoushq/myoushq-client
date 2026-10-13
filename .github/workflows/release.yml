@@ -383,7 +383,7 @@ jobs:
           sh worker/build-worker.sh x86_64-unknown-linux-gnu worker/desktop/src-tauri/binaries "${TAG#v}"
           cd worker/desktop
           test "$(node -p 'require("./package.json").version')" = "${TAG#v}"
-          npm ci && npm test
+          npm ci && npm test && npm run build:ui   # cargo test needs the built UI, as tauri build does
           (cd src-tauri && cargo test)
           npx tauri build --bundles appimage,deb
           mkdir -p "$GITHUB_WORKSPACE/out"
@@ -414,7 +414,7 @@ jobs:
           sh worker/build-worker.sh x86_64-pc-windows-msvc worker/desktop/src-tauri/binaries "${TAG#v}"
           cd worker/desktop
           test "$(node -p 'require("./package.json").version')" = "${TAG#v}"
-          npm ci && npm test
+          npm ci && npm test && npm run build:ui   # cargo test needs the built UI, as tauri build does
           (cd src-tauri && cargo test)
           npx tauri build --bundles nsis
           mkdir -p "$GITHUB_WORKSPACE/out"

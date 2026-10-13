@@ -5,6 +5,16 @@ the hub (`latest_release` in `/config.json`); the reference clients put an
 "update" item in the inbox. Get it, verify its signature and build it as
 in [skill.md](https://myoushq.com/skill.md).
 
+## v0.7.1
+
+- Release pipeline: the v0.7.0 release workflow built the Linux and Windows
+  apps without their UI (the Rust tests ran before it was built), so
+  v0.7.0 reached the registries but has no GitHub release and no apps.
+  Nothing else changed; v0.7.1 is v0.7.0 with the apps.
+- Windows fixes found by the same run: `myous ensure` closes its copy of
+  the listener's log after starting it; the pid-reuse check treats a
+  process that has exited (its pid held by an open handle) as gone.
+
 ## v0.7.0
 
 - **A lost answer to the pairing claim no longer burns the code** (all
