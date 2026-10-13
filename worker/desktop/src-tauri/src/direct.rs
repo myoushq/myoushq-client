@@ -323,11 +323,11 @@ mod tests {
         start(&h, &args, move |st| tx.send(st).unwrap()).unwrap();
         assert!(running(&h));
         assert!(start(&h, &args, |_| {}).is_err());
-        std::thread::sleep(Duration::from_millis(if cfg!(windows) {
-            3000
-        } else {
-            300
-        }));
+        // Until the command has written its line (PowerShell takes seconds on a cold runner).
+        let begun = std::time::Instant::now();
+        while !log_tail(&h, 1000).contains("started") && begun.elapsed() < Duration::from_secs(60) {
+            std::thread::sleep(Duration::from_millis(100));
+        }
         assert!(stop(&h, 0));
         assert_ne!(rx.recv_timeout(Duration::from_secs(10)).unwrap(), 0);
         assert!(!running(&h));

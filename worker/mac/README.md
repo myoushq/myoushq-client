@@ -213,9 +213,9 @@ The release workflow builds the app on a macOS runner from the signed tag
 and runs, in this order:
 
 ```sh
-worker/mac/make-app.sh --no-config --version 0.7.1 --sign "Developer ID Application: <name> (<team>)"
+worker/mac/make-app.sh --no-config --version 0.7.2 --sign "Developer ID Application: <name> (<team>)"
 worker/mac/notarize.sh worker/mac/build/myous.app --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" --key AuthKey.p8
-worker/mac/make-dmg.sh worker/mac/build/myous.app worker/mac/build/myous-v0.7.1.dmg --sign "Developer ID Application: <name> (<team>)"
+worker/mac/make-dmg.sh worker/mac/build/myous.app worker/mac/build/myous-v0.7.2.dmg --sign "Developer ID Application: <name> (<team>)"
 ```
 
 `--sign` uses the hardened runtime and a timestamp (what notarization

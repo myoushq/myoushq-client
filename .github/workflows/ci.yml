@@ -126,7 +126,7 @@ jobs:
         with: { go-version-file: go/go.mod }
       - run: sh worker/build-worker.sh x86_64-pc-windows-msvc worker/desktop/src-tauri/binaries "$(node -p 'require("./worker/desktop/package.json").version')"
         shell: bash
-      - run: cd worker/desktop && npm ci && npm test
+      - run: cd worker/desktop && npm ci && npm test && npm run build:ui
       - run: cd worker/desktop/src-tauri && cargo test -- --nocapture
       - run: cd worker/desktop && npx tauri build --bundles nsis
   mac-app:

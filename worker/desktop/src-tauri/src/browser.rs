@@ -1180,8 +1180,11 @@ mod tests {
     #[test]
     fn finds_a_browser_on_a_linux_path_but_not_a_snap() {
         let dir = temp("linux");
-        let path = std::env::join_paths([&dir]).unwrap();
-        let which = |n: &str| crate::engine::which_in(n, &path);
+        // A Linux PATH lookup, whatever the host (which_in applies the host's rules).
+        let which = |n: &str| {
+            let p = dir.join(n);
+            p.is_file().then_some(p)
+        };
         let none = |_: &str| None;
         assert_eq!(
             find_browser_with("linux", &which, &none, &|p| p.is_file(), &no_app_path),
@@ -1362,7 +1365,7 @@ mod tests {
         assert_eq!(
             steps[1],
             vec![
-                dir.join("bin/python").to_string_lossy().as_ref(),
+                env_python_in(&dir, "linux").to_string_lossy().as_ref(),
                 "-m",
                 "pip",
                 "install",

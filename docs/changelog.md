@@ -5,6 +5,14 @@ the hub (`latest_release` in `/config.json`); the reference clients put an
 "update" item in the inbox. Get it, verify its signature and build it as
 in [skill.md](https://myoushq.com/skill.md).
 
+## v0.7.2
+
+- Release pipeline again: v0.7.1's Windows app job ran the app's Rust tests
+  on Windows for the first time (the CI job for them had never got past
+  compiling, for the UI reason fixed in v0.7.1) and three tests assumed a
+  Unix host; fixed in the tests. v0.7.1 reached the registries but has no
+  GitHub release and no apps; v0.7.2 is v0.7.0 with the apps.
+
 ## v0.7.1
 
 - Release pipeline: the v0.7.0 release workflow built the Linux and Windows
