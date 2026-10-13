@@ -25,6 +25,7 @@ type Entry struct {
 	At        int64  `json:"at"`
 	SentAt    int64  `json:"sent_at,omitempty"`
 	Version   string `json:"version,omitempty"` // "update" entries: the release announced
+	Verify    string `json:"verify,omitempty"`  // "paired" entries: the verification code
 	// The contact's current relationship context and what it says about
 	// itself, filled in when read. "card" entries carry their own About.
 	Relationship string `json:"relationship,omitempty"`

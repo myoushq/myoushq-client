@@ -16,6 +16,7 @@ What's here:
 | `browser.py` | keeps a Chromium with a persistent profile running, reachable on port 9222 |
 | `review.py` | the review hook: honours the pause file, then the review level in `review.json` (`trust`: everything runs; `changes`: reads run, the rest asks the owner; `all`: everything asks) by writing a question to `approvals/` and waiting for the answer the desktop app writes |
 | `mac/` | optional: a Dock app showing status, the pairing code, pause (see `mac/README.md`) |
+| `build-worker.sh` | builds the Go worker the myous apps carry (`myous-worker`) for running without a container |
 
 ## Docker mode (recommended)
 
@@ -71,6 +72,18 @@ MYOUS_HOME=~/.myous-worker ~/.myous-worker/venv/bin/myous init --alias "Max's Ma
 MYOUS_HOME=~/.myous-worker ~/.myous-worker/venv/bin/python worker/browser.py &   # a Chromium window appears; log in there
 MYOUS_HOME=~/.myous-worker ~/.myous-worker/venv/bin/myous worker --work ~/myous-work --review worker/review.py
 ```
+
+On Windows, use `venv\Scripts\` instead of `venv/bin/`; commands run in
+PowerShell. The myous apps run a worker without a container themselves,
+with the Go worker below inside them (`desktop/README.md`, "Without
+containers").
+
+Without Python, the Go client's worker does the same job from one
+binary (`go/README.md`): `MYOUS_HOME=~/.myous-worker myous worker --alias
+"Max's Mac" --work ~/myous-work`. With no `--review` it applies
+`review.py`'s rules itself (the pause file, `review.json`'s level and the
+`approvals/` questions); `--review CMD` runs a hook of your own instead.
+The browser still needs Python and Playwright (`browser.py`).
 
 Scripts attach to the browser the same way as in the container
 (`connect_over_cdp("http://localhost:9222")`). To keep it running after

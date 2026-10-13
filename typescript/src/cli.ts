@@ -6,7 +6,7 @@ import { writeFile } from "node:fs/promises";
 import { parseArgs } from "node:util";
 import { Agent, IdentityError, VERSION } from "./agent.js";
 import type { Contact } from "./contacts.js";
-import type { Pending } from "./pairing.js";
+import { pairingTrace, type Pending } from "./pairing.js";
 import { FileStorage, lastUsed, type HistoryEntry } from "./storage.js";
 
 const USAGE = `usage: myous <command> [options]
@@ -93,7 +93,16 @@ async function main(): Promise<void> {
     }
     case "accept": {
       if (!args[0]) fail("give the pairing link or code");
-      const r = await agent.accept(args[0], Number(opts.wait ?? 60), { relationship: opts.relationship, sharing: opts.sharing, added_by: opts["added-by"] });
+      const started = Math.floor(Date.now() / 1000);
+      let r: Pending;
+      try {
+        r = await agent.accept(args[0], Number(opts.wait ?? 60), { relationship: opts.relationship, sharing: opts.sharing, added_by: opts["added-by"] });
+      } catch (e) {
+        const trace = await traceText(agent, started);
+        if (trace) fail(`error: ${(e as Error)?.message ?? e}\n${trace}`);
+        throw e;
+      }
+      if (r.stage === "failed") fail(`pairing failed: ${r.error}\n${await traceText(agent, started)}`.trimEnd());
       report(r);
       if (r.stage === "done" && (await agent.card())) await syncCards(agent); // the new contact gets our card now
       break;
@@ -227,10 +236,22 @@ async function syncCards(agent: Agent): Promise<Contact[]> {
 
 /** What a pairing in progress is waiting for. */
 function describePending(p: Pending): string {
-  const waiting = p.stage !== "wait_pake" ? "waiting for the other agent's details"
+  const waiting = p.stage === "posting" ? "sending this agent's half of the handshake (the next poll tries again)"
+    : p.stage !== "wait_pake" ? "waiting for the other agent's details"
     : p.role === "a" ? "waiting for the other agent to join" : "waiting for the inviting agent to answer";
   const left = Math.max(0, Math.floor((p.expires_at - Date.now() / 1000) / 60));
   return `${p.nameplate}: ${waiting}, expires in ${left} min`;
+}
+
+/** The steps of a pairing that failed since `since`, oldest first: what this client saw, since the hub logs nothing. */
+async function traceText(agent: Agent, since: number): Promise<string> {
+  const t = await pairingTrace(agent.st, since);
+  if (!t) return "";
+  const clock = (at: number) => new Date(at * 1000).toTimeString().slice(0, 8);
+  const lines = t.trace.slice(-10).map((s) => `  ${clock(s.at)} ${s.step}${s.host ? ` ${s.host}` : ""}`
+    + (s.claimed_at ? `: resumed the claim the hub gave at ${clock(s.claimed_at)}` : "")
+    + (s.error ? `: ${s.error}` : ""));
+  return [`what happened (pairing ${t.nameplate}, oldest first):`, ...lines].join("\n");
 }
 
 function report(r: Pending): void {

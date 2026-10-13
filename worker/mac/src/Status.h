@@ -1,7 +1,7 @@
 // What the worker writes to ~/.myous-worker (worker.json, requests/*.json,
 // worker.log) and the app's own settings in app.json. The app reads files,
 // drops command files for the worker, and runs local commands; it only
-// touches the network to check for a new release.
+// touches the network to check that the hub answers and for a new release.
 #import <Foundation/Foundation.h>
 
 /// The worker rewrites worker.json every few seconds while it runs, so a
@@ -31,7 +31,7 @@ extern const NSTimeInterval kStaleAfter;
 - (NSString *)browserJSON;      // browser.json: {"host", "port", ...} for the container's forwarder
 - (NSString *)browserSeatbelt;  // browser.sb: the sandbox profile it runs under
 - (NSString *)browserLog;       // browser.log: its output
-+ (NSString *)bundledReview;    // Contents/Resources/review.py, for direct mode
++ (NSString *)bundledWorker;    // Contents/MacOS/myous-worker (the Go client), for direct mode; nil if missing
 + (NSString *)bundledCompose;   // Contents/Resources/compose.yml: the published image
 @end
 

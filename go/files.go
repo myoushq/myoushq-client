@@ -32,6 +32,10 @@ const (
 	blobAuthTTL  = 5 * time.Minute
 	fileKeyLen   = 32
 	fileNonceLen = 12
+	// maxBlob is the hub's cap per blob; AES-GCM's 16-byte tag makes the
+	// largest file that fits 16 bytes smaller.
+	maxBlob      = 64 << 20
+	maxPlaintext = maxBlob - 16
 )
 
 // EncryptedFile is a file ready to upload: the ciphertext and what the
@@ -247,7 +251,9 @@ func (b *BlobClient) do(ctx context.Context, method, endpoint, action, x string,
 		return nil, 0, err
 	}
 	defer resp.Body.Close()
-	raw, err := io.ReadAll(resp.Body)
+	// The hub (or whatever answers in its place) decides what it sends; the
+	// blob cap bounds what we hold in memory.
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxBlob+1))
 	if err != nil {
 		return nil, 0, err
 	}
@@ -259,6 +265,9 @@ func (b *BlobClient) do(ctx context.Context, method, endpoint, action, x string,
 			e.Error = http.StatusText(resp.StatusCode)
 		}
 		return nil, resp.StatusCode, &HubError{Status: resp.StatusCode, Message: e.Error}
+	}
+	if len(raw) > maxBlob {
+		return nil, resp.StatusCode, fmt.Errorf("the hub sent more than %d bytes; refusing to read on", maxBlob)
 	}
 	return raw, resp.StatusCode, nil
 }

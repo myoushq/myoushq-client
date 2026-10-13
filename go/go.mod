@@ -8,6 +8,7 @@ require (
 	filippo.io/edwards25519 v1.2.0
 	github.com/nbd-wtf/go-nostr v0.52.1
 	golang.org/x/crypto v0.57.0
+	golang.org/x/sys v0.48.0
 )
 
 require (
@@ -35,5 +36,4 @@ require (
 	golang.org/x/arch v0.15.0 // indirect
 	golang.org/x/exp v0.0.0-20250305212735-054e65f0b394 // indirect
 	golang.org/x/net v0.60.0 // indirect
-	golang.org/x/sys v0.48.0 // indirect
 )

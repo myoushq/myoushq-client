@@ -126,6 +126,17 @@ def unseal(key: bytes, peer_role: str, nameplate: str, msg: dict) -> dict:
     return payload
 
 
+def _refused(e: HubError) -> bool:
+    """The hub turned the request down for good (gone, taken, bad), as
+    opposed to "not now" (429) or a proxy that couldn't reach it (5xx)."""
+    return 400 <= e.status < 500 and e.status != 429
+
+
+def _body(msg: dict) -> str:
+    """A mailbox message as posted: base64 of its JSON."""
+    return _b64(json.dumps(msg).encode())
+
+
 def _b64(b: bytes) -> str:
     return base64.b64encode(b).decode()
 
@@ -141,6 +152,7 @@ def _unb64(s: str) -> bytes:
 
 CLAIM_ATTEMPTS = 3
 CLAIM_RETRY_DELAY = 1.0  # seconds, growing per attempt
+TRACE_LEN = 20  # steps kept per pairing
 
 
 class Pairing:
@@ -176,39 +188,81 @@ class Pairing:
         mine = self.st.get(f"pending/{nameplate}")
         if mine and mine["role"] == "b" and mine["secret"] == secret:
             # Accepted before (e.g. the connection dropped); carry on with it.
+            self.st.delete(f"claiming/{nameplate}")
             return self.advance(mine, wait=wait)
-        claim = self._claim(nameplate)
+        claiming = self.st.get(f"claiming/{nameplate}") or {}
+        trace = claiming.get("trace") or []
+        try:
+            claim = self._claim(nameplate, claiming, trace)
+        except Exception:
+            self.st.put("pairing-trace", {"nameplate": nameplate, "trace": trace})
+            raise
         message, state = _pake_start("b", format_code(nameplate, secret))
-        self._post(nameplate, claim["token"], {"t": "pake", "v": VERSION, "m": _b64(message)})
+        # Saved before it is posted ("posting"): if the answer to the post
+        # is lost, advance() posts exactly this message again, never a new one.
         p = {
             "role": "b", "nameplate": nameplate, "secret": secret, "token": claim["token"],
-            "expires_at": claim["expires_at"], "pake": _b64(state), "after": 0, "stage": "wait_pake",
+            "expires_at": claim["expires_at"], "pake": _b64(state), "after": 0, "stage": "posting",
+            "message": _body({"t": "pake", "v": VERSION, "m": _b64(message)}), "trace": trace,
         }
         if context:
             p["context"] = context
         self._save(p)
+        self.st.delete(f"claiming/{nameplate}")
         return self.advance(p, wait=wait)
 
-    def _claim(self, nameplate: str) -> dict:
-        """Claim the invite's second side, retrying when the connection
-        drops before the hub answers (a proxy cutting the request, say).
-        A claim is handed out once: if a retry finds it taken, the first
-        attempt may have gone through without us seeing the answer, and
-        the only way on is a new code."""
+    def _claim(self, nameplate: str, saved: dict, trace: list) -> dict:
+        """Claim the invite's second side, retrying when the answer is lost
+        (the connection drops, or a proxy answers 5xx).
+
+        The claim carries a random id, saved in "claiming/<nameplate>"
+        before the first attempt: the hub answers a repeat of the same id
+        with the same token, so neither a retry here nor running the same
+        accept again (after a crash, or when every attempt failed) burns
+        the code. The record goes once the pairing is saved or the hub
+        refuses the code; it stays while the hub can't be reached. It also
+        holds the trace of the attempts."""
+        name = f"claiming/{nameplate}"
+        claim_id = saved.get("claim")
+        if not (isinstance(claim_id, str) and re.fullmatch(r"[0-9a-f]{32}", claim_id)):
+            claim_id = secrets.token_hex(16)
         dropped = None
         for attempt in range(CLAIM_ATTEMPTS):
+            self.st.put(name, {"nameplate": nameplate, "claim": claim_id, "trace": trace})
             try:
-                return self.hub.request("POST", f"/api/pair/{nameplate}/claim", {})
+                answer = self.hub.request("POST", f"/api/pair/{nameplate}/claim", {"claim": claim_id})
+                self._trace(trace, "claim", claimed_at=answer.get("claimed_at") if answer.get("repeat") else None)
+                return answer
             except HubError as e:
-                if dropped and e.status in (404, 409, 410):
-                    raise PairingError(f"{e.message} (the connection dropped on an earlier attempt, which may have "
-                                       "claimed the code; ask for a new code)") from None
-                raise PairingError(e.message) from None
+                self._trace(trace, "claim", error=e)
+                if e.status < 500:  # turned down; a 429 keeps the record for later
+                    if _refused(e):
+                        self.st.delete(name)
+                    raise PairingError(e.message) from None
+                dropped = e  # a proxy that couldn't get the hub's answer
             except OSError as e:
+                self._trace(trace, "claim", error=e)
                 dropped = e
-                if attempt + 1 < CLAIM_ATTEMPTS:
-                    time.sleep(CLAIM_RETRY_DELAY * (attempt + 1))
-        raise PairingError(f"could not reach the hub to accept the code: {dropped}") from None
+            if attempt + 1 < CLAIM_ATTEMPTS:
+                time.sleep(CLAIM_RETRY_DELAY * (attempt + 1))
+        self.st.put(name, {"nameplate": nameplate, "claim": claim_id, "trace": trace})
+        raise PairingError(f"could not reach the hub to accept the code ({dropped!r}); accepting the same "
+                           "code again carries on where this stopped") from None
+
+    def _trace(self, trace: list, step: str, error: Exception | str | None = None,
+               claimed_at: int | None = None) -> None:
+        """Note a step of the handshake (claim, post, post (repeat), wait,
+        done, failed) in the pairing's own record, for the owner to read
+        when it fails. It stays on this machine."""
+        entry = {"at": int(time.time()), "step": step}
+        if step in ("claim", "post", "post (repeat)", "wait"):
+            entry["host"] = urllib.parse.urlparse(self.hub.url).netloc
+        if error is not None:
+            entry["error"] = error if isinstance(error, str) else str(error) if isinstance(error, HubError) else repr(error)
+        if claimed_at is not None:
+            entry["claimed_at"] = claimed_at
+        trace.append(entry)
+        del trace[:-TRACE_LEN]
 
     def advance_all(self) -> list[dict]:
         """Move every pending pairing forward without waiting. Returns the
@@ -242,6 +296,27 @@ class Pairing:
         while True:
             if time.time() > p["expires_at"]:
                 return self._fail(p, "pairing invite expired")
+            if p["stage"] == "posting":
+                # Our PAKE message, saved before the first try; the hub takes
+                # a repeat of a side's last message without appending it.
+                try:
+                    answer = self.hub.request("POST", f"/api/pair/{p['nameplate']}/messages",
+                                              {"body": p["message"]}, token=p["token"]) or {}
+                except (HubError, OSError) as e:
+                    self._trace(p.setdefault("trace", []), "post", error=e)
+                    if isinstance(e, HubError) and e.status in (403, 404):
+                        return self._fail(p, "pairing invite expired or was closed")
+                    if isinstance(e, HubError) and e.status < 500:
+                        return self._fail(p, e.message)
+                    self._save(p)  # unreachable: post it again next time
+                    if time.time() + 2 >= deadline:
+                        return p
+                    time.sleep(2)
+                    continue
+                self._trace(p.setdefault("trace", []), "post (repeat)" if answer.get("repeat") else "post")
+                del p["message"]
+                p["stage"] = "wait_pake"
+                self._save(p)
             try:
                 got = self.hub.request(
                     "GET", f"/api/pair/{p['nameplate']}/messages?after={p['after']}"
@@ -251,9 +326,10 @@ class Pairing:
                 if e.status in (403, 404):
                     return self._fail(p, "pairing invite expired or was closed")
                 raise
-            except OSError:
+            except OSError as e:
                 # Network trouble (proxies drop long polls): retry while there's
                 # time, else leave it pending for the next poll.
+                self._trace(p.setdefault("trace", []), "wait", error=e)
                 if time.time() + 2 >= deadline:
                     return p
                 time.sleep(2)
@@ -293,6 +369,7 @@ class Pairing:
                 # They learned our alias from the payload; a card follows if we have one.
                 contacts.peer_knows(self.st, payload["pubkey"], self.alias, "")
                 p.update(stage="done", contact=contact, verify=verify_code(key))
+                self._trace(p.setdefault("trace", []), "done")
                 self.st.delete(f"pending/{p['nameplate']}")
                 text = f"paired with {contact['alias']} (verification code {p['verify']})"
                 if not contact.get("relationship"):
@@ -306,6 +383,8 @@ class Pairing:
             raise PairingError("unexpected message from the other side")
 
     def _fail(self, p: dict, error: str) -> dict:
+        self._trace(p.setdefault("trace", []), "failed", error=error)
+        self.st.put("pairing-trace", {"nameplate": p["nameplate"], "trace": p["trace"]})
         self.st.delete(f"pending/{p['nameplate']}")
         try:
             self.hub.request("DELETE", f"/api/pair/{p['nameplate']}", token=p["token"])
@@ -321,5 +400,4 @@ class Pairing:
         self.st.put(f"pending/{p['nameplate']}", p)
 
     def _post(self, nameplate: str, token: str, msg: dict) -> None:
-        body = _b64(json.dumps(msg).encode())
-        self.hub.request("POST", f"/api/pair/{nameplate}/messages", {"body": body}, token=token)
+        self.hub.request("POST", f"/api/pair/{nameplate}/messages", {"body": _body(msg)}, token=token)

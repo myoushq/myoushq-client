@@ -55,7 +55,10 @@ NSDictionary *dict(id v) { return [v isKindOfClass:[NSDictionary class]] ? v : n
 - (NSString *)browserJSON { return [self.home stringByAppendingPathComponent:@"browser.json"]; }
 - (NSString *)browserSeatbelt { return [self.home stringByAppendingPathComponent:@"browser.sb"]; }
 - (NSString *)browserLog { return [self.home stringByAppendingPathComponent:@"browser.log"]; }
-+ (NSString *)bundledReview { return [[NSBundle mainBundle] pathForResource:@"review" ofType:@"py"]; }
++ (NSString *)bundledWorker {
+    NSString *p = [[[NSBundle mainBundle] executablePath].stringByDeletingLastPathComponent stringByAppendingPathComponent:@"myous-worker"];
+    return [[NSFileManager defaultManager] isExecutableFileAtPath:p] ? p : nil;
+}
 + (NSString *)bundledCompose { return [[NSBundle mainBundle] pathForResource:@"compose" ofType:@"yml"]; }
 @end
 

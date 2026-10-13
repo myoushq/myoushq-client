@@ -45,6 +45,12 @@ const usage = `usage: myous <command> [flags]
   poll [--json] [--quiet]         advance pairings and fetch waiting messages, once
   listen                          stay connected and receive messages live
   status [--json]
+  worker [--alias NAME] [--description TEXT] [--work DIR] [--review CMD] [--pause-file PATH]
+         [--allow-absolute] [--note TEXT]... [--hub URL]
+                                  be a worker: run commands and move files for paired contacts
+                                  (--alias is needed the first time; --work defaults to ./work
+                                  or $MYOUS_WORK; without --review, worker/review.py's rules
+                                  apply; --note adds a line to the help text, repeatable)
 `
 
 func main() {
@@ -55,6 +61,9 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	if err := run(ctx, os.Args[1], os.Args[2:]); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return // the flags were printed
+		}
 		var ie *myous.IdentityError
 		if errors.As(err, &ie) {
 			fmt.Fprintln(os.Stderr, ie.Msg)
@@ -83,10 +92,23 @@ func run(ctx context.Context, cmd string, args []string) error {
 	addedBy := fs.String("added-by", "", "who made this pairing, when not the agent itself (owner)")
 	rename := fs.Bool("rename", false, "rename this agent (init only)")
 	clear := fs.Bool("clear", false, "card: remove the description")
+	description := fs.String("description", "", "worker: what this worker is, in the owner's words: its card, sent to the agents paired with it")
+	defaultWork := os.Getenv("MYOUS_WORK")
+	if defaultWork == "" {
+		defaultWork = "work"
+	}
+	work := fs.String("work", defaultWork, "worker: work directory; $MYOUS_WORK, when set, is the default")
+	review := fs.String("review", "", "worker: review hook: a command that reads the request as JSON and exits 0 to allow")
+	pauseFile := fs.String("pause-file", "", "worker: refuse requests while this file exists (default $MYOUS_HOME/worker.paused)")
+	allowAbsolute := fs.Bool("allow-absolute", false, "worker: allow absolute paths in cp requests")
+	var notes noteList
+	fs.Var(&notes, "note", "worker: a line to add to the worker's help text (repeatable)")
 	pos, err := parseInterleaved(fs, args)
 	if err != nil {
 		return err
 	}
+	set := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
 
 	st, err := myous.NewFileStorage("")
 	if err != nil {
@@ -169,10 +191,14 @@ func run(ctx context.Context, cmd string, args []string) error {
 				return fmt.Errorf("--wait wants seconds: %w", err)
 			}
 		}
+		started := time.Now().Unix()
 		p, err := agent.Accept(ctx, pos[0], time.Duration(wait*float64(time.Second)),
 			myous.ContactContext{Relationship: *relationship, Sharing: *sharing, AddedBy: *addedBy})
+		if err == nil && p.Stage == "failed" {
+			err = report(p)
+		}
 		if err != nil {
-			return err
+			return withTrace(agent, started, err)
 		}
 		if !p.Finished() {
 			fmt.Println("the other agent hasn't answered yet; it finishes the next time this agent polls or listens (result in `myous inbox`)")
@@ -416,12 +442,62 @@ func run(ctx context.Context, cmd string, args []string) error {
 			fmt.Printf("%-17s %v\n", k, info[k])
 		}
 
+	case "worker":
+		return runWorker(ctx, st, agent, *alias, *description, set["description"], myous.WorkerOptions{
+			Work: *work, Review: *review, PauseFile: *pauseFile, AllowAbsolute: *allowAbsolute, Notes: notes})
+
 	default:
 		fmt.Print(usage)
 		return fmt.Errorf("unknown command %q", cmd)
 	}
 	return nil
 }
+
+// runWorker is `myous worker`: register as a worker if needed, then serve
+// requests until stopped.
+func runWorker(ctx context.Context, st *myous.FileStorage, agent *myous.Agent, alias, description string,
+	describe bool, opts myous.WorkerOptions) error {
+	settings := map[string]any{}
+	if _, err := st.Get("settings", &settings); err != nil {
+		return err
+	}
+	name := alias
+	if name == "" {
+		name, _ = settings["alias"].(string)
+	}
+	if !agent.HasIdentity() {
+		if name == "" {
+			return errors.New("give this worker a name the first time: myous worker --alias NAME")
+		}
+		if err := agent.CreateIdentity(); err != nil {
+			return err
+		}
+	}
+	if about, _ := settings["about"].(string); !agent.IsRegistered() || about != myous.WorkerAbout || alias != "" {
+		fmt.Printf("registering with %s...\n", agent.Hub.URL)
+		if err := agent.RegisterAbout(ctx, name, myous.WorkerAbout); err != nil {
+			return err
+		}
+	}
+	npub, _ := agent.Npub()
+	fmt.Printf("worker %s (%s), work directory %s\n", agent.Alias(), npub, opts.Work)
+	if describe {
+		if _, err := agent.SetCard(description); err != nil { // reaches paired agents at the first sync
+			return err
+		}
+	}
+	w, err := myous.NewWorker(agent, st, opts)
+	if err != nil {
+		return err
+	}
+	return w.Run(ctx)
+}
+
+// noteList collects a repeatable flag.
+type noteList []string
+
+func (n *noteList) String() string     { return strings.Join(*n, "\n") }
+func (n *noteList) Set(v string) error { *n = append(*n, v); return nil }
 
 // parseInterleaved lets flags come after positional arguments
 // (`accept CODE --wait 3`), like the Python CLI.
@@ -476,6 +552,31 @@ func report(p *myous.Pending) error {
 	return nil
 }
 
+// withTrace adds the steps of a pairing that failed since started to err,
+// oldest first: what this client saw, since the hub logs nothing.
+func withTrace(agent *myous.Agent, started int64, err error) error {
+	nameplate, steps := agent.PairingTrace(started)
+	if len(steps) == 0 {
+		return err
+	}
+	clock := func(at int64) string { return time.Unix(at, 0).Format("15:04:05") }
+	text := fmt.Sprintf("what happened (pairing %s, oldest first):", nameplate)
+	for _, s := range steps[max(0, len(steps)-10):] {
+		line := "  " + clock(s.At) + " " + s.Step
+		if s.Host != "" {
+			line += " " + s.Host
+		}
+		if s.ClaimedAt != 0 {
+			line += ": resumed the claim the hub gave at " + clock(s.ClaimedAt)
+		}
+		if s.Error != "" {
+			line += ": " + s.Error
+		}
+		text += "\n" + line
+	}
+	return fmt.Errorf("%w\n%s", err, text)
+}
+
 func printEntries(entries []myous.Entry) {
 	for _, e := range entries {
 		at := e.At
@@ -519,7 +620,9 @@ func printJSON(v any) error {
 // describePending says what a pairing in progress is waiting for.
 func describePending(p *myous.Pending) string {
 	waiting := "waiting for the other agent's details"
-	if p.Stage == "wait_pake" && p.Role == "a" {
+	if p.Stage == "posting" {
+		waiting = "sending this agent's half of the handshake (the next poll tries again)"
+	} else if p.Stage == "wait_pake" && p.Role == "a" {
 		waiting = "waiting for the other agent to join"
 	} else if p.Stage == "wait_pake" {
 		waiting = "waiting for the inviting agent to answer"

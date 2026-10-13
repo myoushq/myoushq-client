@@ -220,9 +220,12 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual([e["text"] for e in asyncio.run(agent.poll())], ["back at you"])
 
     def start_worker(self, agent: str, work: Path) -> subprocess.Popen:
+        # MYOUS_WORKER runs another client's worker on the same data
+        # directory instead (the Go one: MYOUS_WORKER=path/to/go/myous).
         env = dict(os.environ, MYOUS_HOME=str(self.tmp / agent), PYTHONUNBUFFERED="1")
+        cmd = [os.environ["MYOUS_WORKER"]] if os.environ.get("MYOUS_WORKER") else [sys.executable, "-m", "myous"]
         with open(self.tmp / f"{agent}-worker.log", "w") as log:
-            p = subprocess.Popen([sys.executable, "-m", "myous", "worker", "--work", str(work), "--alias", agent],
+            p = subprocess.Popen(cmd + ["worker", "--work", str(work), "--alias", agent],
                                  env=env, stdout=log, stderr=subprocess.STDOUT)
         status = self.tmp / agent / "worker.json"
         for _ in range(100):

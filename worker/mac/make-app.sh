@@ -1,10 +1,11 @@
 #!/bin/sh
-# Build "myous.app" (myous for Mac) from source with the Command Line Tools only.
+# Build "myous.app" (myous for Mac) from source with the Command Line Tools
+# and Go (for the worker it carries; the toolchain go/go.mod pins).
 #   worker/mac/make-app.sh [--direct] [--version X.Y.Z] [--sign "Developer ID Application: ..."] [--no-config]
 # Result: worker/mac/build/myous.app (drag it to /Applications if you
 # like). By default it records this checkout's path in
 # ~/.myous-worker/app.json so Start runs `docker compose` there; --direct
-# sets mode "direct" (the worker runs on this Mac, no Docker); --no-config
+# sets mode "direct" (the app's own worker runs on this Mac, no Docker); --no-config
 # leaves app.json alone (release builds: the app then uses its built-in
 # image). --version sets the app version, which names the image tag
 # (default: the version in python/pyproject.toml). --sign signs with a
@@ -33,10 +34,11 @@ REPO=$(cd ../.. && pwd)
 # without SwiftPM, whose toolchain can be out of step with the SDK.
 mkdir -p build
 BIN=build/myous-bin
-# Universal binary (Apple Silicon and Intel), for macOS 12 and newer: the
+# Universal binary (Apple Silicon and Intel), for macOS 13 and newer (the
+# Go worker inside needs 13; raised from 12 on 2026-10-12): the
 # runners that build releases are Apple Silicon, and the download must
 # run on older Intel Macs too.
-clang -fobjc-arc -O2 -Wall -Wunguarded-availability -arch arm64 -arch x86_64 -mmacosx-version-min=12.0 \
+clang -fobjc-arc -O2 -Wall -Wunguarded-availability -arch arm64 -arch x86_64 -mmacosx-version-min=13.0 \
 	-framework Cocoa -framework CoreImage -framework UserNotifications -framework ServiceManagement src/*.m -o "$BIN"
 
 APP="build/myous.app"
@@ -52,8 +54,11 @@ iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/myous.icns"
 
 # The published image, pinned to this version, for the no-checkout mode.
 sed "s/@VERSION@/$VERSION/" compose-image.yml > "$APP/Contents/Resources/compose.yml"
-# The review hook, for direct mode (the container has its own copy).
-cp ../review.py "$APP/Contents/Resources/review.py"
+# The worker for direct mode: the Go client, both architectures, the same
+# release as the app (build-worker.sh checks). Not "myous", which is the
+# app; the review rules are built into it.
+../build-worker.sh universal-apple-darwin build "$VERSION"
+cp build/myous-worker-universal-apple-darwin "$APP/Contents/MacOS/myous-worker"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -68,7 +73,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 	<key>CFBundleExecutable</key><string>myous</string>
 	<key>CFBundleIconFile</key><string>myous</string>
 	<key>CFBundlePackageType</key><string>APPL</string>
-	<key>LSMinimumSystemVersion</key><string>12.0</string>
+	<key>LSMinimumSystemVersion</key><string>13.0</string>
 	<key>LSUIElement</key><true/>
 	<key>NSHighResolutionCapable</key><true/>
 	<key>NSPrincipalClass</key><string>NSApplication</string>
@@ -79,11 +84,15 @@ PLIST
 
 if [ -n "$SIGN" ]; then
 	# Developer ID: hardened runtime and a timestamp are what notarization
-	# wants. The app only spawns /bin/sh and docker, so no entitlements.
+	# wants, for the worker inside too (signed first: the app's signature
+	# seals it). The app only spawns /bin/sh, docker and the worker, so no
+	# entitlements.
+	codesign --force --options runtime --timestamp --identifier com.myoushq.desktop.worker --sign "$SIGN" "$APP/Contents/MacOS/myous-worker"
 	codesign --force --options runtime --timestamp --sign "$SIGN" "$APP"
 else
 	# Ad-hoc signature: enough for a locally built app. Gatekeeper may
 	# still ask the first time (right-click, Open).
+	codesign --force --identifier com.myoushq.desktop.worker --sign - "$APP/Contents/MacOS/myous-worker"
 	codesign --force --sign - "$APP"
 fi
 codesign --verify --deep --strict --verbose=1 "$APP"

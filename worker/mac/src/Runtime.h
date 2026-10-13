@@ -8,8 +8,19 @@ typedef void (^LineBlock)(NSString *line);
 typedef void (^DoneBlock)(int status);
 
 @interface Runtime : NSObject
-/// "ok", "stopped" (installed, daemon not running) or "missing". Synchronous.
-+ (NSString *)probe;
+/// The runtime's state for the Set up card: @{@"state": "ok", "missing",
+/// "stopped" (installed, its engine not up), "permission", "nocompose" (no
+/// `compose`), "error" (the engine's own error, in @"detail") or "unknown"
+/// (no answer within 5 s)}. Synchronous: call it off the main thread.
++ (NSDictionary *)check;
+/// The verdict from `version`'s exit status and output (124: a timeout) and,
+/// when it answered, `compose version`'s (nil before): @{state, detail}.
++ (NSDictionary *)judgeVersion:(int)status output:(NSString *)output compose:(NSNumber *)composeStatus output:(NSString *)composeOutput;
+/// Run a command in the login shell with a timeout: its exit status (124 on
+/// timeout, 127 if it couldn't start) and combined output. Synchronous.
++ (int)run:(NSString *)command timeout:(double)seconds output:(NSString **)output;
+/// Homebrew's `brew`, if it is installed (nil otherwise).
++ (NSString *)brew;
 /// "Docker Desktop", "OrbStack", "Colima", "Rancher Desktop" or "Docker", by
 /// what is installed and the current docker context. Synchronous.
 + (NSString *)name;

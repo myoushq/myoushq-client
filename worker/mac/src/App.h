@@ -2,7 +2,8 @@
 // on this Mac, start, stop and pause it, hand its pairing code to an
 // agent, and list what the agent runs. Everything is local: files in
 // ~/.myous-worker and `docker compose` (or `myous worker` in direct mode)
-// in a child process; the only network use is the daily release check.
+// in a child process; the network is used only to check that the hub
+// answers (while setting up) and for the daily release check.
 #import <AppKit/AppKit.h>
 @interface AppDelegate : NSObject <NSApplicationDelegate>
 /// `--snapshot PATH`: render the window to a PNG and exit (for checking the

@@ -163,6 +163,18 @@ pub fn unseal(key: &[u8], peer_role: &str, nameplate: &str, msg: &Value) -> Resu
 // "pending/<nameplate>" document and finished by whichever call gets there
 // first: accept (which waits a while), or any later advance().
 
+/// Claiming retries when the answer is lost, after CLAIM_RETRY_DELAY, then
+/// twice that.
+const CLAIM_ATTEMPTS: u32 = 3;
+const CLAIM_RETRY_DELAY: Duration = if cfg!(test) { Duration::from_millis(1) } else { Duration::from_secs(1) };
+
+/// Whether a hub status turned the request down for good (gone, taken,
+/// bad), as opposed to "not now" (429) or a proxy that couldn't reach the
+/// hub (5xx).
+fn refused(status: u16) -> bool {
+    (400..500).contains(&status) && status != 429
+}
+
 /// A pairing in progress, as stored in "pending/<nameplate>".
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Pending {
@@ -175,14 +187,48 @@ pub struct Pending {
     pub pake_seed: String,
     /// How many of the peer's mailbox messages we've handled.
     pub after: u64,
+    /// "posting" (our PAKE message saved, not yet confirmed posted), then
     /// "wait_pake", then "wait_payload".
     pub stage: String,
+    /// Our PAKE message (the base64 body) while stage is "posting".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
     /// Shared key, base64, once the PAKE is done.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
     /// Relationship context to record on the contact once paired.
     #[serde(default)]
     pub context: crate::contacts::ContactContext,
+    /// The handshake so far, for the owner to read when it fails.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trace: Vec<TraceStep>,
+}
+
+/// One step of a pairing's handshake, kept in the pairing's own record (and
+/// in "pairing-trace" when it fails) so the owner can see what happened; the
+/// hub logs nothing. It never leaves this machine.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TraceStep {
+    pub at: u64,
+    /// claim, post, post (repeat), wait, done, failed
+    pub step: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub host: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub error: String,
+    /// A resumed claim: when the hub gave it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claimed_at: Option<u64>,
+}
+
+const TRACE_LEN: usize = 20; // steps kept per pairing
+
+/// The last failed pairing's nameplate and steps, oldest first, if it failed
+/// at or after `since` (Unix seconds).
+pub fn pairing_trace(st: &dyn Storage, since: u64) -> Option<(String, Vec<TraceStep>)> {
+    let t = st.get("pairing-trace").ok()??;
+    let steps: Vec<TraceStep> = serde_json::from_value(t["trace"].clone()).ok()?;
+    (steps.last()?.at >= since).then(|| (t["nameplate"].as_str().unwrap_or_default().to_string(), steps))
 }
 
 // One result per pairing, never stored in bulk: the Contact's size is fine here.
@@ -234,7 +280,8 @@ impl<'a> Pairing<'a> {
         let nameplate = box_["nameplate"].as_str().unwrap_or_default().to_string();
         let token = box_["token"].as_str().unwrap_or_default().to_string();
         let secret = make_secret();
-        let p = self.begin(Role::A, nameplate, secret, token, box_["expires_at"].as_u64().unwrap_or(0), context).await?;
+        let mut p = self.begin(Role::A, nameplate, secret, token, box_["expires_at"].as_u64().unwrap_or(0), context, vec![])?;
+        self.post_pake(&mut p).await?;
         let link_base = self.hub.config(false).await?.pair_link_base;
         Ok(Invite {
             code: format_code(&p.nameplate, &p.secret),
@@ -252,34 +299,121 @@ impl<'a> Pairing<'a> {
             let mine: Pending = serde_json::from_value(mine)?;
             if mine.role == "b" && mine.secret == secret {
                 // Accepted before (e.g. the connection dropped); carry on with it.
+                self.st.delete(&format!("claiming/{nameplate}"))?;
                 return self.advance(&nameplate, wait, true).await;
             }
         }
-        let claim = match self.hub.request("POST", &format!("/api/pair/{nameplate}/claim"), Some(json!({})), None).await {
+        let claiming = format!("claiming/{nameplate}");
+        let saved = self.st.get(&claiming)?.unwrap_or(Value::Null);
+        let mut trace: Vec<TraceStep> = serde_json::from_value(saved["trace"].clone()).unwrap_or_default();
+        let claim = match self.claim(&nameplate, saved["claim"].as_str(), &mut trace).await {
             Ok(c) => c,
-            Err(e) => match e.downcast::<HubError>() {
-                Ok(h) => return fail(&h.message),
-                Err(e) => return Err(e),
-            },
+            Err(e) => {
+                self.keep_trace(&nameplate, &trace);
+                return Err(e);
+            }
         };
         let token = claim["token"].as_str().unwrap_or_default().to_string();
-        let p = self.begin(Role::B, nameplate, secret, token, claim["expires_at"].as_u64().unwrap_or(0), context).await?;
+        let expires_at = claim["expires_at"].as_u64().unwrap_or(0);
+        let p = self.begin(Role::B, nameplate, secret, token, expires_at, context, trace)?;
+        self.st.delete(&claiming)?;
         self.advance(&p.nameplate, wait, true).await
     }
 
-    async fn begin(&self, role: Role, nameplate: String, secret: String, token: String, expires_at: u64,
-                   context: crate::contacts::ContactContext) -> Result<Pending> {
+    /// Claim the invite's second side, retrying when the answer is lost
+    /// (the connection drops, or a proxy answers 5xx).
+    ///
+    /// The claim carries a random id, saved in "claiming/<nameplate>" before
+    /// the first attempt: the hub answers a repeat of the same id with the
+    /// same token, so neither a retry here nor running the same accept again
+    /// (after a crash, or when every attempt failed) burns the code. The
+    /// record goes once the pairing is saved or the hub refuses the code; it
+    /// stays while the hub can't be reached. `saved` is that record's id, if
+    /// any; `trace` gets a step per attempt and is saved with the id.
+    async fn claim(&self, nameplate: &str, saved: Option<&str>, trace: &mut Vec<TraceStep>) -> Result<Value> {
+        let name = format!("claiming/{nameplate}");
+        let id = match saved.filter(|id| id.len() == 32 && id.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))) {
+            Some(id) => id.to_string(),
+            None => {
+                let mut b = [0u8; 16];
+                rand::rngs::OsRng.fill_bytes(&mut b);
+                hex(&b)
+            }
+        };
+        let save = |trace: &Vec<TraceStep>| self.st.put(&name, &json!({"nameplate": nameplate, "claim": id, "trace": trace}));
+        let mut lost = None;
+        for attempt in 0..CLAIM_ATTEMPTS {
+            save(trace)?;
+            let answer = self.hub.request("POST", &format!("/api/pair/{nameplate}/claim"), Some(json!({"claim": id})), None).await;
+            match &answer {
+                Ok(c) => {
+                    let claimed_at = if c["repeat"] == true { c["claimed_at"].as_u64() } else { None };
+                    self.trace(trace, "claim", None, claimed_at);
+                }
+                Err(e) => self.trace(trace, "claim", Some(format!("{e:#}")), None),
+            }
+            match answer {
+                Ok(c) => return Ok(c),
+                Err(e) => match e.downcast::<HubError>() {
+                    // Turned down; a 429 keeps the record for later.
+                    Ok(h) if h.status < 500 => {
+                        if refused(h.status) {
+                            self.st.delete(&name)?;
+                        }
+                        return fail(&h.message);
+                    }
+                    // A proxy that couldn't get the hub's answer.
+                    Ok(h) => lost = Some(anyhow::Error::from(h)),
+                    Err(e) if e.is::<reqwest::Error>() => lost = Some(e),
+                    Err(e) => return Err(e),
+                },
+            }
+            if attempt + 1 < CLAIM_ATTEMPTS {
+                tokio::time::sleep(CLAIM_RETRY_DELAY * (attempt + 1)).await;
+            }
+        }
+        save(trace)?;
+        Err(lost.expect("CLAIM_ATTEMPTS > 0")
+            .context("could not reach the hub to accept the code (accepting the same code again carries on where this stopped)"))
+    }
+
+    /// Make our PAKE message and save it with the pending state, stage
+    /// "posting", before anything is posted: if the answer to the post is
+    /// lost, post_pake posts exactly this message again, never a new one.
+    #[allow(clippy::too_many_arguments)]
+    fn begin(&self, role: Role, nameplate: String, secret: String, token: String, expires_at: u64,
+             context: crate::contacts::ContactContext, trace: Vec<TraceStep>) -> Result<Pending> {
         let mut seed = [0u8; 32];
         rand::rngs::OsRng.fill_bytes(&mut seed);
         let message = myous_pake::start(role, &format_code(&nameplate, &secret), seed);
-        self.post(&nameplate, &token, &json!({"t": "pake", "v": VERSION, "m": B64.encode(message)})).await?;
+        let body = B64.encode(serde_json::to_vec(&json!({"t": "pake", "v": VERSION, "m": B64.encode(message)}))?);
         let p = Pending {
             role: if role == Role::A { "a" } else { "b" }.into(),
             nameplate, secret, token, expires_at,
-            pake_seed: hex(&seed), after: 0, stage: "wait_pake".into(), key: None, context,
+            pake_seed: hex(&seed), after: 0, stage: "posting".into(), key: None, context, trace,
+            message: Some(body),
         };
         self.save(&p)?;
         Ok(p)
+    }
+
+    /// Post the saved PAKE message of a "posting" pairing and move it on to
+    /// wait_pake. The hub takes a repeat of a side's last message without
+    /// appending it.
+    async fn post_pake(&self, p: &mut Pending) -> Result<()> {
+        let body = p.message.clone().unwrap_or_default();
+        let posted = self.hub.request("POST", &format!("/api/pair/{}/messages", p.nameplate),
+                                      Some(json!({"body": body})), Some(&p.token)).await;
+        let step = match &posted {
+            Ok(a) if a["repeat"] == true => "post (repeat)",
+            _ => "post",
+        };
+        self.trace(&mut p.trace, step, posted.as_ref().err().map(|e| format!("{e:#}")), None);
+        if posted.is_ok() {
+            (p.stage, p.message) = ("wait_pake".into(), None);
+        }
+        self.save(p)?;
+        posted.map(|_| ())
     }
 
     /// Move every pending pairing forward without waiting. Returns the ones
@@ -307,6 +441,27 @@ impl<'a> Pairing<'a> {
             if now() > p.expires_at {
                 return self.fail(&p, "pairing invite expired").await;
             }
+            if p.stage == "posting" {
+                if let Err(e) = self.post_pake(&mut p).await {
+                    match e.downcast_ref::<HubError>() {
+                        Some(h) if h.status == 403 || h.status == 404 => {
+                            return self.fail(&p, "pairing invite expired or was closed").await;
+                        }
+                        Some(h) if h.status < 500 => {
+                            let message = h.message.clone();
+                            return self.fail(&p, &message).await;
+                        }
+                        None if !e.is::<reqwest::Error>() => return Err(e),
+                        _ => {}
+                    }
+                    // Unreachable: post it again while there's time, else next poll.
+                    if deadline.saturating_duration_since(Instant::now()) <= Duration::from_secs(2) {
+                        return Ok(Outcome::Waiting);
+                    }
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    continue;
+                }
+            }
             let wait_secs = deadline.saturating_duration_since(Instant::now()).as_secs().min(25);
             let endpoint = format!("/api/pair/{}/messages?after={}&wait={wait_secs}", p.nameplate, p.after);
             let got = match self.hub.request("GET", &endpoint, None, Some(&p.token)).await {
@@ -318,6 +473,7 @@ impl<'a> Pairing<'a> {
                     None if e.is::<reqwest::Error>() => {
                         // Network trouble (proxies drop long polls): retry while
                         // there's time, else leave it pending for the next poll.
+                        self.trace(&mut p.trace, "wait", Some(format!("{e:#}")), None);
                         if deadline.saturating_duration_since(Instant::now()) <= Duration::from_secs(2) {
                             self.save(&p)?;
                             return Ok(Outcome::Waiting);
@@ -398,6 +554,9 @@ impl<'a> Pairing<'a> {
     }
 
     async fn fail(&self, p: &Pending, error: &str) -> Result<Outcome> {
+        let mut trace = p.trace.clone();
+        self.trace(&mut trace, "failed", Some(error.into()), None);
+        self.keep_trace(&p.nameplate, &trace);
         self.st.delete(&format!("pending/{}", p.nameplate))?;
         let _ = self.hub.request("DELETE", &format!("/api/pair/{}", p.nameplate), None, Some(&p.token)).await;
         let _lock = self.st.lock("state", true)?;
@@ -405,6 +564,24 @@ impl<'a> Pairing<'a> {
             "type": "pairing_failed", "text": format!("pairing {} failed: {error}", p.nameplate),
         }))?;
         Ok(Outcome::Failed(error.into()))
+    }
+
+    /// Note a step of the handshake (see TraceStep).
+    fn trace(&self, t: &mut Vec<TraceStep>, step: &str, error: Option<String>, claimed_at: Option<u64>) {
+        let host = match step {
+            "claim" | "post" | "post (repeat)" | "wait" => url::Url::parse(&self.hub.url).ok()
+                .and_then(|u| u.host_str().map(|h| u.port().map_or(h.to_string(), |p| format!("{h}:{p}"))))
+                .unwrap_or_default(),
+            _ => String::new(),
+        };
+        t.push(TraceStep { at: now(), step: step.into(), host, error: error.unwrap_or_default(), claimed_at });
+        let excess = t.len().saturating_sub(TRACE_LEN);
+        t.drain(..excess);
+    }
+
+    /// Save a failed pairing's trace as "pairing-trace".
+    fn keep_trace(&self, nameplate: &str, trace: &[TraceStep]) {
+        let _ = self.st.put("pairing-trace", &json!({"nameplate": nameplate, "trace": trace}));
     }
 
     fn save(&self, p: &Pending) -> Result<()> {
@@ -468,5 +645,342 @@ mod tests {
         assert!(parse_code("K7F3QX", base).is_err());
         assert!(parse_code("https://evil.example/p/4821#K7F3QX", base).is_err());
         assert!(parse_code("https://myoushq.com/p/4821", base).is_err());
+    }
+
+    // --- claiming --------------------------------------------------------
+
+    use std::sync::Mutex;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    use crate::storage::FileStorage;
+
+    const NAMEPLATE: &str = "4821";
+
+    /// A fake hub with the claim rules (a repeat with the claimer's id gets
+    /// the same token; anything else after the claim gets 409) and a mailbox
+    /// that takes our messages and has none for us. It loses the first
+    /// `lose` claim answers after acting on them (closes the connection),
+    /// and answers the statuses in `fail` before acting.
+    #[derive(Default)]
+    struct ClaimHub {
+        lose: usize,
+        fail: Vec<u16>,
+        claimed_by: Option<String>,
+        claimed_at: u64,
+        claims: Vec<String>,
+        posts: usize,
+    }
+
+    /// A fake hub's answer to one request; None drops the connection.
+    trait Fake: Send + 'static {
+        fn answer(&mut self, method: &str, path: &str, body: &Value, auth: Option<&str>) -> Option<(u16, Value)>;
+    }
+
+    /// Serves `state` on a local port; returns the URL.
+    async fn serve<T: Fake>(state: Arc<Mutex<T>>) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            loop {
+                let (mut conn, _) = listener.accept().await.unwrap();
+                let (mut buf, mut chunk) = (Vec::new(), [0u8; 4096]);
+                // Read the head, then the body by Content-Length.
+                let head_end = loop {
+                    let n = conn.read(&mut chunk).await.unwrap();
+                    if n == 0 { break None; }
+                    buf.extend_from_slice(&chunk[..n]);
+                    if let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n") { break Some(i + 4); }
+                };
+                let Some(head_end) = head_end else { continue };
+                let head = String::from_utf8_lossy(&buf[..head_end]).to_string();
+                let length: usize = head.lines()
+                    .find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse().unwrap()))
+                    .unwrap_or(0);
+                while buf.len() < head_end + length {
+                    let n = conn.read(&mut chunk).await.unwrap();
+                    buf.extend_from_slice(&chunk[..n]);
+                }
+                let body: Value = serde_json::from_slice(&buf[head_end..head_end + length]).unwrap_or(Value::Null);
+                let mut words = head.split_whitespace();
+                let (method, path) = (words.next().unwrap().to_string(), words.next().unwrap().to_string());
+                let auth = head.lines().find_map(|l| l.strip_prefix("authorization: Bearer ").map(String::from));
+                let answer = {
+                    let mut h = state.lock().unwrap();
+                    h.answer(&method, &path, &body, auth.as_deref())
+                };
+                if let Some((status, json)) = answer {
+                    let text = json.to_string();
+                    let resp = format!("HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{text}", text.len());
+                    conn.write_all(resp.as_bytes()).await.unwrap();
+                }
+                // None: drop the connection without an answer.
+            }
+        });
+        url
+    }
+
+    impl Fake for ClaimHub {
+        fn answer(&mut self, method: &str, path: &str, body: &Value, auth: Option<&str>) -> Option<(u16, Value)> {
+            let mailbox = format!("/api/pair/{NAMEPLATE}");
+            let token = self.claimed_by.as_ref().map(|c| format!("tok-{c}"));
+            if method == "POST" && path == format!("{mailbox}/claim") {
+                let id = body["claim"].as_str().unwrap_or_default().to_string();
+                self.claims.push(id.clone());
+                if !self.fail.is_empty() {
+                    return Some((self.fail.remove(0), json!({"error": "refused"})));
+                }
+                let mut answer = json!({"repeat": self.claimed_by.is_some()});
+                match &self.claimed_by {
+                    None => (self.claimed_by, self.claimed_at) = (Some(id), now() - 5),
+                    Some(c) if *c != id => return Some((409, json!({"error": "invite already used, ask for a new one"}))),
+                    Some(_) => answer["claimed_at"] = json!(self.claimed_at),
+                }
+                if self.lose > 0 {
+                    self.lose -= 1;
+                    return None;
+                }
+                answer["token"] = json!(format!("tok-{}", self.claimed_by.as_ref().unwrap()));
+                answer["expires_at"] = json!(now() + 900);
+                Some((200, answer))
+            } else if method == "POST" && path == format!("{mailbox}/messages") {
+                if auth.map(String::from) != token {
+                    return Some((403, json!({"error": "bad token"})));
+                }
+                self.posts += 1;
+                Some((200, json!({"index": self.posts - 1})))
+            } else if method == "GET" && path.starts_with(&format!("{mailbox}/messages?")) {
+                Some((200, json!({"messages": [], "next": 0})))
+            } else {
+                Some((404, json!({"error": format!("unexpected {method} {path}")})))
+            }
+        }
+    }
+
+    struct ClaimFixture {
+        _dir: tempfile::TempDir,
+        st: Arc<FileStorage>,
+        state: Arc<Mutex<ClaimHub>>,
+        hub: Hub,
+        keys: Keys,
+    }
+
+    async fn claim_fixture(state: ClaimHub) -> ClaimFixture {
+        let dir = tempfile::tempdir().unwrap();
+        let st = Arc::new(FileStorage::new(Some(dir.path().to_path_buf())).unwrap());
+        let state = Arc::new(Mutex::new(state));
+        let url = serve(state.clone()).await;
+        st.put("settings", &json!({"hub": url})).unwrap();
+        st.put("hub", &json!({"url": url, "fetched_at": now(), "pair_link_base": "https://hub.test/p/"})).unwrap();
+        let hub = Hub::new(st.clone()).unwrap();
+        ClaimFixture { _dir: dir, st, state, hub, keys: Keys::generate() }
+    }
+
+    impl ClaimFixture {
+        async fn accept(&self) -> Result<Outcome> {
+            let pairing = Pairing::new(self.st.clone(), &self.hub, &self.keys, "me".into());
+            pairing.accept(&format!("{NAMEPLATE}-K7F3QX"), Duration::ZERO, Default::default()).await
+        }
+
+        fn saved_claim(&self) -> Option<String> {
+            self.st.get(&format!("claiming/{NAMEPLATE}")).unwrap().map(|v| v["claim"].as_str().unwrap().to_string())
+        }
+
+        fn claims(&self) -> Vec<String> {
+            self.state.lock().unwrap().claims.clone()
+        }
+
+        fn pending_token(&self) -> String {
+            self.st.get(&format!("pending/{NAMEPLATE}")).unwrap().unwrap()["token"].as_str().unwrap().to_string()
+        }
+    }
+
+    #[tokio::test]
+    async fn claim_lost_answer_then_retry() {
+        let f = claim_fixture(ClaimHub { lose: 1, ..Default::default() }).await;
+        assert_eq!(f.accept().await.unwrap(), Outcome::Waiting);
+        let claims = f.claims();
+        assert_eq!(claims.len(), 2);
+        assert_eq!(claims[0], claims[1]);
+        assert!(claims[0].len() == 32 && claims[0].bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()));
+        assert_eq!(f.pending_token(), format!("tok-{}", claims[0]));
+        assert_eq!(f.state.lock().unwrap().posts, 1);
+        assert_eq!(f.saved_claim(), None, "the claiming record goes once the pairing is saved");
+    }
+
+    #[tokio::test]
+    async fn claim_proxy_error_is_retried() {
+        let f = claim_fixture(ClaimHub { fail: vec![502], ..Default::default() }).await;
+        assert_eq!(f.accept().await.unwrap(), Outcome::Waiting);
+        assert_eq!(f.claims().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn claim_rerun_after_crash_reuses_id() {
+        let id = "ab".repeat(16);
+        let f = claim_fixture(ClaimHub { claimed_by: Some(id.clone()), ..Default::default() }).await;
+        // The first run saved its id and died before it saw the hub's answer.
+        f.st.put(&format!("claiming/{NAMEPLATE}"), &json!({"nameplate": NAMEPLATE, "claim": id})).unwrap();
+        assert_eq!(f.accept().await.unwrap(), Outcome::Waiting);
+        assert_eq!(f.claims(), vec![id.clone()]);
+        assert_eq!(f.pending_token(), format!("tok-{id}"));
+        assert_eq!(f.saved_claim(), None);
+    }
+
+    #[tokio::test]
+    async fn claim_unreachable_keeps_id_for_next_run() {
+        let f = claim_fixture(ClaimHub { lose: CLAIM_ATTEMPTS as usize, ..Default::default() }).await;
+        let err = f.accept().await.unwrap_err();
+        let text = format!("{err:#}");
+        assert!(text.starts_with("could not reach the hub"), "{text}");
+        assert!(err.is::<reqwest::Error>() || err.downcast_ref::<reqwest::Error>().is_some(), "the drop stays the cause: {text}");
+        assert!(err.downcast_ref::<PairingError>().is_none());
+        let claims = f.claims();
+        assert_eq!(claims.len(), CLAIM_ATTEMPTS as usize);
+        assert_eq!(f.saved_claim().as_ref(), Some(&claims[0]));
+        // The same accept again carries on with the claim the hub already gave.
+        assert_eq!(f.accept().await.unwrap(), Outcome::Waiting);
+        assert!(f.claims().iter().all(|c| *c == claims[0]));
+        assert_eq!(f.pending_token(), format!("tok-{}", claims[0]));
+        assert_eq!(f.saved_claim(), None);
+    }
+
+    #[tokio::test]
+    async fn claim_taken_by_someone_else() {
+        let f = claim_fixture(ClaimHub { claimed_by: Some("cd".repeat(16)), ..Default::default() }).await;
+        let err = f.accept().await.unwrap_err();
+        assert_eq!(err.downcast_ref::<PairingError>().map(|e| e.0.as_str()), Some("invite already used, ask for a new one"));
+        assert_eq!(f.claims().len(), 1, "a refusal is not retried");
+        assert_eq!(f.saved_claim(), None, "a refusal drops the claiming record");
+    }
+
+    #[tokio::test]
+    async fn claim_rate_limit_keeps_id() {
+        let f = claim_fixture(ClaimHub { fail: vec![429], ..Default::default() }).await;
+        assert!(f.accept().await.is_err());
+        let claims = f.claims();
+        assert_eq!(claims.len(), 1);
+        assert_eq!(f.saved_claim().as_ref(), Some(&claims[0]));
+    }
+
+    #[tokio::test]
+    async fn claim_trace_names_the_drop_and_the_resume() {
+        let f = claim_fixture(ClaimHub { lose: 1, ..Default::default() }).await;
+        assert_eq!(f.accept().await.unwrap(), Outcome::Waiting);
+        let p: Pending = serde_json::from_value(f.st.get(&format!("pending/{NAMEPLATE}")).unwrap().unwrap()).unwrap();
+        let steps: Vec<&str> = p.trace.iter().map(|s| s.step.as_str()).collect();
+        assert_eq!(steps, ["claim", "claim", "post"]);
+        let host = f.hub.url.trim_start_matches("http://");
+        assert!(!p.trace[0].error.is_empty() && p.trace[0].host == host, "the drop: {:?}", p.trace[0]);
+        assert_eq!(p.trace[1].error, "");
+        assert_eq!(p.trace[1].claimed_at, Some(f.state.lock().unwrap().claimed_at), "the resume");
+    }
+
+    #[tokio::test]
+    async fn failed_accept_keeps_the_trace() {
+        let f = claim_fixture(ClaimHub { claimed_by: Some("cd".repeat(16)), ..Default::default() }).await;
+        let started = now();
+        assert!(f.accept().await.is_err());
+        let (nameplate, steps) = pairing_trace(&*f.st, started).expect("a trace");
+        assert_eq!(nameplate, NAMEPLATE);
+        assert_eq!(steps.len(), 1);
+        assert!(steps[0].step == "claim" && steps[0].error.contains("invite already used"), "{steps:?}");
+        assert!(pairing_trace(&*f.st, started + 3600).is_none(), "an older trace counted as this run's");
+    }
+
+    /// A fake hub with both sides of one mailbox, as the hub keeps it: a claim
+    /// id that repeats, and a side's repeat of its last message answered
+    /// without appending. The answers to the first `lose_posts` of side B's
+    /// posts are lost after the message is stored.
+    #[derive(Default)]
+    struct MailboxHub {
+        lose_posts: usize,
+        claimed_by: Option<String>,
+        a: Vec<String>,
+        b: Vec<String>,
+    }
+
+    impl Fake for MailboxHub {
+        fn answer(&mut self, method: &str, path: &str, body: &Value, auth: Option<&str>) -> Option<(u16, Value)> {
+            let mailbox = format!("/api/pair/{NAMEPLATE}");
+            let side_b = auth == Some("tok-b");
+            let exp = now() + 900;
+            if method == "POST" && path == "/api/pair" {
+                Some((201, json!({"nameplate": NAMEPLATE, "token": "tok-a", "expires_at": exp})))
+            } else if method == "POST" && path == format!("{mailbox}/claim") {
+                let id = body["claim"].as_str().unwrap_or_default().to_string();
+                if self.claimed_by.as_ref().is_some_and(|c| *c != id) {
+                    return Some((409, json!({"error": "invite already used, ask for a new one"})));
+                }
+                let repeat = self.claimed_by.replace(id).is_some();
+                Some((200, json!({"token": "tok-b", "expires_at": exp, "repeat": repeat})))
+            } else if method == "POST" && path == format!("{mailbox}/messages") {
+                let text = body["body"].as_str().unwrap_or_default().to_string();
+                let mine = if side_b { &mut self.b } else { &mut self.a };
+                if mine.last() == Some(&text) {
+                    return Some((200, json!({"index": mine.len() - 1, "repeat": true})));
+                }
+                mine.push(text);
+                let index = mine.len() - 1;
+                if side_b && self.lose_posts > 0 {
+                    self.lose_posts -= 1;
+                    return None;
+                }
+                Some((200, json!({"index": index})))
+            } else if method == "GET" && path.starts_with(&format!("{mailbox}/messages?")) {
+                let after: usize = path.split("after=").nth(1).and_then(|r| r.split('&').next()).unwrap().parse().unwrap();
+                let theirs = if side_b { &self.a } else { &self.b };
+                let msgs: Vec<&String> = theirs.iter().skip(after).collect();
+                Some((200, json!({"next": after + msgs.len(), "messages": msgs})))
+            } else if method == "DELETE" {
+                Some((204, json!({})))
+            } else {
+                Some((404, json!({"error": "unexpected"})))
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn lost_post_answer_rerun_completes_without_second_pake() {
+        let state = Arc::new(Mutex::new(MailboxHub { lose_posts: 1, ..Default::default() }));
+        let url = serve(state.clone()).await;
+        let side = || {
+            let dir = tempfile::tempdir().unwrap();
+            let st = Arc::new(FileStorage::new(Some(dir.path().to_path_buf())).unwrap());
+            st.put("settings", &json!({"hub": url})).unwrap();
+            st.put("hub", &json!({"url": url, "fetched_at": now(), "pair_link_base": "https://hub.test/p/"})).unwrap();
+            let hub = Hub::new(st.clone()).unwrap();
+            (dir, st, hub, Keys::generate())
+        };
+        let (_da, st_a, hub_a, keys_a) = side();
+        let (_db, st_b, hub_b, keys_b) = side();
+        let a = Pairing::new(st_a, &hub_a, &keys_a, "alice".into());
+        let b = Pairing::new(st_b.clone(), &hub_b, &keys_b, "bob".into());
+        let code = a.invite(Default::default()).await.unwrap().code;
+
+        // The post reaches the mailbox; its answer doesn't.
+        assert_eq!(b.accept(&code, Duration::ZERO, Default::default()).await.unwrap(), Outcome::Waiting);
+        let saved: Pending = serde_json::from_value(st_b.get(&format!("pending/{NAMEPLATE}")).unwrap().unwrap()).unwrap();
+        assert_eq!(saved.stage, "posting");
+        assert_eq!(saved.message.as_ref(), state.lock().unwrap().b.first(), "the exact message is saved");
+
+        // The same accept again.
+        assert_eq!(b.accept(&code, Duration::ZERO, Default::default()).await.unwrap(), Outcome::Waiting);
+        let p: Pending = serde_json::from_value(st_b.get(&format!("pending/{NAMEPLATE}")).unwrap().unwrap()).unwrap();
+        assert_eq!(p.stage, "wait_payload");
+        let steps: Vec<&str> = p.trace.iter().map(|s| s.step.as_str()).collect();
+        assert_eq!(steps, ["claim", "post", "post (repeat)"]);
+        assert!(!p.trace[1].error.is_empty());
+
+        let done_a = a.advance_all().await.unwrap();
+        let done_b = b.advance_all().await.unwrap();
+        let verify = |o: &[Outcome]| match o {
+            [Outcome::Done { verify, .. }] => verify.clone(),
+            other => panic!("not done: {other:?}"),
+        };
+        assert_eq!(verify(&done_a), verify(&done_b), "side A completes, and B");
+        let pakes = state.lock().unwrap().b.iter()
+            .filter(|m| String::from_utf8(B64.decode(m).unwrap()).unwrap().contains("\"pake\""))
+            .count();
+        assert_eq!(pakes, 1, "one PAKE message from B, not two");
     }
 }

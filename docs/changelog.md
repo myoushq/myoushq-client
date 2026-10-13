@@ -5,6 +5,152 @@ the hub (`latest_release` in `/config.json`); the reference clients put an
 "update" item in the inbox. Get it, verify its signature and build it as
 in [skill.md](https://myoushq.com/skill.md).
 
+## v0.7.0
+
+- **A lost answer to the pairing claim no longer burns the code** (all
+  four clients; needs the hub of the same date, and older clients keep
+  working with it). `accept` sends a random claim id, saved in
+  `claiming/<nameplate>` before the first request; the hub answers a
+  repeat of that id with the same claim, so the retry after a dropped
+  connection (or a proxy's 5xx), and running the same `accept` again
+  after a crash or when the hub couldn't be reached, carry on instead of
+  getting "invite already used". All four clients now retry the claim (3
+  attempts, 1 s then 2 s apart; only Python did before). The PAKE message
+  is likewise saved before it is posted (stage `posting`) and, if the
+  answer is lost, posted again unchanged (by the same `accept` run again
+  or the next poll); the hub takes the repeat without storing it twice,
+  so the other side no longer sees a second PAKE message. A pairing's
+  record keeps a short trace of its steps (claim, post, post (repeat),
+  wait, done, failed: time, hub host, the exact error, and when a claim was resumed,
+  the hub's time of the first claim); a failed `accept` prints it after
+  the error, and the last failed pairing's trace stays in `pairing-trace`.
+  It is the owner's own data and never leaves the machine; the hub logs
+  nothing. Protocol: section 5.2, "The claim id".
+- **A worker in the Go client** (`myous worker`), a port of the Python
+  worker: the same flags, replies, help and pairing message, and the same
+  files for the apps (`worker.json`, `worker.log`, `requests/`,
+  `commands/`, `approvals/`), so either serves the same worker folder.
+  Without `--review` it applies `worker/review.py`'s rules itself; with
+  `--review CMD` it runs that hook as the Python worker does. On Windows
+  it runs commands in PowerShell as the Python worker does, and stops one
+  with `taskkill /T`. The apps carry it for the worker without a
+  container (below), so that needs no Python. Alongside: the Go
+  client's `Listen` hands each new entry over exactly once (an entry
+  stored while its housekeeping looked could be handed over twice) and
+  sends what the agent sends meanwhile (a worker's replies, cards) on its
+  own connection instead of opening one per message, a connection waits
+  for the relay's challenge before authenticating (go-nostr's `Auth`
+  read it unsynchronized, and could sign an empty one), a
+  pairing's history entry carries the verification code, and a file sent
+  or fetched is checked against the 64 MB blob cap.
+- **A worker on Windows says it takes PowerShell** (both workers): in the
+  first lines of its `help` reply, in the pairing message, and after a
+  command PowerShell doesn't recognize ("send `help`"), so an agent used
+  to the Linux container workers isn't left guessing.
+- **Fixed: a request id could name a file outside `commands/` as its stop
+  file** (both workers). On Windows, which resolves `..` in a path by
+  name, an `exec` with the id `../../../key` would have been stopped at
+  once and the worker's key file deleted. Ids with a path separator now
+  get no stop file (the apps only stop requests by their plain ids).
+
+- **myous for Linux and Windows** (`worker/desktop`): the same app as
+  myous for Mac over the same worker container and the same files in the
+  worker folder. A tray icon with the state, the window with Set up,
+  Starting, Pair, Paired, Requests (with Allow and Refuse, Pause, Stop
+  this command, the browser view), settings (name, description, review
+  level, open at login, notifications, the release check), several
+  workers, the agents on this computer. Docker Engine, Podman, Docker
+  Desktop or Rancher Desktop as the runtime; the worker's browser runs in
+  the container and shows through the browser view. Built with Tauri 2
+  (Rust, the window in the system's web view: WebView2 on Windows,
+  WebKitGTK on Linux), so it runs on virtual and cloud desktops without
+  a graphics driver too. Releases carry
+  `myous-<version>-windows-x64-setup.exe` (a per-user installer that
+  fetches WebView2 if needed), `myous-<version>-linux-x86_64.AppImage` and
+  `myous-<version>-linux-amd64.deb` (unsigned; checksums in
+  `SHA256SUMS`); the hub serves `/download/linux` (the AppImage) and
+  `/download/windows` (the installer). The first launch checks the
+  computer in parallel and shows the answers at the top of the Set up
+  card ("⟳" while a check runs, "couldn't check" with Retry after 10 s):
+  containers, the runtime, the agents, myoushq.com; a row that moves on
+  flashes green and says what it found and what comes next). Then one card for
+  what is missing: get a runtime (installed by the app with winget on
+  Windows, or apt, dnf or pacman through pkexec on Linux, where those are
+  there; otherwise its download page), start it (Docker Engine through
+  pkexec and systemd where possible, else the line), join the `docker`
+  group (Windows: `docker-users`), or add compose (Debian's and Ubuntu's
+  `docker.io` has none). A red line when myoushq.com can't be reached
+  (Start stays), and Needs attention with Show log and Try again when a
+  start fails.
+- **Where containers can't run, the app runs the worker without one**
+  (Linux and Windows apps). On Windows it checks for WSL 2 and
+  virtualization: it offers to turn WSL on where the PC can have it, and
+  says plainly when it can't (a virtual machine without nested
+  virtualization, such as a cloud desktop, or virtualization off in the
+  firmware). The owner can then continue without containers: workers run
+  on the computer, as the Mac app's direct mode, with the Go worker the
+  app carries inside itself (`myous-worker`, the app's own version, the
+  review rules built in: no Python, nothing to install), and the review
+  starts at "Ask me before anything that changes things". The worker's
+  browser comes along if the owner wants it: the app runs Edge or Chrome
+  on the computer with a profile of its own in the worker folder (never
+  through Playwright, so pages aren't marked as automated), installs
+  Playwright for Python (the container's version) into an environment of
+  its own with one button (the owner provides Python 3.10 or newer: "Get
+  Python"), and the worker's `help` tells agents the browser's address
+  and that Python, and that the plain `python` has no Playwright. The
+  browser can be opened after the worker started (Open browser on its
+  card), and the worker's next `help` has it. "Continue without a
+  browser" turns it off.
+- **A question's notification is hard to miss** (Linux and Windows app):
+  it sounds and flashes the app's taskbar button, and on Windows the app
+  registers itself for toasts when it starts, so they show when it runs
+  from a folder rather than from the installer.
+- **myous for Mac shows the same first-launch checklist** on its Set up
+  card (the runtime, its compose, the agents, myoushq.com), installs
+  Docker Desktop or OrbStack with Homebrew where it is there, says when
+  myoushq.com can't be reached, and has Try again on a failed start.
+- **myous for Mac runs the worker without a container from inside
+  itself** (the same Go worker, in `Contents/MacOS`), instead of a
+  `myous` client the owner had to install with pip; it now passes the
+  worker's description too, saying the commands run on the Mac itself.
+- **The Python client runs on Windows** (it didn't import before:
+  `fcntl`). File locks use `msvcrt` there; the worker runs commands in
+  PowerShell, stops a command with everything it started (`taskkill
+  /T`), and says so in its `help` reply; pid checks no longer end the
+  process they ask about.
+- **The Go client builds for Windows** (file locks with `LockFileEx`).
+- **`myous cron install` works on Windows** (Python client): it makes a
+  Task Scheduler task running `ensure` every minute through
+  `pythonw.exe` (no window), the crontab line's equivalent, so an agent
+  on Windows stays reachable the same way. Alongside: a stale listener
+  is ended only when the pid still belongs to it (Windows reuses pids
+  fast), the listener and the hook leave the scheduled task's job object
+  so the task doesn't wait on them, and the logs are trimmed as bytes. The skill says the Python and
+  Go clients run on Windows natively, in PowerShell, with the install
+  lines for it (Claude Code on a Windows PC had concluded it needed WSL).
+- **A worker tells its agents when its browser is ready** (Go worker,
+  the one the apps run without a container): one message with the
+  browser's address and the Python that has Playwright, the same lines as
+  its `help`, once per browser. An agent paired before the browser
+  existed had no way to know (Muse, asked to use the worker's browser,
+  installed its own Playwright and a headless Chromium on the PC). The
+  skill and the Muse guide now say a worker's `help` is where its shell,
+  browser and Python come from, and not to install a browser or
+  Playwright on a worker when the help names none.
+- **A guide for Claude Code** as an agent (`claude-code.md`, served by
+  the hub and listed in the skill): one directory, the install on
+  Windows, staying reachable with the scheduled `ensure` and a hook that
+  puts new messages in front of it at each prompt, with tested scripts in
+  `examples/claude-code/`.
+- **Review hook:** the "changes" level asks the owner about commands that
+  run code inside a reading one (`find -exec`, `find -delete`, `awk
+  '{…}'`), and on Windows knows PowerShell's reading commands
+  (`Get-ChildItem`, `Get-Content`, `Select-String`, …).
+- **myous for Mac needs macOS 13** (12 before): the Go worker it now
+  carries for running without a container is built for 13 and newer.
+
+
 ## v0.6.1
 
 - **Fewer relay connections per worker request** (Python). `exec`, `cp`

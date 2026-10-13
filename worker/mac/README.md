@@ -10,13 +10,15 @@ for the command and its output), Pause, and "Open browser". Settings cover
 the worker's name, a Dock icon, launch at login, notifications and the
 daily release check. It reads `~/.myous-worker/worker.json` and
 `requests/` (the worker writes them), drops command files in `commands/`
-(`new-code`, `unpair`), runs `docker compose` (or `myous worker` in direct
-mode) as a child process, and only talks to the network to ask the hub
-for the latest release.
+(`new-code`, `unpair`), runs `docker compose` (or, in direct mode, the
+worker it carries, `Contents/MacOS/myous-worker`) as a child process, and
+only talks to the network to check that it reaches the hub (while
+setting up) and to ask it for the latest release.
 
-The app is a universal binary (Apple Silicon and Intel) for macOS 12 or
-newer. Notifications need the app to be a signed bundle (any build here
-is), and launch at login needs macOS 13.
+The app is a universal binary (Apple Silicon and Intel) for macOS 13 or
+newer (12 until 2026-10-12; the Go worker inside, built with Go 1.27,
+needs 13). Notifications need the app to be a signed bundle (any build
+here is).
 
 ## Download
 
@@ -42,12 +44,17 @@ are Docker volumes named `myous-worker_browser-profile` and
 
 Written in Objective-C (AppKit, no dependencies) so that the Command Line
 Tools' clang builds it on its own: no Xcode, and no SwiftPM, whose Swift
-toolchain can be out of step with the SDK it ships with. Build:
+toolchain can be out of step with the SDK it ships with. The worker for
+direct mode is the Go client (`go/cmd/myous`), so Go is needed too (the
+toolchain `go/go.mod` pins; the `go` command fetches it):
+`make-app.sh` builds it for both architectures with
+`../build-worker.sh`, checks it is the app's version, and puts it in
+`Contents/MacOS/myous-worker`, signed before the app. Build:
 
 ```sh
 cd worker/mac
 ./make-app.sh            # checkout mode: Start builds and runs the image from this checkout
-./make-app.sh --direct   # the worker runs on this Mac: Start runs `myous worker`
+./make-app.sh --direct   # the worker runs on this Mac: Start runs the app's own worker
 open build/myous.app
 ```
 
@@ -66,9 +73,14 @@ always there once a checkout or direct mode is configured):
 - **Checkout** (`make-app.sh` default, or "Use a checkout…"): the same
   command with the checkout's `worker/compose.yml` (`--build`), so the
   image is built from source. "Rebuild the image" restarts with a build.
-- **Direct** (`make-app.sh --direct`, or "Run without a container"): a
-  `myous worker` child process on this Mac, output in
-  `~/.myous-worker/worker.log`. The window warns what this means.
+- **Direct** (`make-app.sh --direct`, or "Run without a container"): the
+  worker inside the app (`Contents/MacOS/myous-worker worker --alias …
+  --description … --work ~/.myous-worker/work`, the Go client with the
+  review rules built in; nothing to install) as a child process on this
+  Mac, started through a login shell so the agent's commands see your
+  PATH, output in `~/.myous-worker/worker.log`. The window warns what
+  this means. `MYOUS_WORKER_BIN=<path>` runs another worker program
+  instead (a local Go build, for testing); the app's log says so.
 
 The project name is `myous-worker` in every mode, so Stop finds the
 containers after a mode switch or an app update; "Remove stale containers"
@@ -84,9 +96,18 @@ worker and says "the myous browser" means its browser).
 
 ## What the window shows, screen by screen
 
-- **Set up:** the runtime found (or buttons to get Docker Desktop or
-  OrbStack, and the not-recommended no-container option), and the
-  worker's name.
+- **Set up:** a short list at the top that fills in as the app checks
+  the Mac in the background (containers, the runtime with `docker version`
+  and `docker compose version`, the agents on this Mac, whether myoushq.com
+  answers; "⟳" while a check is out, "couldn't check" with Retry after
+  10 s), then the worker's name. Without a runtime: Docker Desktop and
+  OrbStack, installed with Homebrew where it is there (`brew install
+  --cask docker-desktop` or `orbstack`, the output in the log) or from
+  their pages, and the not-recommended no-container option; a runtime
+  that isn't running: Open it; no compose: `brew install docker-compose`
+  (or the line); an error of its own: said as it said it. The card leaves
+  by itself when the runtime answers. If myoushq.com can't be reached, a
+  red line says so (Retry); Start stays available.
 - **Starting:** four phases with ticks: runtime, download, browser,
   registration. The worker writes `phase` in `worker.json`; the app
   writes the download phase itself. Slow phases turn orange; a failure
@@ -141,6 +162,9 @@ so and to close it. If
   red line says so.
 - A red line at the top asks for the one thing that needs you: the
   runtime is gone, the worker stopped on its own, a release is available.
+  When a start failed (or the worker stopped on its own), **Needs
+  attention** under it shows the last lines the start wrote, with Show
+  log and **Try again** (the same start, no Stop needed).
 - **Several workers:** "Add a worker…" (the list on the left, the menu, or
   Advanced) creates `~/.myous-worker-2`, `-3`, … next to the first
   worker's folder, each with its own key, container (compose project
@@ -167,13 +191,15 @@ so and to close it. If
 
 Checking the layout without a worker: `build/myous.app/Contents/MacOS/myous
 --snapshot /tmp/window.png` renders the window (a PDF next to it carries
-the text) and exits; `MYOUS_FAKE_STATE=setup|noruntime|stoppedruntime|
-setupnobrowser|starting|pair|paired|running|paused|stopping|stopped|approval|busy|agents|agent|pairlocal|workers|macbrowser`
+the text) and exits; `MYOUS_FAKE_STATE=setup|checking|hubdown|noruntime|installing|stoppedruntime|nocompose|runtimeerror|
+setupnobrowser|starting|failed|pair|paired|running|paused|stopping|stopped|approval|busy|agents|agent|pairlocal|workers|macbrowser`
 (`MYOUS_SNAPSHOT_WORKER=<n>` shows the n-th worker)
 shows each screen with made-up data, `MYOUS_WORKER_HOME=<dir>` points at
 another worker's home, `MYOUS_AGENT_HOMES=<dir>:<dir>` replaces the search
 for agents' directories (`MYOUS_SNAPSHOT_AGENT=1` shows the first one's
-card), and `MYOUS_DOCKER_BIN=/nonexistent` simulates a Mac without Docker.
+card), `MYOUS_DOCKER_BIN=/nonexistent` simulates a Mac without Docker, and
+`MYOUS_HUB=<url>` is the hub the app checks (and asks for the latest
+release): point it at a local server so a test never asks myoushq.com.
 `--render-icon DIR` writes the icon PNGs (make-app.sh uses it; the icon
 is drawn in code, no image files in the repo). `--browser-test DIR` runs
 the "browser on this Mac" launcher for a worker folder on its own: it
@@ -187,13 +213,14 @@ The release workflow builds the app on a macOS runner from the signed tag
 and runs, in this order:
 
 ```sh
-worker/mac/make-app.sh --no-config --version 0.6.1 --sign "Developer ID Application: <name> (<team>)"
+worker/mac/make-app.sh --no-config --version 0.7.0 --sign "Developer ID Application: <name> (<team>)"
 worker/mac/notarize.sh worker/mac/build/myous.app --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" --key AuthKey.p8
-worker/mac/make-dmg.sh worker/mac/build/myous.app worker/mac/build/myous-v0.6.1.dmg --sign "Developer ID Application: <name> (<team>)"
+worker/mac/make-dmg.sh worker/mac/build/myous.app worker/mac/build/myous-v0.7.0.dmg --sign "Developer ID Application: <name> (<team>)"
 ```
 
 `--sign` uses the hardened runtime and a timestamp (what notarization
-requires; the app needs no entitlements). `notarize.sh` zips the app,
+requires; the app needs no entitlements), for the worker inside the app
+first and then the app. `notarize.sh` zips the app,
 submits it with an App Store Connect API key, waits, prints Apple's log on
 rejection, and staples the ticket. `make-dmg.sh` makes the image with an
 Applications shortcut and appends the checksum to `SHA256SUMS` next to it.

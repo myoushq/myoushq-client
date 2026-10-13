@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>myous</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="layout">
+  <nav id="sidebar" hidden>
+    <div class="side-title" id="side-title">On this computer</div>
+    <div id="side-list"></div>
+    <button class="link" id="side-add">Add a worker…</button>
+  </nav>
+  <main>
+    <header>
+      <div class="head-row">
+        <span id="head-dot" class="dot"></span>
+        <h1 id="head-title">myous</h1>
+        <span class="grow"></span>
+        <span id="head-right" class="muted"></span>
+        <button id="more" class="icon" title="More" aria-haspopup="menu">⋯</button>
+      </div>
+      <div id="head-facts" class="muted"></div>
+      <div id="more-menu" class="menu" role="menu" hidden></div>
+    </header>
+
+    <div id="banner" class="banner" hidden><span id="banner-text"></span><button id="banner-button"></button></div>
+
+    <section class="card" id="card-setup" hidden>
+      <h2>Set up</h2>
+      <ul class="steps checks" id="setup-checks"></ul>
+      <p class="hint" id="setup-checking" hidden></p>
+      <div id="setup-form">
+        <p id="setup-runtime"></p>
+        <div id="setup-wbrowser" class="browser-row" hidden></div>
+        <label for="setup-name">What should your agent call this computer?</label>
+        <input id="setup-name" autocomplete="off" spellcheck="false">
+        <label for="setup-desc">How should it describe this computer to your agent?</label>
+        <textarea id="setup-desc" rows="4"></textarea>
+        <p class="hint" id="setup-desc-hint">Sent to the agent when it pairs, and again when you change it. Say it in your own words; the default binds "the myous browser" to this worker's browser.</p>
+        <p id="setup-browser">Its browser runs in the container, shown through a window in your own browser. Some sites take it for a bot, even when it's you.</p>
+        <p class="hint" id="setup-hint"></p>
+        <div class="row"><button id="setup-remove">Remove this worker</button><span class="grow"></span><button class="primary" id="setup-start">Start the worker</button></div>
+      </div>
+    </section>
+
+    <section class="card" id="card-runtime" hidden>
+      <h2 id="runtime-title">Set up</h2>
+      <ul class="steps checks" id="runtime-checks"></ul>
+      <p id="runtime-text"></p>
+      <div id="runtime-list"></div>
+      <p id="runtime-install" hidden></p>
+      <div id="runtime-lines-box" hidden><pre class="lines" id="runtime-lines"></pre><div class="row"><button id="runtime-copy">Copy</button></div></div>
+      <div class="row" id="runtime-fix-row" hidden><button class="primary" id="runtime-fix"></button></div>
+      <p class="hint" id="runtime-note" hidden></p>
+      <button class="link" id="runtime-link" hidden>How to install it</button>
+      <div class="row" id="wsl-row" hidden><button class="primary" id="wsl-enable">Turn on WSL…</button></div>
+      <button class="link" id="direct-toggle"></button>
+      <div id="direct-more" hidden>
+        <p class="warn" id="direct-warning"></p>
+        <div class="row"><span class="grow"></span><button id="direct-use"></button></div>
+      </div>
+    </section>
+
+    <section class="card" id="card-starting" hidden>
+      <h2>Starting</h2>
+      <ul class="steps" id="start-rows"><li></li><li></li><li></li><li></li></ul>
+      <p class="hint" id="start-note"></p>
+    </section>
+
+    <section class="card" id="card-pair" hidden>
+      <h2>Pair with your agent</h2>
+      <p>Paste this to your agent (Muse, Claude Code, any agent that follows the myous skill):</p>
+      <textarea id="pair-message" rows="7" readonly></textarea>
+      <div class="row"><button class="primary" id="pair-copy">Copy message</button><button id="pair-qr">Show QR code</button></div>
+      <div id="pair-which-row" hidden>
+        <label for="pair-which">Which agent?</label>
+        <div class="row"><select id="pair-which"></select><button class="primary" id="pair-local"></button></div>
+      </div>
+      <div class="row"><strong id="pair-code"></strong><span class="grow"></span><button id="pair-new">New code</button></div>
+      <progress id="pair-bar" max="1" value="1"></progress>
+      <p class="hint" id="pair-wait">Waiting for your agent to accept the code…</p>
+    </section>
+
+    <section class="card" id="card-paired" hidden>
+      <h2>Paired</h2>
+      <p id="paired-text"></p>
+      <p class="label">Verification code</p>
+      <div class="big" id="paired-code"></div>
+      <p>Your agent shows the same number; if it doesn't, press Unpair.</p>
+      <div class="row"><button id="unpair">Unpair</button><span class="grow"></span><button class="primary" id="paired-continue">Continue</button></div>
+    </section>
+
+    <section class="card" id="card-requests" hidden>
+      <div class="row"><h2>Requests</h2><span class="grow"></span><button id="stop-command" hidden>Stop this command</button><button id="pause">Pause</button></div>
+      <p class="muted" id="requests-title"></p>
+      <p class="warn" id="paused-note" hidden>Paused: every request is refused until you resume.</p>
+      <div class="approval" id="approval-row" hidden><span id="approval-text"></span><span class="grow"></span><button class="primary" id="allow">Allow</button><button class="danger" id="refuse">Refuse</button></div>
+      <div class="table-wrap"><table id="requests"><tbody></tbody></table></div>
+      <p class="hint">Click a row for the command and its output.</p>
+    </section>
+
+    <section class="card" id="card-browser" hidden>
+      <h2>Browser</h2>
+      <p id="browser-text"></p>
+      <div id="browser-row" class="browser-row" hidden></div>
+      <div class="row" id="browser-open-row"><button id="browser-open">Open browser</button></div>
+    </section>
+
+    <section class="card" id="card-stopping" hidden>
+      <h2>Stopping…</h2>
+      <progress></progress>
+      <p id="stopping-text">Stopping the worker. Its container shuts down in a few seconds; your agent's requests are refused meanwhile.</p>
+    </section>
+
+    <section class="card" id="card-attention" hidden>
+      <h2>Needs attention</h2>
+      <p id="attention-text"></p>
+      <pre class="lines" id="attention-log" hidden></pre>
+      <div class="row"><button id="attention-show-log">Show log</button><span class="grow"></span><button class="primary" id="attention-retry">Try again</button></div>
+    </section>
+
+    <section class="card" id="card-stopped" hidden>
+      <h2>Stopped</h2>
+      <p id="stopped-text"></p>
+      <div class="row"><button id="stopped-remove">Remove this worker</button><span class="grow"></span><button class="primary" id="stopped-start">Start</button></div>
+    </section>
+
+    <section class="card" id="card-agent" hidden>
+      <h2>Agent</h2>
+      <p id="agent-info" class="pre"></p>
+      <h3>Contacts</h3>
+      <div class="table-wrap"><table id="agent-contacts"><tbody></tbody></table></div>
+      <p class="hint" id="agent-pending"></p>
+      <div class="row"><button id="agent-refresh">Refresh</button><button id="agent-pair">Pair with code…</button></div>
+    </section>
+  </main>
+</div>
+<dialog id="dlg"></dialog>
+<script type="module" src="app.js"></script>
+</body>
+</html>

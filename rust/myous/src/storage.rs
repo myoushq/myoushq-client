@@ -7,8 +7,9 @@
 //!
 //! Must be durable: the key (losing it loses the identity) and `contacts`
 //! (losing it loses every pairing). Should be durable: `state`, history,
-//! `settings`. Can be lost: `hub` (cached config) and `pending/*` (pairings
-//! in progress, which expire after 15 minutes anyway).
+//! `settings`. Can be lost: `hub` (cached config), `pending/*` (pairings
+//! in progress, which expire after 15 minutes anyway) and `claiming/*` (the
+//! id of a claim in flight, until its pairing is saved).
 
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;

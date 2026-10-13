@@ -8,7 +8,9 @@ import time
 import unittest
 from pathlib import Path
 
-from myous import files, inbox, worker
+from unittest import mock
+
+from myous import files, inbox, processes, worker
 from myous.storage import FileStorage
 
 PEER = "npub1peer"
@@ -166,6 +168,17 @@ class WorkerTest(unittest.TestCase):
         rec = json.loads((self.home / "requests" / f"{RID}.json").read_text())
         self.assertTrue(rec["stopped"])
 
+    def test_a_request_id_cannot_name_a_stop_file_elsewhere(self):
+        # "stop-../../../key" would be <home>/key wherever ".." is resolved
+        # by name (Windows; here, through a directory called "stop-..").
+        (self.home / "commands" / "stop-..").mkdir(parents=True)
+        victim = self.home / "victim"
+        victim.write_text("keep me")
+        self.run_(self.w.handle(message(json.dumps({"myous": "exec", "id": "../../../victim", "cmd": "echo ran"}))))
+        r = self.replies()[-1]
+        self.assertEqual((r["stdout"], r.get("stopped")), ("ran\n", None))
+        self.assertEqual(victim.read_text(), "keep me")
+
     def test_malformed_requests_are_refused_not_fatal(self):
         self.run_(self.w.handle(message('{"myous": "exec", "id": "%s", "cmd": "echo ok", "timeout": Infinity}' % RID)))
         self.assertEqual(self.replies()[-1]["stdout"], "ok\n")  # a bad timeout means the default
@@ -322,6 +335,34 @@ class WorkerTest(unittest.TestCase):
         kept = sorted(p.name for p in (self.home / "requests").glob("*.json"))
         self.assertEqual(len(kept), worker.REQUESTS_KEEP)
         self.assertNotIn("r0000.json", kept)
+
+    def test_windows_says_powershell(self):
+        # On Windows the help, the pairing message and a command PowerShell
+        # doesn't know tell the agent it is talking to PowerShell.
+        cmdlet_error = ("ls : The term 'ls' is not recognized as the name of a cmdlet, function, script file, "
+                        "or operable program.\n")
+        fake = mock.Mock(side_effect=lambda *a: {"exit": 1, "stdout": "", "stderr": cmdlet_error, "truncated": False})
+        with mock.patch.object(processes, "WINDOWS", True):
+            self.run_(self.w.handle(message("help")))
+            lines = self.agent.sent[-1][1].splitlines()
+            self.assertEqual(lines[1], worker.WINDOWS_HELP)
+            self.assertIn("Shell: PowerShell on ", self.agent.sent[-1][1])
+            self.assertTrue(worker.pairing_message("1234-ABCDE", "PC").endswith(
+                "before using it. It runs on Windows and takes PowerShell commands."))
+            with mock.patch.object(worker, "run_command", fake):
+                self.run_(self.w.handle(message(json.dumps({"myous": "exec", "id": RID, "cmd": "ls"}))))
+            r = self.replies()[-1]
+            self.assertEqual((r["exit"], r["stderr"]), (1, cmdlet_error + worker.WINDOWS_HINT))
+            rec = json.loads((self.home / "requests" / f"{RID}.json").read_text())
+            self.assertEqual(rec["stderr"], r["stderr"])
+        # Elsewhere, none of it.
+        self.w.help_sent.clear()
+        self.run_(self.w.handle(message("help")))
+        self.assertNotIn(worker.WINDOWS_HELP, self.agent.sent[-1][1])
+        self.assertNotIn("PowerShell", worker.pairing_message("1234-ABCDE", "PC", windows=False))
+        with mock.patch.object(worker, "run_command", fake):
+            self.run_(self.w.handle(message(json.dumps({"myous": "exec", "id": RID, "cmd": "ls"}))))
+        self.assertEqual(self.replies()[-1]["stderr"], cmdlet_error)
 
     def test_owner_commands(self):
         self.agent._contacts = {}

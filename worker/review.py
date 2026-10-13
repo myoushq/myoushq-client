@@ -45,14 +45,26 @@ WAIT = float(os.environ.get("MYOUS_APPROVAL_WAIT", "120"))
 
 # Commands that only read, for the "changes" level. A command line is
 # read-only when every segment (split on |, &&, ||, ;) starts with one of
-# these and nothing redirects output or substitutes commands.
+# these and nothing redirects output, substitutes commands or runs code
+# inside one (find -exec, awk '{...}').
 READ_ONLY = {
     "ls", "cat", "head", "tail", "less", "more", "grep", "rg", "find", "wc", "stat", "file", "pwd",
     "du", "df", "uname", "date", "whoami", "id", "echo", "printf", "sort", "uniq", "cut", "tr",
     "awk", "diff", "tree", "which", "type", "true", "test", "basename", "dirname", "realpath",
     "readlink", "md5sum", "sha256sum", "shasum", "hostname", "nproc", "free", "uptime",
 }
-UNSAFE_TOKENS = (">", "<", "$(", "`", "sed -i", "tee ")
+UNSAFE_TOKENS = (">", "<", "$(", "`", "sed -i", "tee ", "{", "-exec", "-ok", "-delete")
+# On Windows the worker's shell is PowerShell: its read-only commands, and
+# what runs code inside an otherwise harmless one ((...), & and script blocks).
+WINDOWS = os.name == "nt"
+READ_ONLY_POWERSHELL = {
+    "get-childitem", "gci", "dir", "get-content", "gc", "type", "get-item", "gi", "get-itemproperty",
+    "get-location", "gl", "select-string", "sls", "measure-object", "measure", "get-date", "get-process",
+    "gps", "get-command", "gcm", "test-path", "resolve-path", "get-filehash", "get-psdrive", "get-volume",
+    "get-service", "write-output", "write-host", "format-table", "ft", "format-list", "fl", "out-string",
+    "select-object", "select", "sort-object", "where.exe", "findstr", "ipconfig", "systeminfo",
+}
+UNSAFE_POWERSHELL = ("(", "&", "@", "--%", "Invoke-", "iex")
 
 
 def level() -> str:
@@ -64,19 +76,24 @@ def level() -> str:
         return "trust"
 
 
-def read_only(cmd: str) -> bool:
+def read_only(cmd: str, windows: bool = WINDOWS) -> bool:
     if any(tok in cmd for tok in UNSAFE_TOKENS):
+        return False
+    if windows and any(tok.lower() in cmd.lower() for tok in UNSAFE_POWERSHELL):
         return False
     for sep in ("||", "&&", "|", ";"):
         cmd = cmd.replace(sep, "\n")
     for segment in cmd.splitlines():
         try:
-            words = shlex.split(segment)
+            words = shlex.split(segment, posix=not windows)
         except ValueError:
             return False
         if not words:
             continue
-        if words[0] not in READ_ONLY:
+        if windows:
+            if words[0].lower() not in READ_ONLY | READ_ONLY_POWERSHELL:
+                return False
+        elif words[0] not in READ_ONLY:
             return False
     return True
 

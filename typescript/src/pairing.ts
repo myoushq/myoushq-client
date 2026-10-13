@@ -25,6 +25,26 @@ const ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
 export class PairingError extends Error {}
 
+/** Claiming retries when the answer is lost, after retryDelayMs, then twice that. Tests shorten it. */
+export const CLAIM = { attempts: 3, retryDelayMs: 1000 };
+
+/** A mailbox message as posted: base64 of its JSON. */
+function body(msg: unknown): string {
+  return Buffer.from(JSON.stringify(msg)).toString("base64");
+}
+
+/** Whether a hub status turned the request down for good (gone, taken, bad), not "not now" (429) or a proxy's 5xx. */
+function refused(status: number): boolean {
+  return status >= 400 && status < 500 && status !== 429;
+}
+
+/** An error's message with its cause's ("fetch failed" alone says little). */
+function describe(e: unknown): string {
+  const err = e as { message?: string; cause?: { message?: string; code?: string } } | undefined;
+  const cause = err?.cause?.code ?? err?.cause?.message;
+  return [err?.message ?? String(e), cause].filter(Boolean).join(": ");
+}
+
 // --- codes -----------------------------------------------------------------
 
 export function makeSecret(): string {
@@ -130,13 +150,40 @@ export interface Pending {
   expires_at: number;
   seed: string; // recreates our SPAKE2 instance
   after: number;
-  stage: "wait_pake" | "wait_payload" | "done" | "failed" | "elsewhere";
+  /** "posting": our PAKE message (`message`, the base64 body) is saved but not confirmed posted. */
+  stage: "posting" | "wait_pake" | "wait_payload" | "done" | "failed" | "elsewhere";
+  message?: string;
   key?: string;
   /** Relationship context to record on the contact once paired. */
   context?: ContactContext;
   contact?: Contact;
   verify?: string;
   error?: string;
+  /** The handshake so far, for the owner to read when it fails. */
+  trace?: TraceStep[];
+}
+
+/**
+ * One step of a pairing's handshake, kept in the pairing's own record (and
+ * in "pairing-trace" when it fails) so the owner can see what happened; the
+ * hub logs nothing. It never leaves this machine.
+ */
+export interface TraceStep {
+  at: number;
+  step: "claim" | "post" | "post (repeat)" | "wait" | "done" | "failed";
+  host?: string;
+  error?: string;
+  /** A resumed claim: when the hub gave it. */
+  claimed_at?: number;
+}
+
+const TRACE_LEN = 20; // steps kept per pairing
+
+/** The last failed pairing's nameplate and steps, oldest first, if it failed at or after `since` (Unix seconds). */
+export async function pairingTrace(st: Storage, since: number): Promise<{ nameplate: string; trace: TraceStep[] } | null> {
+  const t = await st.get<{ nameplate: string; trace: TraceStep[] } | null>("pairing-trace", null);
+  const last = t?.trace?.at(-1);
+  return t && last && last.at >= since ? t : null;
 }
 
 export interface Invite extends Pending {
@@ -174,23 +221,78 @@ export class Pairing {
     const mine = await this.st.get<Pending | null>(`pending/${nameplate}`, null);
     if (mine && mine.role === "b" && mine.secret === secret) {
       // Accepted before (e.g. the connection dropped); carry on with it.
+      await this.st.delete(`claiming/${nameplate}`);
       return this.advance(mine, wait);
     }
+    const claiming = await this.st.get<{ claim?: unknown; trace?: TraceStep[] } | null>(`claiming/${nameplate}`, null);
+    const trace = claiming?.trace ?? [];
     let claim;
     try {
-      claim = await this.hub.request("POST", `/api/pair/${nameplate}/claim`, {});
+      claim = await this.claim(nameplate, claiming?.claim, trace);
     } catch (e) {
-      if (e instanceof HubError) throw new PairingError(e.reason);
+      await this.st.put("pairing-trace", { nameplate, trace });
       throw e;
     }
+    // Saved before it is posted ("posting"): if the answer to the post is
+    // lost, advance() posts exactly this message again, never a new one.
     const seed = randomBytes(32);
-    await this.post(nameplate, claim.token, { t: "pake", v: VERSION, m: b64(pakeStart("b", formatCode(nameplate, secret), seed)) });
     const p: Pending = {
       role: "b", nameplate, secret, token: claim.token, expires_at: claim.expires_at,
-      seed: b64(seed), after: 0, stage: "wait_pake", ...(context ? { context } : {}),
+      seed: b64(seed), after: 0, stage: "posting", ...(context ? { context } : {}), trace,
+      message: body({ t: "pake", v: VERSION, m: b64(pakeStart("b", formatCode(nameplate, secret), seed)) }),
     };
     await this.save(p);
+    await this.st.delete(`claiming/${nameplate}`);
     return this.advance(p, wait);
+  }
+
+  /**
+   * Claim the invite's second side, retrying when the answer is lost (the
+   * connection drops, or a proxy answers 5xx).
+   *
+   * The claim carries a random id, saved in "claiming/<nameplate>" before
+   * the first attempt: the hub answers a repeat of the same id with the
+   * same token, so neither a retry here nor running the same accept again
+   * (after a crash, or when every attempt failed) burns the code. The
+   * record goes once the pairing is saved or the hub refuses the code; it
+   * stays while the hub can't be reached. `saved` is its id, if any;
+   * `trace` gets a step per attempt and is saved with the id.
+   */
+  private async claim(nameplate: string, saved: unknown, trace: TraceStep[]): Promise<{ token: string; expires_at: number }> {
+    const name = `claiming/${nameplate}`;
+    const id = typeof saved === "string" && /^[0-9a-f]{32}$/.test(saved) ? saved : Buffer.from(randomBytes(16)).toString("hex");
+    let lost: unknown;
+    for (let attempt = 0; attempt < CLAIM.attempts; attempt++) {
+      await this.st.put(name, { nameplate, claim: id, trace });
+      try {
+        const answer = await this.hub.request("POST", `/api/pair/${nameplate}/claim`, { claim: id });
+        this.trace(trace, "claim", undefined, answer.repeat ? answer.claimed_at : undefined);
+        return answer;
+      } catch (e) {
+        this.trace(trace, "claim", e);
+        if (e instanceof HubError && e.status < 500) {
+          // Turned down; a 429 keeps the record for later.
+          if (refused(e.status)) await this.st.delete(name);
+          throw new PairingError(e.reason);
+        }
+        if (e instanceof SyntaxError) throw e;
+        lost = e; // the connection dropped, or a proxy couldn't get the hub's answer
+      }
+      if (attempt + 1 < CLAIM.attempts) await new Promise((r) => setTimeout(r, CLAIM.retryDelayMs * (attempt + 1)));
+    }
+    await this.st.put(name, { nameplate, claim: id, trace });
+    throw new Error(`could not reach the hub to accept the code (${describe(lost)}); `
+      + "accepting the same code again carries on where this stopped", { cause: lost });
+  }
+
+  /** Note a step of the handshake (see TraceStep). */
+  private trace(trace: TraceStep[], step: TraceStep["step"], error?: unknown, claimedAt?: number): void {
+    const s: TraceStep = { at: now(), step };
+    if (step === "claim" || step === "post" || step === "post (repeat)" || step === "wait") s.host = new URL(this.hub.url).host;
+    if (error !== undefined) s.error = typeof error === "string" ? error : describe(error);
+    if (claimedAt !== undefined) s.claimed_at = claimedAt;
+    trace.push(s);
+    trace.splice(0, Math.max(0, trace.length - TRACE_LEN));
   }
 
   /** Move every pending pairing forward without waiting; returns the ones that finished. */
@@ -221,6 +323,26 @@ export class Pairing {
     const deadline = now() + wait;
     for (;;) {
       if (now() > p.expires_at) return this.fail(p, "pairing invite expired");
+      if (p.stage === "posting") {
+        // Our PAKE message, saved before the first try; the hub takes a
+        // repeat of a side's last message without appending it.
+        try {
+          const answer = await this.hub.request("POST", `/api/pair/${p.nameplate}/messages`, { body: p.message }, p.token);
+          this.trace((p.trace ??= []), answer?.repeat ? "post (repeat)" : "post");
+          delete p.message;
+          p.stage = "wait_pake";
+          await this.save(p);
+        } catch (e) {
+          this.trace((p.trace ??= []), "post", e);
+          if (e instanceof HubError && (e.status === 403 || e.status === 404)) return this.fail(p, "pairing invite expired or was closed");
+          if (e instanceof HubError && e.status < 500) return this.fail(p, e.reason);
+          if (e instanceof SyntaxError) throw e;
+          await this.save(p); // unreachable: post it again while there's time, else next poll
+          if (now() + 2 >= deadline) return p;
+          await new Promise((r) => setTimeout(r, 2000));
+          continue;
+        }
+      }
       let got;
       try {
         const w = Math.max(0, Math.min(25, deadline - now()));
@@ -232,6 +354,7 @@ export class Pairing {
         if (e instanceof HubError || e instanceof SyntaxError) throw e;
         // Network trouble (proxies drop long polls): retry while there's
         // time, else leave it pending for the next poll.
+        this.trace((p.trace ??= []), "wait", e);
         if (now() + 2 >= deadline) return p;
         await new Promise((r) => setTimeout(r, 2000));
         continue;
@@ -276,6 +399,7 @@ export class Pairing {
         // They learned our alias from the payload; a card follows if we have one.
         await contacts.peerKnows(this.st, payload.pubkey, this.alias, "");
         p.stage = "done";
+        this.trace((p.trace ??= []), "done");
         p.contact = contact;
         p.verify = verifyCode(key);
         await this.st.delete(`pending/${p.nameplate}`);
@@ -293,6 +417,8 @@ export class Pairing {
   }
 
   private async fail(p: Pending, error: string): Promise<Pending> {
+    this.trace((p.trace ??= []), "failed", error);
+    await this.st.put("pairing-trace", { nameplate: p.nameplate, trace: p.trace });
     await this.st.delete(`pending/${p.nameplate}`);
     await this.hub.request("DELETE", `/api/pair/${p.nameplate}`, undefined, p.token).catch(() => {});
     await locked(this.st, "state", () =>
@@ -305,7 +431,6 @@ export class Pairing {
   }
 
   private async post(nameplate: string, token: string, msg: unknown): Promise<void> {
-    const body = Buffer.from(JSON.stringify(msg)).toString("base64");
-    await this.hub.request("POST", `/api/pair/${nameplate}/messages`, { body }, token);
+    await this.hub.request("POST", `/api/pair/${nameplate}/messages`, { body: body(msg) }, token);
   }
 }

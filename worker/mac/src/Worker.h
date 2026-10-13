@@ -27,6 +27,7 @@ typedef NS_ENUM(NSInteger, Screen) { ScreenSetup, ScreenNoRuntime, ScreenStartin
 @property (nonatomic) BOOL restartAfterStop;          // the browser choice changed while running
 @property (nonatomic, copy) NSString *attention, *attentionButton;   // the one thing that needs the owner
 @property (nonatomic) BOOL alive;
+@property (nonatomic, strong) NSArray<NSString *> *failure;   // the last lines a failed start wrote, for Needs attention
 - (instancetype)initWithHome:(NSString *)home;
 - (NSString *)name;      // the configured name, the worker's alias, or "Worker"
 - (BOOL)isDefault;       // the first worker (its app.json holds the app's settings)

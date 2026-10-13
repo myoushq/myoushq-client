@@ -16,6 +16,7 @@ import (
 	"crypto/sha512"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -248,7 +249,9 @@ type Pending struct {
 	PakeSeed  string `json:"pake_seed,omitempty"`
 	Key       string `json:"key,omitempty"`
 	After     int    `json:"after"`
-	// Stage is wait_pake, wait_payload, or, in results only: done, failed,
+	// Message is our PAKE message (base64 body) while Stage is "posting".
+	Message string `json:"message,omitempty"`
+	// Stage is posting, wait_pake, wait_payload, or, in results only: done, failed,
 	// elsewhere (another run finished it).
 	Stage string `json:"stage"`
 	// Relationship context to record on the contact once paired.
@@ -258,6 +261,57 @@ type Pending struct {
 	Contact      *Contact `json:"contact,omitempty"`
 	Verify       string   `json:"verify,omitempty"`
 	Error        string   `json:"error,omitempty"`
+	// The handshake so far, for the owner to read when it fails.
+	Trace []TraceStep `json:"trace,omitempty"`
+}
+
+// TraceStep is one step of a pairing's handshake, kept in the pairing's
+// own record (and in "pairing-trace" when it fails) so the owner can see
+// what happened; the hub logs nothing. It never leaves this machine.
+type TraceStep struct {
+	At        int64  `json:"at"`
+	Step      string `json:"step"` // claim, post, post (repeat), wait, done, failed
+	Host      string `json:"host,omitempty"`
+	Error     string `json:"error,omitempty"`
+	ClaimedAt int64  `json:"claimed_at,omitempty"` // a resumed claim: when the hub gave it
+}
+
+const traceLen = 20 // steps kept per pairing
+
+func (pr *pairing) trace(t *[]TraceStep, step string, err error, claimedAt int64) {
+	s := TraceStep{At: time.Now().Unix(), Step: step, ClaimedAt: claimedAt}
+	if step == "claim" || step == "post" || step == "post (repeat)" || step == "wait" {
+		if u, perr := url.Parse(pr.hub.URL); perr == nil {
+			s.Host = u.Host
+		}
+	}
+	if err != nil {
+		s.Error = err.Error()
+	}
+	*t = append(*t, s)
+	if len(*t) > traceLen {
+		*t = (*t)[len(*t)-traceLen:]
+	}
+}
+
+// keepTrace saves a failed pairing's trace as "pairing-trace".
+func (pr *pairing) keepTrace(nameplate string, t []TraceStep) {
+	pr.st.Put("pairing-trace", pairingTrace{Nameplate: nameplate, Trace: t})
+}
+
+type pairingTrace struct {
+	Nameplate string      `json:"nameplate"`
+	Trace     []TraceStep `json:"trace"`
+}
+
+// PairingTrace returns the last failed pairing's nameplate and steps,
+// oldest first, if it failed at or after since (Unix seconds).
+func (a *Agent) PairingTrace(since int64) (string, []TraceStep) {
+	var t pairingTrace
+	if ok, err := a.st.Get("pairing-trace", &t); err != nil || !ok || len(t.Trace) == 0 || t.Trace[len(t.Trace)-1].At < since {
+		return "", nil
+	}
+	return t.Nameplate, t.Trace
 }
 
 // Finished reports whether the pairing is over, one way or another.
@@ -314,7 +368,10 @@ func (pr *pairing) invite(ctx context.Context, cc ContactContext) (*Invite, erro
 	}
 	p := &Pending{Role: "a", Nameplate: box.Nameplate, Secret: secret, Token: box.Token, ExpiresAt: box.ExpiresAt, Stage: "wait_pake",
 		Relationship: cc.Relationship, Sharing: cc.Sharing, AddedBy: cc.AddedBy}
-	if err := pr.start(ctx, p); err != nil {
+	if err := pr.start(p); err != nil {
+		return nil, err
+	}
+	if err := pr.postPake(ctx, p); err != nil {
 		return nil, err
 	}
 	return &Invite{Pending: *p, Code: FormatCode(p.Nameplate, secret), Link: MakeLink(cfg.PairLinkBase, p.Nameplate, secret)}, nil
@@ -332,39 +389,156 @@ func (pr *pairing) accept(ctx context.Context, code string, wait time.Duration, 
 	var mine Pending
 	if found, err := pr.st.Get("pending/"+nameplate, &mine); err == nil && found && mine.Role == "b" && mine.Secret == secret {
 		// Accepted before (e.g. the connection dropped); carry on with it.
+		pr.st.Delete("claiming/" + nameplate)
 		return pr.advance(ctx, &mine, wait, true)
 	}
-	var claim struct {
-		Token     string `json:"token"`
-		ExpiresAt int64  `json:"expires_at"`
-	}
-	if err := pr.hub.Request(ctx, "POST", "/api/pair/"+nameplate+"/claim", map[string]any{}, "", &claim); err != nil {
-		var he *HubError
-		if errors.As(err, &he) {
-			return nil, &PairingError{Msg: he.Message}
-		}
+	var saved claiming
+	pr.st.Get("claiming/"+nameplate, &saved)
+	claim, err := pr.claim(ctx, nameplate, &saved)
+	if err != nil {
+		pr.keepTrace(nameplate, saved.Trace)
 		return nil, err
 	}
 	p := &Pending{Role: "b", Nameplate: nameplate, Secret: secret, Token: claim.Token, ExpiresAt: claim.ExpiresAt, Stage: "wait_pake",
-		Relationship: cc.Relationship, Sharing: cc.Sharing, AddedBy: cc.AddedBy}
-	if err := pr.start(ctx, p); err != nil {
+		Relationship: cc.Relationship, Sharing: cc.Sharing, AddedBy: cc.AddedBy, Trace: saved.Trace}
+	if err := pr.start(p); err != nil {
+		return nil, err
+	}
+	if err := pr.st.Delete("claiming/" + nameplate); err != nil {
 		return nil, err
 	}
 	return pr.advance(ctx, p, wait, true)
 }
 
-// start posts our PAKE message and saves the pending state.
-func (pr *pairing) start(ctx context.Context, p *Pending) error {
+// Claiming retries when the answer is lost, after claimRetryDelay, then
+// twice that.
+const claimAttempts = 3
+
+var (
+	claimRetryDelay = time.Second // tests shorten it
+	claimIDRe       = regexp.MustCompile(`^[0-9a-f]{32}$`)
+)
+
+// claiming is the "claiming/<nameplate>" document: the id of a claim in
+// flight and the trace of its attempts, kept until the pairing is saved.
+type claiming struct {
+	Nameplate string      `json:"nameplate"`
+	Claim     string      `json:"claim"`
+	Trace     []TraceStep `json:"trace,omitempty"`
+}
+
+type claimAnswer struct {
+	Token     string `json:"token"`
+	ExpiresAt int64  `json:"expires_at"`
+	Repeat    bool   `json:"repeat"`
+	ClaimedAt int64  `json:"claimed_at"`
+}
+
+// claim takes the invite's second side, retrying when the answer is lost
+// (the connection drops, or a proxy answers 5xx).
+//
+// The claim carries a random id, saved in "claiming/<nameplate>" before
+// the first attempt: the hub answers a repeat of the same id with the same
+// token, so neither a retry here nor running the same accept again (after
+// a crash, or when every attempt failed) burns the code. The record goes
+// once the pairing is saved or the hub refuses the code; it stays while
+// the hub can't be reached. saved is that record as read (or empty); its
+// trace gets a step per attempt.
+func (pr *pairing) claim(ctx context.Context, nameplate string, saved *claiming) (*claimAnswer, error) {
+	name := "claiming/" + nameplate
+	if !claimIDRe.MatchString(saved.Claim) {
+		id := make([]byte, 16)
+		if _, err := rand.Read(id); err != nil {
+			return nil, err
+		}
+		saved.Claim = hex.EncodeToString(id)
+	}
+	saved.Nameplate = nameplate
+	var lost error
+	for attempt := range claimAttempts {
+		if err := pr.st.Put(name, saved); err != nil {
+			return nil, err
+		}
+		var answer claimAnswer
+		err := pr.hub.Request(ctx, "POST", "/api/pair/"+nameplate+"/claim", map[string]string{"claim": saved.Claim}, "", &answer)
+		if err == nil {
+			claimedAt := int64(0)
+			if answer.Repeat {
+				claimedAt = answer.ClaimedAt
+			}
+			pr.trace(&saved.Trace, "claim", nil, claimedAt)
+			return &answer, nil
+		}
+		pr.trace(&saved.Trace, "claim", err, 0)
+		if ctx.Err() != nil {
+			return nil, err
+		}
+		var he *HubError
+		if errors.As(err, &he) && he.Status < 500 { // turned down; a 429 keeps the record for later
+			if refused(he.Status) {
+				pr.st.Delete(name)
+			}
+			return nil, &PairingError{Msg: he.Message}
+		}
+		lost = err // the connection dropped, or a proxy couldn't get the hub's answer
+		if attempt+1 < claimAttempts {
+			select {
+			case <-time.After(claimRetryDelay * time.Duration(attempt+1)):
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+	}
+	if err := pr.st.Put(name, saved); err != nil {
+		return nil, err
+	}
+	return nil, fmt.Errorf("could not reach the hub to accept the code (%w); accepting the same code again carries on where this stopped", lost)
+}
+
+// refused reports whether a hub status turned the request down for good
+// (gone, taken, bad), as opposed to "not now" (429), a proxy that couldn't
+// reach the hub (5xx), or no answer at all (0).
+func refused(status int) bool {
+	return status >= 400 && status < 500 && status != 429
+}
+
+// start makes our PAKE message and saves it with the pending state, stage
+// "posting", before anything is posted: if the answer to the post is lost,
+// postPake posts exactly this message again, never a new one.
+func (pr *pairing) start(p *Pending) error {
 	seed := make([]byte, 32)
 	if _, err := rand.Read(seed); err != nil {
 		return err
 	}
 	p.PakeSeed = b64(seed)
-	msg := pakeStart(p.Role, FormatCode(p.Nameplate, p.Secret), seed)
-	if err := pr.st.Put("pending/"+p.Nameplate, p); err != nil {
+	raw, err := json.Marshal(Envelope{T: "pake", V: pairingVersion, M: b64(pakeStart(p.Role, FormatCode(p.Nameplate, p.Secret), seed))})
+	if err != nil {
 		return err
 	}
-	return pr.post(ctx, p, Envelope{T: "pake", V: pairingVersion, M: b64(msg)})
+	p.Message, p.Stage = b64(raw), "posting"
+	return pr.st.Put("pending/"+p.Nameplate, p)
+}
+
+// postPake posts the saved PAKE message of a "posting" pairing and moves it
+// on to wait_pake. The hub takes a repeat of a side's last message without
+// appending it.
+func (pr *pairing) postPake(ctx context.Context, p *Pending) error {
+	var answer struct {
+		Repeat bool `json:"repeat"`
+	}
+	err := pr.hub.Request(ctx, "POST", "/api/pair/"+p.Nameplate+"/messages", map[string]string{"body": p.Message}, p.Token, &answer)
+	step := "post"
+	if err == nil && answer.Repeat {
+		step = "post (repeat)"
+	}
+	pr.trace(&p.Trace, step, err, 0)
+	if err == nil {
+		p.Message, p.Stage = "", "wait_pake"
+	}
+	if perr := pr.st.Put("pending/"+p.Nameplate, p); err == nil {
+		err = perr
+	}
+	return err
 }
 
 // advanceAll moves every pending pairing forward without waiting and
@@ -415,6 +589,25 @@ func (pr *pairing) advanceLocked(ctx context.Context, p *Pending, wait time.Dura
 		if time.Now().Unix() > p.ExpiresAt {
 			return pr.fail(ctx, p, "pairing invite expired")
 		}
+		if p.Stage == "posting" {
+			if err := pr.postPake(ctx, p); err != nil {
+				var he *HubError
+				switch s := hubStatus(err); {
+				case s == 403 || s == 404:
+					return pr.fail(ctx, p, "pairing invite expired or was closed")
+				case s != 0 && s < 500 && errors.As(err, &he):
+					return pr.fail(ctx, p, he.Message)
+				case ctx.Err() != nil:
+					return nil, err
+				}
+				// Unreachable: post it again while there's time, else next poll.
+				if time.Until(deadline) <= 2*time.Second {
+					return p, nil
+				}
+				time.Sleep(2 * time.Second)
+				continue
+			}
+		}
 		waitSecs := int(min(25, max(0, time.Until(deadline).Seconds())))
 		var got struct {
 			Messages []string `json:"messages"`
@@ -428,6 +621,7 @@ func (pr *pairing) advanceLocked(ctx context.Context, p *Pending, wait time.Dura
 			if s == 0 && ctx.Err() == nil {
 				// Network trouble (proxies drop long polls): retry while there's
 				// time, else leave it pending for the next poll.
+				pr.trace(&p.Trace, "wait", err, 0)
 				if time.Until(deadline) <= 2*time.Second {
 					return p, nil
 				}
@@ -533,6 +727,7 @@ func (pr *pairing) step(ctx context.Context, p *Pending, body string) error {
 		}
 		c.PeerKnows = &PeerKnows{Name: pr.alias}
 		p.Stage, p.Contact, p.Verify = "done", &c, VerifyCode(key)
+		pr.trace(&p.Trace, "done", nil, 0)
 		if err := pr.st.Delete("pending/" + p.Nameplate); err != nil {
 			return err
 		}
@@ -541,7 +736,7 @@ func (pr *pairing) step(ctx context.Context, p *Pending, body string) error {
 			text += fmt.Sprintf(". Ask your owner how they know this contact and what you may share with it, "+
 				"then record it: myous context %q --relationship ... --sharing \"...\"", c.Alias)
 		}
-		_, err = record(pr.st, Entry{Type: "paired", Peer: c.Npub, Alias: c.Alias, Text: text})
+		_, err = record(pr.st, Entry{Type: "paired", Peer: c.Npub, Alias: c.Alias, Verify: p.Verify, Text: text})
 		// Don't close the mailbox: the peer may not have read our payload
 		// yet. It only holds ciphertext and expires on its own.
 		return err
@@ -552,6 +747,8 @@ func (pr *pairing) step(ctx context.Context, p *Pending, body string) error {
 }
 
 func (pr *pairing) fail(ctx context.Context, p *Pending, reason string) (*Pending, error) {
+	pr.trace(&p.Trace, "failed", errors.New(reason), 0)
+	pr.keepTrace(p.Nameplate, p.Trace)
 	if err := pr.st.Delete("pending/" + p.Nameplate); err != nil {
 		return nil, err
 	}

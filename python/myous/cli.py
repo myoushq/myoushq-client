@@ -99,7 +99,17 @@ def cmd_accept(agent: Agent, st: FileStorage, args) -> None:
     code = args.code
     if os.path.isfile(code):
         code = qr.read_image(code)
-    r = agent.accept(code, wait=args.wait, relationship=args.relationship, sharing=args.sharing, added_by=args.added_by)
+    started = int(time.time())
+    try:
+        r = agent.accept(code, wait=args.wait, relationship=args.relationship, sharing=args.sharing,
+                         added_by=args.added_by)
+    except Exception as e:
+        trace = pairing_trace(st, started)
+        if not trace or error_text(e) is None:
+            raise
+        sys.exit(f"{error_text(e)}\n{trace}")
+    if r["stage"] == "failed":
+        sys.exit(f"pairing failed: {r['error']}\n{pairing_trace(st, started)}".rstrip())
     if r["stage"] not in ("done", "failed", "elsewhere"):
         print("the other agent hasn't answered yet; it finishes the next time this agent polls "
               "or listens (result in `myous inbox`)")
@@ -107,6 +117,25 @@ def cmd_accept(agent: Agent, st: FileStorage, args) -> None:
     _report_pairing(r)
     if r["stage"] == "done" and agent.card:
         _sync_cards(agent)
+
+
+def pairing_trace(st: FileStorage, since: int) -> str:
+    """The last steps of a pairing that failed since `since`, oldest first:
+    what the client saw, since the hub logs nothing."""
+    t = st.get("pairing-trace") or {}
+    steps = t.get("trace") or []
+    if not steps or steps[-1].get("at", 0) < since:
+        return ""
+    clock = lambda at: time.strftime("%H:%M:%S", time.localtime(at))  # noqa: E731
+    lines = [f"what happened (pairing {t.get('nameplate')}, oldest first):"]
+    for s in steps[-10:]:
+        line = f"  {clock(s['at'])} {s['step']}" + (f" {s['host']}" if s.get("host") else "")
+        if s.get("claimed_at"):
+            line += f": resumed the claim the hub gave at {clock(s['claimed_at'])}"
+        if s.get("error"):
+            line += f": {s['error']}"
+        lines.append(line)
+    return "\n".join(lines)
 
 
 def _report_pairing(r: dict) -> None:
@@ -340,9 +369,9 @@ def cmd_cron(agent: Agent, st: FileStorage, args) -> None:
     if args.action == "install":
         print(vm.install_cron(st))
     elif args.action == "remove":
-        print(vm.remove_cron())
+        print(vm.remove_cron(st))
     else:
-        print(vm.show_cron())
+        print(vm.show_cron(st))
 
 
 def cmd_hook(agent: Agent, st: FileStorage, args) -> None:
@@ -404,7 +433,9 @@ def _pending_summary(agent: Agent) -> list[str]:
     out = []
     for p in agent.pairing.pending():
         left = max(0, int((p["expires_at"] - time.time()) // 60))
-        if p["stage"] == "wait_pake":
+        if p["stage"] == "posting":
+            waiting = "sending this agent's half of the handshake (the next poll tries again)"
+        elif p["stage"] == "wait_pake":
             waiting = "waiting for the other agent to join" if p["role"] == "a" else "waiting for the inviting agent to answer"
         else:
             waiting = "waiting for the other agent's details"
@@ -518,7 +549,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--quiet", action="store_true")
     p.add_argument("--no-listener", action="store_true", help="never start the listener")
 
-    p = add("cron", cmd_cron, "optional: a crontab entry that runs `ensure` every minute")
+    p = add("cron", cmd_cron, "optional: a crontab entry (Windows: a scheduled task) that runs `ensure` every minute")
     p.add_argument("action", choices=["install", "remove", "show"])
 
     p = add("hook", cmd_hook, "optional: run a command whenever new messages or pairing results arrive")
@@ -544,12 +575,22 @@ def main() -> None:
     agent = Agent(st, hub_url=getattr(args, "hub", None))
     try:
         args.func(agent, st, args)
-    except IdentityError as e:
-        sys.exit(str(e))
-    except (HubError, BlobError, RelayError, PairingError, WorkerError, TimeoutError, KeyError, ValueError) as e:
-        sys.exit(f"error: {e.args[0] if isinstance(e, KeyError) else e}")
-    except OSError as e:
-        sys.exit(f"error: network problem ({e}); try again. Behind a proxy? Set HTTPS_PROXY.")
+    except Exception as e:
+        text = error_text(e)
+        if text is None:
+            raise
+        sys.exit(text)
+
+
+def error_text(e: Exception) -> str | None:
+    """What the command says for an error it expects; None for a bug."""
+    if isinstance(e, IdentityError):
+        return str(e)
+    if isinstance(e, (HubError, BlobError, RelayError, PairingError, WorkerError, TimeoutError, KeyError, ValueError)):
+        return f"error: {e.args[0] if isinstance(e, KeyError) else e}"
+    if isinstance(e, OSError):
+        return f"error: network problem ({e}); try again. Behind a proxy? Set HTTPS_PROXY."
+    return None
 
 
 if __name__ == "__main__":

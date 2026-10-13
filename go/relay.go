@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/nbd-wtf/go-nostr"
@@ -49,6 +50,7 @@ func connect(ctx context.Context, sk string, urls []string) (*connection, error)
 	if err != nil {
 		return nil, err
 	}
+	connects.Add(1)
 	c := &connection{sk: sk, pk: pk}
 	var reasons []string
 	for _, url := range urls {
@@ -75,6 +77,7 @@ func connect(ctx context.Context, sk string, urls []string) (*connection, error)
 func authenticate(ctx context.Context, r *nostr.Relay, sk string) error {
 	deadline := time.Now().Add(authTimeout)
 	for {
+		awaitChallenge(ctx, r)
 		err := r.Auth(ctx, func(evt *nostr.Event) error { return evt.Sign(sk) })
 		if err == nil {
 			return nil
@@ -86,6 +89,53 @@ func authenticate(ctx context.Context, r *nostr.Relay, sk string) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-time.After(100 * time.Millisecond):
+		}
+	}
+}
+
+// connects counts the connections opened (tests check that replies reuse
+// the listening one).
+var connects atomic.Int64
+
+// connected reports whether any relay of the connection is still up.
+func (c *connection) connected() bool {
+	for _, r := range c.relays {
+		if r.IsConnected() {
+			return true
+		}
+	}
+	return false
+}
+
+// awaitChallenge makes Relay.Auth safe to call. In go-nostr v0.52.1 (and
+// v0.52.3) Auth reads the relay's NIP-42 challenge, which the connection's
+// reader goroutine writes when the AUTH message arrives, with nothing
+// ordering the two: a data race, and an Auth that comes first signs an
+// empty challenge. A lock of ours can't order go-nostr's own goroutine, so
+// this waits for a reply that the same reader goroutine hands over after
+// it: a query's end (EOSE, or CLOSED "auth-required" before we
+// authenticate). The hub sends the challenge on connect, before it reads
+// anything, so by then the challenge is written, and the hand-over
+// (channels) orders that write before Auth's read.
+func awaitChallenge(ctx context.Context, r *nostr.Relay) {
+	qctx, cancel := context.WithTimeout(ctx, authTimeout)
+	defer cancel()
+	sub, err := r.Subscribe(qctx, nostr.Filters{{Kinds: []int{kindInboxRelays}, Limit: 1}})
+	if err != nil {
+		return
+	}
+	defer sub.Unsub()
+	for {
+		select {
+		case <-sub.Events: // anything stored comes before EOSE
+		case <-sub.EndOfStoredEvents:
+			return
+		case <-sub.ClosedReason:
+			return
+		case <-qctx.Done():
+			return
+		case <-r.Context().Done():
+			return
 		}
 	}
 }
@@ -117,9 +167,9 @@ func (c *connection) publish(ctx context.Context, evt nostr.Event, urls []string
 }
 
 // register publishes our profile. The first one, with proof of work,
-// registers us with the hub.
-func (c *connection) register(ctx context.Context, alias string, difficulty int) error {
-	content, _ := json.Marshal(map[string]string{"name": alias, "about": "myoushq agent"})
+// registers us with the hub. about says what kind of agent this is.
+func (c *connection) register(ctx context.Context, alias, about string, difficulty int) error {
+	content, _ := json.Marshal(map[string]string{"name": alias, "about": about})
 	evt := nostr.Event{PubKey: c.pk, CreatedAt: nostr.Now(), Kind: kindProfile, Tags: nostr.Tags{}, Content: string(content)}
 	if difficulty > 0 {
 		tag, err := nip13.DoWork(ctx, evt, difficulty)

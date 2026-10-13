@@ -231,20 +231,27 @@ async fn run(cli: Cli) -> Result<()> {
                     c.sharing.as_deref().unwrap_or("(not set: share nothing personal)"));
             }
         }
-        Command::Accept { code, wait, context } => match agent.accept(&code, Duration::from_secs_f64(wait), context.into()).await? {
-            Outcome::Waiting => println!(
-                "the other agent hasn't answered yet; it finishes the next time this agent polls or listens \
-                 (result in `myous inbox`)"
-            ),
-            outcome => {
-                let done = matches!(outcome, Outcome::Done { .. });
-                report(outcome)?;
-                // The new contact learned our alias while pairing; a card follows if we have one.
-                if done && !agent.card()?.is_empty() {
-                    sync_cards(&agent).await;
+        Command::Accept { code, wait, context } => {
+            let started = now();
+            let outcome = match agent.accept(&code, Duration::from_secs_f64(wait), context.into()).await {
+                Ok(Outcome::Failed(error)) => Err(anyhow::anyhow!("pairing failed: {error}")),
+                other => other,
+            }.map_err(|e| with_trace(&*agent.storage, started, e))?;
+            match outcome {
+                Outcome::Waiting => println!(
+                    "the other agent hasn't answered yet; it finishes the next time this agent polls or listens \
+                     (result in `myous inbox`)"
+                ),
+                outcome => {
+                    let done = matches!(outcome, Outcome::Done { .. });
+                    report(outcome)?;
+                    // The new contact learned our alias while pairing; a card follows if we have one.
+                    if done && !agent.card()?.is_empty() {
+                        sync_cards(&agent).await;
+                    }
                 }
             }
-        },
+        }
         Command::Send { to, text } => {
             let text = if text == ["-"] {
                 let mut s = String::new();
@@ -419,12 +426,37 @@ fn guard_home(has_identity: bool, stored: Option<&str>, given: Option<&str>, ren
 /// What a pairing in progress is waiting for.
 fn describe_pending(p: &myous::pairing::Pending) -> String {
     let waiting = match (p.stage.as_str(), p.role.as_str()) {
+        ("posting", _) => "sending this agent's half of the handshake (the next poll tries again)",
         ("wait_pake", "a") => "waiting for the other agent to join",
         ("wait_pake", _) => "waiting for the inviting agent to answer",
         _ => "waiting for the other agent's details",
     };
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     format!("{}: {waiting}, expires in {} min", p.nameplate, p.expires_at.saturating_sub(now) / 60)
+}
+
+/// Add the steps of a pairing that failed since `started` to the error,
+/// oldest first: what this client saw, since the hub logs nothing.
+fn with_trace(st: &dyn myous::Storage, started: u64, e: anyhow::Error) -> anyhow::Error {
+    let Some((nameplate, steps)) = myous::pairing::pairing_trace(st, started) else { return e };
+    let clock = |at: u64| {
+        let s = at % 86400; // UTC: the std library has no local time
+        format!("{:02}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60)
+    };
+    let mut text = format!("{e:#}\nwhat happened (pairing {nameplate}, oldest first, UTC):");
+    for s in &steps[steps.len().saturating_sub(10)..] {
+        text += &format!("\n  {} {}", clock(s.at), s.step);
+        if !s.host.is_empty() {
+            text += &format!(" {}", s.host);
+        }
+        if let Some(at) = s.claimed_at {
+            text += &format!(": resumed the claim the hub gave at {}", clock(at));
+        }
+        if !s.error.is_empty() {
+            text += &format!(": {}", s.error);
+        }
+    }
+    anyhow::anyhow!(text)
 }
 
 fn report(outcome: Outcome) -> Result<()> {

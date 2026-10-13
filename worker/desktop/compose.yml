@@ -1,0 +1,50 @@
+# The worker's compose file for myous on Linux and Windows: the
+# published image, with the version filled in by the app at start. The
+# same services as worker/mac/compose-image.yml (a test keeps them equal).
+
+services:
+  worker:
+    image: ghcr.io/myoushq/worker:@VERSION@
+    restart: unless-stopped
+    # The browser view (noVNC), on this machine only.
+    ports:
+      # A free port chosen by Docker at each start, so nothing on the host
+      # collides with it; `docker compose port worker 6080` shows it.
+      - "127.0.0.1::6080"
+    labels:
+      com.myoushq.worker: "1"
+    volumes:
+      # Identity, contacts, status, request records and logs: a host
+      # directory, so the app can read them and drop its command files.
+      - ${MYOUS_WORKER_HOME:-~/.myous-worker}:/home/worker/.myous
+      # The browser profile (your logins) and the work directory stay in
+      # Docker volumes: Linux-only files, and nothing of the host's.
+      - browser-profile:/home/worker/profile
+      - work:/work
+    environment:
+      MYOUS_ALIAS: ${MYOUS_ALIAS:-Desktop worker}
+      # What this worker is, in the owner's words: its card, sent to the
+      # agents paired with it (protocol.md, cards). Empty clears it.
+      MYOUS_DESCRIPTION: ${MYOUS_DESCRIPTION:-}
+      MYOUS_HUB: ${MYOUS_HUB:-}
+      # "container" (the browser above) or "host" (a browser on this
+      # machine, forwarded; see entrypoint.sh and forward.py).
+      MYOUS_BROWSER: ${MYOUS_BROWSER:-container}
+      # The owner's timezone and language, so the browser's clock and
+      # Accept-Language match the address it browses from.
+      TZ: ${MYOUS_TZ:-UTC}
+      MYOUS_LANG: ${MYOUS_LANG:-}
+    # The host, for the forwarded browser (Docker Desktop has this name
+    # built in; Docker Engine on Linux needs the mapping).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # Chromium keeps its renderers in shared memory.
+    shm_size: 1g
+    # Chromium runs with --no-sandbox in the image; the container is the
+    # sandbox. No capabilities, no privilege gain.
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+
+volumes:
+  browser-profile:
+  work:

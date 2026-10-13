@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"syscall"
 )
 
 // Storage is where an agent keeps its myous data. FileStorage keeps it in
@@ -18,8 +17,9 @@ import (
 //
 // Must be durable: the key (losing it loses the identity) and the
 // "contacts" document (losing it loses every pairing). Should be durable:
-// "state", "settings" and the history. Can be lost: "hub" (cached config)
-// and "pending/*" (pairings in progress, which expire in 15 minutes).
+// "state", "settings" and the history. Can be lost: "hub" (cached config),
+// "pending/*" (pairings in progress, which expire in 15 minutes) and
+// "claiming/*" (the id of a claim in flight, until its pairing is saved).
 type Storage interface {
 	// LoadKey returns the private key (nsec), or "" if there isn't one.
 	LoadKey() (string, error)
@@ -196,7 +196,8 @@ func (s *FileStorage) ReadHistory() ([]Entry, error) {
 	return entries, scanner.Err()
 }
 
-// Lock uses flock on files under locks/.
+// Lock takes an exclusive lock on a file under locks/ (flock; on Windows,
+// LockFileEx).
 func (s *FileStorage) Lock(name string, wait bool) (func(), bool, error) {
 	dir := s.Path("locks")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -206,19 +207,13 @@ func (s *FileStorage) Lock(name string, wait bool) (func(), bool, error) {
 	if err != nil {
 		return nil, false, err
 	}
-	how := syscall.LOCK_EX
-	if !wait {
-		how |= syscall.LOCK_NB
-	}
-	if err := syscall.Flock(int(f.Fd()), how); err != nil {
+	got, err := lockFile(f, wait)
+	if err != nil || !got {
 		f.Close()
-		if errors.Is(err, syscall.EWOULDBLOCK) {
-			return nil, false, nil
-		}
 		return nil, false, err
 	}
 	return func() {
-		syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		unlockFile(f)
 		f.Close()
 	}, true, nil
 }

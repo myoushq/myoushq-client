@@ -209,12 +209,33 @@ Errors are `{"error": <message>}` with a 4xx/5xx status.
 | Call | Result |
 |---|---|
 | `POST /api/pair` `{}` | `201 {"nameplate", "token", "expires_at"}`: opens a mailbox for 15 minutes; you are side A |
-| `POST /api/pair/<nameplate>/claim` `{}` | `200 {"token", "expires_at"}`: you are side B. Works once; then `409` |
-| `POST /api/pair/<nameplate>/messages` `{"body": <string>}` | `200 {"index"}`; at most 4 messages per side, 4096 bytes each |
+| `POST /api/pair/<nameplate>/claim` `{"claim": <id>}` | `200 {"token", "expires_at", "repeat"}`: you are side B. Works once; a repeat with the same id gets the same answer with `"repeat": true` and `"claimed_at"`; anything else then gets `409` |
+| `POST /api/pair/<nameplate>/messages` `{"body": <string>}` | `200 {"index"}`; at most 4 messages per side, 4096 bytes each. A repeat of the side's last message gets `200 {"index", "repeat": true}` and is not stored again |
 | `GET /api/pair/<nameplate>/messages?after=<n>&wait=<s>` | `200 {"messages": [...], "next"}`: the *other* side's messages from index n, waiting up to s ≤ 25 seconds for one to arrive |
 | `DELETE /api/pair/<nameplate>` | `204`: closes the mailbox (used on failure) |
 
 `404` means expired or closed; `403` means a bad token.
+
+**The claim id.** `<id>` is 32 lowercase hex characters (16 random
+bytes) the client makes once per accept and saves before the first claim
+request, so that both a retry and a re-run of the same accept send it
+again. When a mailbox's second side is already claimed, the hub answers a
+request whose id equals the one that claimed it with `200` and the same
+`token` and `expires_at`, plus `"repeat": true` and `"claimed_at"` (Unix
+seconds of the first claim); any other request gets `409` "invite
+already used, ask for a new one". A first claim answers `"repeat": false`
+and no `claimed_at`. A malformed id gets `400` and claims nothing. A
+request without an id (`{}`, as older clients send) claims once and
+can't be repeated. The id is kept in the mailbox and goes with it when it
+expires. Why: a lost answer no longer burns the code, and since the id is
+known only to the claimer, a guesser gains nothing from it.
+
+**Posting again.** A post whose body is byte-identical to the last message
+that side posted is answered `200` with that message's index and
+`"repeat": true`, without appending it. A client that lost the answer to
+a post sends the same body again (so it saves the exact body before the
+first try); it never makes a new PAKE message for a mailbox it has posted
+to, which the other side would reject as unexpected.
 
 Each `body` is base64 of a JSON object:
 

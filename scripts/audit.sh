@@ -32,12 +32,14 @@ for lock in python/requirements.lock python/requirements-qr.lock; do
 done
 
 run "npm audit typescript" sh -c "cd typescript && npm audit --omit=dev"
+run "npm audit desktop" sh -c "cd worker/desktop && npm audit"
 
 CARGO=${CARGO:-$HOME/.cargo/bin/cargo}
 if [ ! -x "$HOME/.cargo/bin/cargo-audit" ]; then
 	"$CARGO" install --locked cargo-audit >/dev/null 2>&1
 fi
 run "cargo audit rust" sh -c "cd rust && $CARGO audit"
+run "cargo audit desktop" sh -c "cd worker/desktop/src-tauri && $CARGO audit"
 
 [ $status = 0 ] && echo "all client checks clean" || echo "some client checks reported problems"
 exit $status

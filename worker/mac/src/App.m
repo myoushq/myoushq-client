@@ -36,8 +36,26 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
 @property (nonatomic, strong) NSArray<NSDictionary *> *approvals;
 @property (nonatomic, readonly) Paths *paths;
 @property (nonatomic, readonly) AppConfig *appConfig;   // the first worker's app.json holds the app's settings
-@property (nonatomic, copy) NSString *runtimeState;   // nil (unknown), "ok", "missing", "stopped"
+@property (nonatomic, copy) NSString *runtimeState;   // nil (no answer yet), "ok", "missing", "stopped", "permission", "nocompose", "error"
 @property (nonatomic, copy) NSString *runtimeName;
+@property (nonatomic, copy) NSString *runtimeDetail;  // the runtime's own words when it can't be used
+// The first-launch checks: when each became unsure (it hasn't answered, or
+// answered "unknown"); 0 once it answered. Unsure for 10 s: "couldn't check".
+@property (nonatomic) double runtimeUnsure, hubUnsure, agentsUnsure;
+@property (nonatomic) BOOL runtimeProbing, hubChecking;
+@property (nonatomic, copy) NSString *hubState;       // nil (no answer yet), "ok", "down"
+@property (nonatomic, copy) NSString *hubDetail;
+@property (nonatomic) double lastHubCheck;
+// An install through Homebrew (a runtime, or compose): its name while it runs and after.
+@property (nonatomic, copy) NSString *installName, *installLast;
+@property (nonatomic) BOOL installRunning;
+@property (nonatomic) int installStatus;
+@property (nonatomic, strong) NSArray<NSTextField *> *setupCheckRows, *runtimeCheckRows;
+@property (nonatomic, strong) NSArray<NSButton *> *setupRetries, *runtimeRetries;
+@property (nonatomic, strong) NSView *setupForm;
+@property (nonatomic, strong) NSTextField *setupChecking, *runtimeInstallLine, *runtimeHint, *attentionText, *attentionLog;
+@property (nonatomic, strong) NSButton *installDockerButton, *installOrbButton, *attentionLogButton;
+@property (nonatomic, strong) NSBox *attentionCard;
 @property (nonatomic, copy) NSString *latestRelease;  // "vX.Y.Z" from the hub, when newer
 @property (nonatomic) NSUInteger ticks;
 @property (nonatomic, strong) NSArray<NSDictionary *> *tableRequests;   // what the table last showed
@@ -63,7 +81,7 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
 @property (nonatomic, strong) NSPopUpButton *setupGetBrowser;      // "Get a browser…": where each known one is downloaded
 @property (nonatomic, strong) NSArray<NSString *> *setupBrowserIds; // one per setupBrowser item: a bundle id, or "" for the container
 @property (nonatomic, strong) NSTextField *settingsBrowserHiddenHint;
-@property (nonatomic, strong) NSButton *setupStart, *getDockerButton, *getOrbButton, *openRuntimeButton, *directToggle, *directStart;
+@property (nonatomic, strong) NSButton *setupStart, *getDockerButton, *getOrbButton, *openRuntimeButton, *directToggle, *directStart;   // openRuntimeButton: the runtime card's one fix (Open, Install it)
 @property (nonatomic, strong) NSArray<NSTextField *> *startRows;
 @property (nonatomic, strong) NSTextField *startNote;
 @property (nonatomic, strong) NSButton *startRetry;
@@ -103,7 +121,10 @@ static const NSUInteger kAgentsEvery = 15;   // ticks (2 s each) between reads o
 /// What the agent is told this computer is when the owner writes nothing:
 /// enough to bind the owner's words ("the myous browser") to this worker
 /// rather than to the agent's own environment.
-static NSString *defaultDescription(NSString *name) {
+static NSString *defaultDescription(NSString *name, BOOL direct) {
+    // Without a container there is no worker browser, and the agent must know its commands run on the Mac itself.
+    if (direct) return [NSString stringWithFormat:@"My own computer, %@. Commands you send run directly on it, as me, not in a "
+                        "container: take care, and ask me before anything you're unsure of.", name ?: @"this Mac"];
     return [NSString stringWithFormat:@"My own computer, %@. Its browser is where I log into sites for you: when I say "
             "\"the myous browser\" or \"the worker browser\", I mean that one, never your own. Commands you send run in a container on it.",
             name ?: @"this Mac"];
@@ -159,8 +180,10 @@ static NSString *defaultDescription(NSString *name) {
     [self buildMainMenu];
     [self buildStatusItem];
     [self buildWindow];
-    self.runtimeState = [Runtime probe];   // once synchronously: the first screen depends on it
-    self.runtimeName = [Runtime name];
+    // Every check at once, none waited for: the Set up card shows "⟳" where one is still out.
+    double now = [[NSDate date] timeIntervalSince1970];
+    self.runtimeUnsure = self.hubUnsure = self.agentsUnsure = now;
+    if (!self.fake) { [self probeRuntimeAsync]; [self checkHub]; }
     [self refresh];
     [self setupNotifications];
     self.timer = [NSTimer scheduledTimerWithTimeInterval:2 target:self selector:@selector(refresh) userInfo:nil repeats:YES];
@@ -177,7 +200,7 @@ static NSString *defaultDescription(NSString *name) {
         __block __weak void (^weakShoot)(void);
         void (^shoot)(void);
         weakShoot = shoot = ^{
-            if (weak.agentsBusy && waited++ < 10) {   // the local agents answer in the background
+            if ((weak.agentsBusy || weak.runtimeProbing || weak.hubChecking) && waited++ < 20) {   // the checks answer in the background
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), weakShoot);
                 return;
             }
@@ -477,12 +500,13 @@ static NSString *defaultDescription(NSString *name) {
     [self buildBrowserCard];
     [self buildStoppedCard];
     [self buildStoppingCard];
+    [self buildAttentionCard];
 
     [self buildAgentCard];
     [self buildSidebar];
 
     self.root = [self column:@[headRow, self.headFacts, bannerRow, self.setupCard, self.runtimeCard, self.startingCard, self.pairCard,
-                               self.pairedCard, self.stoppingCard, self.stoppedCard, self.requestsCard, self.browserCard, self.agentCard]];
+                               self.pairedCard, self.stoppingCard, self.stoppedCard, self.attentionCard, self.requestsCard, self.browserCard, self.agentCard]];
     self.root.spacing = 12;
     self.root.edgeInsets = NSEdgeInsetsMake(16, 20, 20, 20);
     // The list of identities on the left appears once there is more than one (On this Mac).
@@ -586,25 +610,85 @@ static NSString *defaultDescription(NSString *name) {
     self.setupStart = [self button:@"Start the worker" action:@selector(setupStart:)];
     self.setupStart.keyEquivalent = @"\r";
     self.setupRemove = [self button:@"Remove this worker" action:@selector(removeWorker)];
-    NSStackView *col = [self column:@[self.setupRuntime, q, self.nameField, dq, self.descriptionField, dhint, bq, [self row:@[self.setupBrowser, self.setupGetBrowser]], self.setupBrowserHint, hint, [self buttons:@[self.setupRemove, self.setupStart]]]];
+    NSStackView *form = [self column:@[self.setupRuntime, q, self.nameField, dq, self.descriptionField, dhint, bq, [self row:@[self.setupBrowser, self.setupGetBrowser]], self.setupBrowserHint, hint, [self buttons:@[self.setupRemove, self.setupStart]]]];
+    self.setupForm = form;
+    NSMutableArray *rows = [NSMutableArray new], *retries = [NSMutableArray new];
+    NSView *checks = [self checklistRows:rows retries:retries];
+    self.setupCheckRows = rows;
+    self.setupRetries = retries;
+    self.setupChecking = [self wrap:@"Checking this Mac…"];
+    self.setupChecking.textColor = [NSColor secondaryLabelColor];
+    NSStackView *col = [self column:@[checks, self.setupChecking, form]];
     self.setupCard = [self card:@"Set up" content:col];
+}
+
+/// The checklist at the top of the Set up card: four lines that fill in as
+/// the checks answer, each with a Retry for "couldn't check".
+- (NSView *)checklistRows:(NSMutableArray *)rows retries:(NSMutableArray *)retries {
+    NSMutableArray *lines = [NSMutableArray new];
+    for (NSInteger i = 0; i < 4; i++) {
+        NSTextField *l = [self label:@"" size:13 weight:NSFontWeightRegular];
+        NSButton *r = [self button:@"Retry" action:@selector(retryCheck:)];
+        r.bezelStyle = NSBezelStyleInline;
+        r.controlSize = NSControlSizeSmall;
+        r.tag = i;
+        r.hidden = YES;
+        [rows addObject:l];
+        [retries addObject:r];
+        [lines addObject:[self row:@[l, r]]];
+    }
+    NSStackView *col = [self column:lines];
+    col.spacing = 3;
+    NSBox *line = [NSBox new];
+    line.boxType = NSBoxSeparator;
+    line.translatesAutoresizingMaskIntoConstraints = NO;
+    [line.widthAnchor constraintEqualToConstant:kInner - 28].active = YES;
+    NSStackView *outer = [self column:@[col, line]];
+    outer.spacing = 8;
+    return outer;
 }
 
 - (void)buildRuntimeCard {
     self.runtimeText = [self wrap:@""];
+    self.installDockerButton = [self button:@"Install Docker Desktop" action:@selector(installDocker)];
+    self.installOrbButton = [self button:@"Install OrbStack" action:@selector(installOrb)];
     self.getDockerButton = [self button:@"Get Docker Desktop" action:@selector(getDocker)];
     self.getOrbButton = [self button:@"Get OrbStack" action:@selector(getOrb)];
-    self.openRuntimeButton = [self button:@"Open Docker Desktop" action:@selector(openRuntime)];
+    self.openRuntimeButton = [self button:@"Open Docker Desktop" action:@selector(runtimeFix)];
+    self.runtimeInstallLine = [self wrap:@""];
+    self.runtimeHint = [self wrap:@""];
+    self.runtimeHint.textColor = [NSColor secondaryLabelColor];
+    self.runtimeHint.font = [NSFont systemFontOfSize:12];
     self.directToggle = [self button:@"▸ Run without a container (not recommended)" action:@selector(toggleDirectInfo)];
     self.directToggle.bezelStyle = NSBezelStyleInline;
     self.directToggle.bordered = NO;
-    self.directWarning = [self wrap:@"Commands your agent sends will run on this Mac as you, with everything you can reach, and only the review hook stands in the way. The myous client must be installed (pip install myous). Use a container unless you know why you don't want one."];
+    self.directWarning = [self wrap:@"Commands your agent sends will run on this Mac as you, with everything you can reach, and only the review stands in the way (it starts at \"Ask me before anything that changes things\"). There's no worker browser. Use a container unless you know why you don't want one."];
     self.directWarning.textColor = [NSColor systemOrangeColor];
     self.directStart = [self button:@"Run without a container" action:@selector(useDirectAndStart)];
-    NSStackView *col = [self column:@[self.runtimeText, [self row:@[self.getDockerButton, self.getOrbButton, self.openRuntimeButton]], self.directToggle,
-                                      self.directWarning, self.directStart]];
+    NSMutableArray *rows = [NSMutableArray new], *retries = [NSMutableArray new];
+    NSView *checks = [self checklistRows:rows retries:retries];
+    self.runtimeCheckRows = rows;
+    self.runtimeRetries = retries;
+    NSStackView *col = [self column:@[checks, self.runtimeText, [self row:@[self.installDockerButton, self.installOrbButton]],
+                                      [self row:@[self.getDockerButton, self.getOrbButton, self.openRuntimeButton]], self.runtimeInstallLine, self.runtimeHint,
+                                      self.directToggle, self.directWarning, self.directStart]];
     self.directWarning.hidden = self.directStart.hidden = YES;
     self.runtimeCard = [self card:@"Set up" content:col];
+}
+
+/// Needs attention: under the red line, why in a sentence, the last lines
+/// the start wrote, Show log and Try again (no Stop and Start needed).
+- (void)buildAttentionCard {
+    self.attentionText = [self wrap:@""];
+    self.attentionLog = [self wrap:@""];
+    self.attentionLog.font = [NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular];
+    self.attentionLog.textColor = [NSColor secondaryLabelColor];
+    self.attentionLogButton = [self button:@"Show log" action:@selector(attentionShowLog)];
+    NSButton *again = [self button:@"Try again" action:@selector(tryAgain)];
+    again.keyEquivalent = @"\r";
+    NSStackView *col = [self column:@[self.attentionText, self.attentionLog, [self buttons:@[self.attentionLogButton, again]]]];
+    self.attentionCard = [self card:@"Needs attention" content:col];
+    self.attentionCard.hidden = YES;
 }
 
 - (void)buildStartingCard {
@@ -719,6 +803,7 @@ static NSString *defaultDescription(NSString *name) {
     [Agents read:[Agents homes:self.appConfig.agentHomes] done:^(NSArray<LocalAgent *> *agents) {
         weak.agentsBusy = NO;
         weak.agents = agents;
+        weak.agentsUnsure = 0;
         if (weak.selectedAgent) {
             LocalAgent *same = nil;
             for (LocalAgent *a in agents) if ([a.home isEqualToString:weak.selectedAgent.home]) same = a;
@@ -1033,7 +1118,10 @@ static NSString *defaultDescription(NSString *name) {
     if (!self.fake) {
         ++self.ticks;
         if (self.ticks % kAgentsEvery == 0) [self loadWorkers];   // a folder added by hand
-        if (self.ticks % 5 == 0 && [self.config usesDocker]) [self probeRuntimeAsync];
+        // While a Set up card is up the runtime is asked every tick (2 s), so installing or opening one shows at once.
+        BOOL setupUp = self.screen == ScreenSetup || self.screen == ScreenNoRuntime;
+        if ([self.config usesDocker] && (setupUp || self.ticks % 5 == 0)) [self probeRuntimeAsync];
+        if ((setupUp || [self.hubState isEqualToString:@"down"]) && [[NSDate date] timeIntervalSince1970] - self.lastHubCheck >= 15) [self checkHub];
         if (self.appConfig.showAgents && (self.agents == nil || self.ticks % kAgentsEvery == 0)) [self readAgents];
         if (!self.appConfig.showAgents) { self.agents = @[]; self.selectedAgent = nil; }
     }
@@ -1140,6 +1228,10 @@ static NSString *defaultDescription(NSString *name) {
     BOOL alive = self.current.alive;
     Screen screen = self.screen;
     NSString *attention = self.current.attention, *attentionButton = self.current.attentionButton;
+    if (!attention && [self.hubState isEqualToString:@"down"]) {
+        attention = [NSString stringWithFormat:@"Can't reach %@ from this Mac. You can still start the worker; it registers once it can reach it.", [self hubHost]];
+        attentionButton = @"Retry";
+    }
     if (self.latestRelease && ![self.latestRelease isEqualToString:self.appConfig.skippedVersion] && !attention) {
         attention = [NSString stringWithFormat:@"myous %@ is available (you have %@).", self.latestRelease, appVersion()];
         attentionButton = @"Download";
@@ -1204,7 +1296,14 @@ static NSString *defaultDescription(NSString *name) {
             self.browserOpen.title = @"Open browser";
         }
     }
-    self.stoppedCard.hidden = screen != ScreenStopped || attention != nil || !self.config.name;
+    self.stoppedCard.hidden = screen != ScreenStopped || self.current.attention != nil || !self.config.name;
+    // Needs attention: the red line says what; the card has Show log and Try again (its button, not the banner's).
+    BOOL needsAttention = screen == ScreenStopped && self.current.attention != nil && self.config.name != nil;
+    self.attentionCard.hidden = !needsAttention;
+    if (needsAttention) {
+        [self fillAttention];
+        if ([attention isEqualToString:self.current.attention]) self.bannerButton.hidden = YES;
+    }
     if (screen == ScreenStopped && !self.stoppedCard.hidden) self.stoppedText.stringValue = @"The worker is stopped. Your agent can't reach this Mac until you start it.";
 
     switch (screen) {
@@ -1220,7 +1319,7 @@ static NSString *defaultDescription(NSString *name) {
     [self fillSidebar];
     if (self.selectedAgent) {
         // An agent's card replaces the worker's step; the header describes the agent.
-        for (NSBox *c in @[self.setupCard, self.runtimeCard, self.startingCard, self.pairCard, self.pairedCard, self.stoppingCard, self.stoppedCard, self.requestsCard, self.browserCard]) c.hidden = YES;
+        for (NSBox *c in @[self.setupCard, self.runtimeCard, self.startingCard, self.pairCard, self.pairedCard, self.stoppingCard, self.stoppedCard, self.attentionCard, self.requestsCard, self.browserCard]) c.hidden = YES;
         self.agentCard.hidden = NO;
         [self fillAgent];
         LocalAgent *a = self.selectedAgent;
@@ -1287,14 +1386,21 @@ static NSString *defaultDescription(NSString *name) {
 }
 
 - (void)fillSetup {
+    [self fillChecks:self.setupCheckRows retries:self.setupRetries];
+    // The runtime hasn't answered yet: the checklist alone, the form when it has (or after 10 s).
+    BOOL checking = [self.config usesDocker] && !self.runtimeState && [self.runtimeMark isEqualToString:@"checking"];
+    self.setupForm.hidden = checking;
+    self.setupChecking.hidden = !checking;
     if (self.nameField.stringValue.length == 0) {
         NSString *host = [[NSHost currentHost] localizedName] ?: @"My Mac";
         self.nameField.stringValue = host;
-        self.descriptionField.stringValue = defaultDescription(host);
+        self.descriptionField.stringValue = defaultDescription(host, [self.config isDirect]);
     }
-    self.setupRuntime.stringValue = [self.runtimeState isEqualToString:@"ok"]
-        ? [NSString stringWithFormat:@"✓ %@ found. The worker runs in a container there, so your agent's commands stay inside it.", self.runtimeName]
-        : @"✓ Ready.";
+    self.setupRuntime.stringValue = [self.config isDirect]
+        ? @"Runs on this Mac as you. No worker browser."
+        : [self.runtimeState isEqualToString:@"ok"]
+        ? [NSString stringWithFormat:@"The worker runs in a container in %@, so your agent's commands stay inside it.", self.runtimeName]
+        : @"The worker runs in a container, so your agent's commands stay inside it.";
     // One choice per installed browser ("On this Mac, in …", the first
     // recommended), then the container. With none installed, one disabled
     // line says so, and "Get a browser…" lists where each one is.
@@ -1347,16 +1453,185 @@ static NSString *defaultDescription(NSString *name) {
 }
 - (void)getBrowser:(NSMenuItem *)item { [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:item.representedObject]]; }
 
+/// "checking", "unknown" (couldn't check), "ok" or "bad" for a check's last
+/// answer and when it became unsure.
+static NSString *checkMark(NSString *state, double unsure) {
+    if (unsure && [[NSDate date] timeIntervalSince1970] - unsure >= 10) return @"unknown";
+    if (!state) return @"checking";
+    return [state isEqualToString:@"ok"] ? @"ok" : @"bad";
+}
+
+- (NSString *)runtimeMark { return checkMark(self.runtimeState, self.runtimeUnsure); }
+
+- (NSString *)hubHost {
+    NSString *hub = [[NSProcessInfo processInfo] environment][@"MYOUS_HUB"] ?: @"https://myoushq.com";
+    return [NSURL URLWithString:hub].host ? ([NSURL URLWithString:hub].port ? [NSString stringWithFormat:@"%@:%@", [NSURL URLWithString:hub].host, [NSURL URLWithString:hub].port] : [NSURL URLWithString:hub].host) : @"myoushq.com";
+}
+
+/// The checklist: containers, the runtime, the agents on this Mac, the hub,
+/// each ⟳ until it answers, "couldn't check" with Retry after 10 s.
+- (void)fillChecks:(NSArray<NSTextField *> *)rows retries:(NSArray<NSButton *> *)retries {
+    NSMutableArray *lines = [NSMutableArray new];   // @[mark, text, colour, retry tag or -1]
+    void (^add)(NSString *, NSString *, NSString *, NSString *, NSString *, NSInteger) = ^(NSString *mark, NSString *label, NSString *ok, NSString *bad, NSString *badMark, NSInteger tag) {
+        if ([mark isEqualToString:@"checking"]) [lines addObject:@[@"⟳", label, [NSColor labelColor], @(-1)]];
+        else if ([mark isEqualToString:@"unknown"]) [lines addObject:@[@"–", [label stringByAppendingString:@": couldn't check"], [NSColor tertiaryLabelColor], @(tag)]];
+        else if ([mark isEqualToString:@"ok"]) [lines addObject:@[@"✓", ok, [NSColor labelColor], @(-1)]];
+        else [lines addObject:@[badMark, bad, [badMark isEqualToString:@"✗"] ? [NSColor systemRedColor] : [NSColor tertiaryLabelColor], @(-1)]];
+    };
+    if ([self.config usesDocker]) {
+        add(@"ok", @"Containers", @"Containers can run on this Mac", @"", @"✗", 0);
+        NSString *name = self.runtimeName ?: @"Docker";
+        NSDictionary *bad = @{@"missing": @"Container runtime: none found",
+                              @"stopped": [NSString stringWithFormat:@"Container runtime: %@ isn't running", name],
+                              @"permission": [NSString stringWithFormat:@"Container runtime: you can't use %@ yet", name],
+                              @"nocompose": [NSString stringWithFormat:@"Container runtime: %@ is missing a part it needs", name]};
+        add([self runtimeMark], @"Container runtime", [NSString stringWithFormat:@"Container runtime: %@", name],
+            bad[self.runtimeState ?: @""] ?: [NSString stringWithFormat:@"Container runtime: %@ reports a problem", name], @"✗", 1);
+    }
+    if (self.appConfig.showAgents) {
+        NSMutableArray *names = [NSMutableArray new];
+        for (LocalAgent *a in self.agents) if (!a.error) [names addObject:a.displayName];
+        NSString *mark = checkMark(self.agents ? @"ok" : nil, self.agentsUnsure);
+        if ([mark isEqualToString:@"ok"] && !names.count) [lines addObject:@[@"○", @"No agents on this Mac (none needed)", [NSColor tertiaryLabelColor], @(-1)]];
+        else add(mark, @"Agents on this Mac", [@"Agents on this Mac: " stringByAppendingString:[names componentsJoinedByString:@", "]], @"", @"✗", 2);
+    }
+    NSString *host = [self hubHost];
+    add(checkMark(self.hubState, self.hubUnsure), host, [host stringByAppendingString:@" answers"], [@"Can't reach " stringByAppendingString:host], @"✗", 3);
+    for (NSUInteger i = 0; i < rows.count; i++) {
+        BOOL on = i < lines.count;
+        rows[i].superview.hidden = !on;
+        if (!on) continue;
+        NSArray *l = lines[i];
+        NSString *text = [NSString stringWithFormat:@"%@ %@", l[0], l[1]];
+        if (![rows[i].stringValue isEqualToString:text]) rows[i].stringValue = text;
+        rows[i].textColor = l[2];
+        NSInteger tag = [l[3] integerValue];
+        retries[i].hidden = tag < 0;
+        retries[i].tag = tag;
+    }
+}
+
+- (void)retryCheck:(NSButton *)sender {
+    double now = [[NSDate date] timeIntervalSince1970];
+    switch (sender.tag) {
+        case 1: self.runtimeUnsure = now; [self probeRuntimeAsync]; break;
+        case 2: self.agentsUnsure = now; self.agents = nil; break;
+        case 3: self.hubUnsure = now; [self checkHub]; break;
+        default: break;
+    }
+    [self refresh];
+}
+
 - (void)fillRuntime {
-    BOOL stopped = [self.runtimeState isEqualToString:@"stopped"];
-    self.runtimeText.stringValue = stopped
-        ? [NSString stringWithFormat:@"✗ %@ is installed but not running. Open it and wait for it to finish starting; this page updates by itself.", self.runtimeName]
-        : @"✗ No container runtime found. The worker runs in a container so your agent's commands stay inside it, not on your Mac. Docker Desktop and OrbStack are both free for personal use.";
-    self.getDockerButton.hidden = self.getOrbButton.hidden = stopped;
-    self.openRuntimeButton.hidden = !stopped;
-    self.openRuntimeButton.title = [NSString stringWithFormat:@"Open %@", self.runtimeName];
-    self.directToggle.hidden = stopped;
-    if (stopped) self.directWarning.hidden = self.directStart.hidden = YES;
+    [self fillChecks:self.runtimeCheckRows retries:self.runtimeRetries];
+    NSString *state = self.runtimeState ?: @"missing", *name = self.runtimeName ?: @"Docker";
+    BOOL missing = [state isEqualToString:@"missing"];
+    BOOL desktop = ![name isEqualToString:@"Colima"] && ![name isEqualToString:@"Docker"];   // an app to open, not a command-line VM
+    NSString *brew = [Runtime brew];
+    NSString *title = @"Set up", *text = @"", *fix = nil, *hint = @"";
+    if (missing) {
+        title = @"Get a container runtime";
+        text = @"The worker runs in a container, so your agent's commands run in a sandbox, not on your Mac's files. Either will do.";
+        if (brew) hint = @"Install uses Homebrew; its progress is in the log. Get opens the maker's page.";
+    } else if ([state isEqualToString:@"stopped"]) {
+        title = @"Start the container runtime";
+        text = [NSString stringWithFormat:@"%@ is installed but not running. Open it and wait for it to finish starting; this card leaves by itself.", name];
+        if (desktop) fix = [@"Open " stringByAppendingString:name];
+        else text = [NSString stringWithFormat:@"%@ is installed but not running. Start it (Colima: colima start in a terminal); this card leaves by itself.", name];
+    } else if ([state isEqualToString:@"nocompose"]) {
+        title = @"Install compose";
+        text = [NSString stringWithFormat:@"%@ works, but its compose part is missing: the worker starts its containers with it.", name];
+        if (brew) { fix = @"Install it"; hint = @"It runs: brew install docker-compose. Homebrew prints at the end how to make docker find it; this card leaves by itself once it does."; }
+        else text = [text stringByAppendingString:@" Install it (with Homebrew: brew install docker-compose); this card leaves by itself once it's there."];
+    } else if ([state isEqualToString:@"permission"]) {
+        title = [NSString stringWithFormat:@"Allow yourself to use %@", name];
+        text = [NSString stringWithFormat:@"You're not allowed to use %@ yet: %@", name, self.runtimeDetail ?: @""];
+    } else {
+        title = @"Container runtime";
+        text = [NSString stringWithFormat:@"%@ answered with an error: %@. If it's still starting, wait a moment; this card leaves by itself once it answers.", name, self.runtimeDetail ?: @""];
+        if (desktop) fix = [@"Open " stringByAppendingString:name];
+    }
+    self.runtimeCard.title = title;
+    self.runtimeText.stringValue = text;
+    BOOL busy = self.installRunning;
+    self.installDockerButton.hidden = self.installOrbButton.hidden = !(missing && brew) || busy;
+    self.getDockerButton.hidden = self.getOrbButton.hidden = !missing || busy;
+    self.openRuntimeButton.hidden = !fix || busy;
+    if (fix) self.openRuntimeButton.title = fix;
+    // A row whose buttons are all hidden takes no room.
+    self.installDockerButton.superview.hidden = self.installDockerButton.hidden;
+    self.getDockerButton.superview.hidden = self.getDockerButton.hidden && self.openRuntimeButton.hidden;
+    // What Homebrew did, on the card it belongs to.
+    BOOL own = self.installName && ([self.installName isEqualToString:@"compose"] ? [state isEqualToString:@"nocompose"] : missing);
+    NSString *what = [self.installName isEqualToString:@"compose"] ? @"compose" : self.installName;
+    NSString *line = !own ? @"" : busy ? [NSString stringWithFormat:@"⟳ Installing %@… This can take several minutes; the log shows its progress.", what]
+        : self.installStatus == 0 ? [NSString stringWithFormat:@"✓ %@ is installed. Waiting for it to answer…", what]
+        : [NSString stringWithFormat:@"✗ Installing %@ didn't finish%@. Get opens the maker's page instead.", what, self.installLast.length ? [@": " stringByAppendingString:self.installLast] : [NSString stringWithFormat:@" (exit %d)", self.installStatus]];
+    self.runtimeInstallLine.stringValue = line;
+    self.runtimeInstallLine.textColor = [line hasPrefix:@"✗"] ? [NSColor systemRedColor] : [NSColor labelColor];
+    self.runtimeInstallLine.hidden = !line.length;
+    self.runtimeHint.stringValue = hint;
+    self.runtimeHint.hidden = !hint.length || busy;
+    self.directToggle.hidden = !missing;
+    if (!missing) self.directWarning.hidden = self.directStart.hidden = YES;
+}
+
+/// Installs through Homebrew (decision B: only where brew is), its output in the log.
+- (void)brewInstall:(NSString *)what name:(NSString *)name {
+    NSString *brew = [Runtime brew];
+    if (!brew || self.installRunning) return;
+    self.installName = name;
+    self.installRunning = YES;
+    self.installLast = nil;
+    NSString *cmd = [NSString stringWithFormat:@"NONINTERACTIVE=1 '%@' install %@", brew, what];
+    [self append:[@"$ " stringByAppendingString:cmd]];
+    __weak typeof(self) weak = self;
+    [Runtime run:cmd in:NSHomeDirectory() env:@{} line:^(NSString *l) {
+        [weak append:l];
+        weak.installLast = l;
+    } done:^(int status) {
+        [weak append:[NSString stringWithFormat:@"exit %d", status]];
+        weak.installRunning = NO;
+        weak.installStatus = status;
+        [weak probeRuntimeAsync];
+        [weak refresh];
+    }];
+    [self refresh];
+}
+
+- (void)installDocker { [self brewInstall:@"--cask docker-desktop" name:@"Docker Desktop"]; }
+- (void)installOrb { [self brewInstall:@"--cask orbstack" name:@"OrbStack"]; }
+
+/// The runtime card's one fix: open the runtime's app, or install compose.
+- (void)runtimeFix {
+    if ([self.openRuntimeButton.title isEqualToString:@"Install it"]) [self brewInstall:@"docker-compose" name:@"compose"];
+    else [Runtime launch:self.runtimeName];
+}
+
+- (void)fillAttention {
+    Worker *w = self.current;
+    NSString *text;
+    if ([self.hubState isEqualToString:@"down"])
+        text = [NSString stringWithFormat:@"%@ can't be reached from this Mac, so the worker can't register. Try again once this Mac is online.", [self hubHost]];
+    else if (w.failure.count) text = @"Try again starts it the same way. The last lines it wrote:";
+    else if ([w.attention isEqualToString:@"The worker stopped on its own."]) text = @"Try again starts it again; the log may say why it stopped.";
+    else text = @"Try again starts it the same way; the log says what went wrong.";
+    self.attentionText.stringValue = text;
+    self.attentionLog.stringValue = [w.failure componentsJoinedByString:@"\n"] ?: @"";
+    self.attentionLog.hidden = !w.failure.count;
+}
+
+- (void)attentionShowLog {
+    if ([self.config isDirect]) [[NSWorkspace sharedWorkspace] openURL:[NSURL fileURLWithPath:[self.paths log]]];
+    else [self openLog];
+}
+
+/// Try again: the same start, from the stopped worker (no Stop needed).
+- (void)tryAgain {
+    self.current.attention = nil;
+    self.current.stoppedByUs = YES;
+    self.wasRunning = NO;
+    [self start];
 }
 
 - (void)fillStarting:(NSString *)phase {
@@ -1489,17 +1764,69 @@ static NSString *defaultDescription(NSString *name) {
 }
 
 - (void)probeRuntimeAsync {
+    if (self.runtimeProbing || self.fake) return;
+    self.runtimeProbing = YES;
     __weak typeof(self) weak = self;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-        NSString *state = [Runtime probe];
-        NSString *name = [Runtime name];
+        NSDictionary *c = [Runtime check];
+        NSString *state = c[@"state"];
+        BOOL unknown = [state isEqualToString:@"unknown"];
+        NSString *name = unknown ? nil : [Runtime name];
         dispatch_async(dispatch_get_main_queue(), ^{
-            BOOL changed = ![state isEqualToString:weak.runtimeState] || ![name isEqualToString:weak.runtimeName];
+            weak.runtimeProbing = NO;
+            if (unknown) {
+                // No answer in time: never a verdict; "couldn't check" once it lasts 10 s.
+                if (!weak.runtimeUnsure) weak.runtimeUnsure = [[NSDate date] timeIntervalSince1970];
+                [weak refresh];
+                return;
+            }
+            BOOL changed = ![state isEqualToString:weak.runtimeState] || ![name isEqualToString:weak.runtimeName] || ![c[@"detail"] isEqualToString:weak.runtimeDetail ?: @""];
             weak.runtimeState = state;
             weak.runtimeName = name;
-            if (changed) [weak refresh];
+            weak.runtimeDetail = c[@"detail"];
+            weak.runtimeUnsure = 0;
+            if (changed) {
+                [weak append:[NSString stringWithFormat:@"container runtime: %@ (%@)%@", state, name, [c[@"detail"] length] ? [@": " stringByAppendingString:c[@"detail"]] : @""]];
+                if (!weak.installRunning) weak.installName = nil;
+                [weak refresh];
+            }
         });
     });
+}
+
+/// One GET of the hub's /config.json (5 s at most; the hub has no separate
+/// health address): the red line while it fails.
+- (void)checkHub {
+    if (self.hubChecking || self.fake) return;
+    self.hubChecking = YES;
+    self.lastHubCheck = [[NSDate date] timeIntervalSince1970];
+    NSString *hub = [[NSProcessInfo processInfo] environment][@"MYOUS_HUB"] ?: @"https://myoushq.com";
+    NSURLSessionConfiguration *cfg = [NSURLSessionConfiguration ephemeralSessionConfiguration];
+    cfg.timeoutIntervalForRequest = 5;
+    cfg.timeoutIntervalForResource = 5;
+    cfg.requestCachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
+    NSURLSession *session = [NSURLSession sessionWithConfiguration:cfg];
+    __weak typeof(self) weak = self;
+    [[session dataTaskWithURL:[NSURL URLWithString:[hub stringByAppendingString:@"/config.json"]] completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        NSInteger code = [response isKindOfClass:[NSHTTPURLResponse class]] ? ((NSHTTPURLResponse *)response).statusCode : 0;
+        NSString *why = nil;
+        if (error) why = error.localizedDescription;
+        else if (code != 200) why = [NSString stringWithFormat:@"it answered with HTTP %ld", (long)code];
+        else {
+            id relays = dict([NSJSONSerialization JSONObjectWithData:data ?: [NSData data] options:0 error:nil])[@"relays"];
+            if (![relays isKindOfClass:[NSArray class]] || ![relays count]) why = @"the answer wasn't the hub's";
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            weak.hubChecking = NO;
+            NSString *state = why ? @"down" : @"ok";
+            if (![state isEqualToString:weak.hubState]) [weak append:why ? [NSString stringWithFormat:@"can't reach %@: %@", hub, why] : [hub stringByAppendingString:@" answers"]];
+            weak.hubState = state;
+            weak.hubDetail = why;
+            weak.hubUnsure = 0;
+            [weak refresh];
+        });
+    }] resume];
+    [session finishTasksAndInvalidate];
 }
 
 #pragma mark - fake states (snapshots)
@@ -1529,6 +1856,12 @@ static NSString *defaultDescription(NSString *name) {
                                 @"last": @{@"op": @"exec", @"at": @(now - 120), @"alias": @"Max's Muse", @"ok": @YES}} mutableCopy];
     self.runtimeState = @"ok";
     self.runtimeName = @"Docker Desktop";
+    self.runtimeDetail = nil;
+    self.hubState = @"ok";
+    self.runtimeUnsure = self.hubUnsure = self.agentsUnsure = 0;
+    self.installName = nil;
+    self.installRunning = NO;
+    if (!self.agents && ![f isEqualToString:@"checking"]) self.agents = @[];
     self.config.name = @"Max's Mac";
     self.config.seenPairedAt = now;
     StatusFile *st = [StatusFile new];
@@ -1536,6 +1869,16 @@ static NSString *defaultDescription(NSString *name) {
     if ([f hasPrefix:@"setup"]) { self.config.name = nil; [s removeObjectForKey:@"alias"]; }
     else if ([f isEqualToString:@"noruntime"]) { self.config.name = nil; [s removeObjectForKey:@"alias"]; self.runtimeState = @"missing"; }
     else if ([f isEqualToString:@"stoppedruntime"]) { self.runtimeState = @"stopped"; }
+    else if ([f isEqualToString:@"checking"]) { self.config.name = nil; [s removeObjectForKey:@"alias"]; self.runtimeState = nil; self.hubState = nil;
+        self.runtimeUnsure = self.hubUnsure = self.agentsUnsure = now - 1; }
+    else if ([f isEqualToString:@"hubdown"]) { self.config.name = nil; [s removeObjectForKey:@"alias"]; self.hubState = @"down"; }
+    else if ([f isEqualToString:@"installing"]) { self.config.name = nil; [s removeObjectForKey:@"alias"]; self.runtimeState = @"missing"; self.installName = @"Docker Desktop"; self.installRunning = YES; }
+    else if ([f isEqualToString:@"nocompose"]) { self.config.name = nil; [s removeObjectForKey:@"alias"]; self.runtimeState = @"nocompose"; self.runtimeName = @"Colima";
+        self.runtimeDetail = @"docker: 'compose' is not a docker command."; }
+    else if ([f isEqualToString:@"runtimeerror"]) { self.runtimeState = @"error"; self.runtimeDetail = @"Error response from daemon: Docker Desktop is unable to start"; }
+    else if ([f isEqualToString:@"failed"]) { st.modified = [NSDate dateWithTimeIntervalSinceNow:-3600]; s[@"contacts"] = @0; self.launchedAt = now - 95;
+        self.current.failure = @[@"worker Pulling", @"worker Error Get \"https://ghcr.io/v2/\": dial tcp: lookup ghcr.io: no such host",
+                                 @"Error response from daemon: Get \"https://ghcr.io/v2/\": dial tcp: lookup ghcr.io: no such host"]; }
     else if ([f isEqualToString:@"starting"]) { s[@"phase"] = @"browser"; s[@"contacts"] = @0; self.launchedAt = now - 75; }
     else if ([f isEqualToString:@"pair"]) { s[@"contacts"] = @0; [s removeObjectForKey:@"paired"];
         s[@"invite"] = @{@"code": @"4821-K7F3QX", @"link": @"https://myoushq.com/p/4821#K7F3QX", @"expires_at": @(now + 702)}; }
@@ -1788,7 +2131,7 @@ static NSString *defaultDescription(NSString *name) {
 - (NSDictionary *)composeEnv {
     NSMutableDictionary *env = [NSMutableDictionary new];
     if (self.config.name) env[@"MYOUS_ALIAS"] = self.config.name;
-    env[@"MYOUS_DESCRIPTION"] = self.config.descriptionText ?: defaultDescription(self.config.name);
+    env[@"MYOUS_DESCRIPTION"] = self.config.descriptionText ?: defaultDescription(self.config.name, NO);
     env[@"MYOUS_WORKER_HOME"] = [self.paths home];
     env[@"MYOUS_BROWSER"] = [self.config macBrowser] ? @"host" : @"container";
     env[@"MYOUS_TZ"] = [NSTimeZone localTimeZone].name ?: @"UTC";
@@ -1814,6 +2157,8 @@ static NSString *defaultDescription(NSString *name) {
 
 - (void)start {
     [[NSFileManager defaultManager] createDirectoryAtPath:[self.paths home] withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions: @0700} error:nil];
+    [self checkHub];
+    self.current.failure = nil;
     self.launchedAt = [[NSDate date] timeIntervalSince1970];
     self.stopping = NO;
     self.current.stopDoneAt = 0;   // a status newer than the last stop counts again
@@ -1830,12 +2175,21 @@ static NSString *defaultDescription(NSString *name) {
     self.launchStage = @"pulling";
     NSString *cmd = [[self composePrefix] stringByAppendingString:[self.config isImage] ? @" up -d" : @" up -d --build"];
     __weak typeof(self) weak = self;
+    Worker *w = self.current;
+    NSMutableArray *lines = [NSMutableArray new];
     [self runLogged:cmd in:[self.paths home] line:^(NSString *line) {
+        [lines addObject:line];
+        if (lines.count > 30) [lines removeObjectAtIndex:0];
         if ([line containsString:@"Pulled"] || [line containsString:@"Created"] || [line containsString:@"Started"] || [line containsString:@"Running"])
-            weak.launchStage = @"creating";
+            w.launchStage = @"creating";
     } done:^(int status) {
-        weak.launchStage = nil;
-        if (status != 0) { [weak append:@"the start command failed; see above"]; }
+        w.launchStage = nil;
+        if (status != 0) {
+            [weak append:@"the start command failed; see above"];
+            // Not starting any more: "didn't start" now, with what it said, not after 90 s.
+            w.failure = [lines subarrayWithRange:NSMakeRange(lines.count > 6 ? lines.count - 6 : 0, MIN(lines.count, (NSUInteger)6))];
+            if (!w.alive) w.launchedAt = [[NSDate date] timeIntervalSince1970] - 90;
+        }
         [weak refresh];
     }];
     [self refresh];
@@ -1885,21 +2239,43 @@ static NSString *defaultDescription(NSString *name) {
     }];
 }
 
+/// The worker direct mode runs: $MYOUS_WORKER_BIN (a development
+/// override, such as a local Go build), else the one inside the app
+/// (Contents/MacOS/myous-worker). nil, with the reason, if there is none.
+- (NSString *)workerProgram:(NSString **)why {
+    NSString *env = [[NSProcessInfo processInfo] environment][@"MYOUS_WORKER_BIN"];
+    if (env.length) {
+        NSString *p = [env stringByExpandingTildeInPath];
+        if ([[NSFileManager defaultManager] isExecutableFileAtPath:p]) return p;
+        if (why) *why = [NSString stringWithFormat:@"MYOUS_WORKER_BIN is %@ but there is no program there", p];
+        return nil;
+    }
+    NSString *p = [Paths bundledWorker];
+    if (!p && why) *why = @"this copy of myous has no worker inside it (Contents/MacOS/myous-worker); download myous again";
+    return p;
+}
+
 - (void)startDirect {
     [[NSFileManager defaultManager] createDirectoryAtPath:[self.paths work] withIntermediateDirectories:YES attributes:nil error:nil];
-    NSTask *t = [NSTask new];
-    t.launchPath = @"/bin/sh";
-    // A login shell, so the user's PATH (where `myous` lives) applies. The
-    // name is passed only when it changed (passing it re-registers).
+    NSString *why;
+    NSString *program = [self workerProgram:&why];
+    if (!program) { [self append:[NSString stringWithFormat:@"could not start myous worker: %@", why]]; return; }
+    if ([[NSProcessInfo processInfo] environment][@"MYOUS_WORKER_BIN"].length)
+        [self append:[NSString stringWithFormat:@"MYOUS_WORKER_BIN: running %@ instead of the worker inside the app", program]];
+    // The name is passed only when it changed (passing it re-registers).
     NSData *settings = [NSData dataWithContentsOfFile:[[self.paths home] stringByAppendingPathComponent:@"settings.json"]];
     NSString *current = settings ? str(dict([NSJSONSerialization JSONObjectWithData:settings options:0 error:nil])[@"alias"]) : nil;
     NSString *name = self.config.name ?: @"Desktop worker";
-    NSString *aliasOpt = [name isEqualToString:current] ? @"" :
-        [NSString stringWithFormat:@"--alias '%@' ", [name stringByReplacingOccurrencesOfString:@"'" withString:@"'\\''"]];
-    NSString *home = [[self.paths home] stringByReplacingOccurrencesOfString:@"'" withString:@"'\\''"];
-    NSString *hook = [[Paths bundledReview] stringByReplacingOccurrencesOfString:@"'" withString:@"'\\''"];
-    NSString *reviewOpt = hook ? [NSString stringWithFormat:@"--review '%@' ", hook] : @"";
-    t.arguments = @[@"-lc", [NSString stringWithFormat:@"exec myous worker %@%@--work '%@/work' >> '%@/worker.log' 2>&1", aliasOpt, reviewOpt, home, home]];
+    NSMutableArray *args = [NSMutableArray arrayWithObjects:program, @"worker", nil];
+    if (![name isEqualToString:current]) [args addObjectsFromArray:@[@"--alias", name]];
+    [args addObjectsFromArray:@[@"--description", self.config.descriptionText ?: defaultDescription(self.config.name, YES),
+                                @"--work", [self.paths work]]];
+    // Through a login shell, so the commands the agent runs see the user's
+    // PATH (as a terminal would), not the bare one apps get. The words go
+    // as arguments, never into the script, so nothing needs quoting.
+    NSTask *t = [NSTask new];
+    t.launchPath = @"/bin/sh";
+    t.arguments = [@[@"-lc", @"exec \"$0\" \"$@\" >> \"$MYOUS_HOME/worker.log\" 2>&1"] arrayByAddingObjectsFromArray:args];
     NSMutableDictionary *env = [[[NSProcessInfo processInfo] environment] mutableCopy];
     env[@"MYOUS_HOME"] = [self.paths home];
     t.environment = env;
@@ -1910,6 +2286,13 @@ static NSString *defaultDescription(NSString *name) {
             [weak append:[NSString stringWithFormat:@"myous worker exited with status %d", task.terminationStatus]];
             w.direct = nil;
             if (w.stopping) w.stopDoneAt = [[NSDate date] timeIntervalSince1970];
+            else if (w.launchedAt && !w.alive) {
+                // It ended before it ran: the last lines of its log say why.
+                NSString *log = [NSString stringWithContentsOfFile:[w.paths log] encoding:NSUTF8StringEncoding error:nil] ?: @"";
+                NSArray *all = [[log stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] componentsSeparatedByString:@"\n"];
+                w.failure = [all subarrayWithRange:NSMakeRange(all.count > 8 ? all.count - 8 : 0, MIN(all.count, (NSUInteger)8))];
+                w.launchedAt = [[NSDate date] timeIntervalSince1970] - 90;
+            }
             [weak refresh];
         });
     };
@@ -1935,6 +2318,7 @@ static NSString *defaultDescription(NSString *name) {
 - (void)bannerAction {
     NSString *t = self.bannerButton.title;
     if ([t isEqualToString:@"Start"]) [self start];
+    else if ([t isEqualToString:@"Retry"]) { self.hubUnsure = [[NSDate date] timeIntervalSince1970]; [self checkHub]; }
     else if ([t isEqualToString:@"Download"]) [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:@"https://myoushq.com/download/mac"]];
     else if ([t hasPrefix:@"Get a browser"]) [[self getBrowserMenu] popUpMenuPositioningItem:nil atLocation:NSMakePoint(0, self.bannerButton.bounds.size.height) inView:self.bannerButton];
     else [self openLog];
@@ -1957,10 +2341,11 @@ static NSString *defaultDescription(NSString *name) {
     if (![self.config.name length]) {
         self.config.name = [[NSHost currentHost] localizedName] ?: @"My Mac";
     }
-    if ([[Runtime output:@"command -v myous"] length] == 0) {
+    NSString *why;
+    if (![self workerProgram:&why]) {
         NSAlert *a = [NSAlert new];
-        a.messageText = @"The myous client isn't installed";
-        a.informativeText = @"Direct mode runs `myous worker` on this Mac. Install the client first (pip install myous, or ask your agent to), then try again.";
+        a.messageText = @"The worker can't run without a container";
+        a.informativeText = [why stringByAppendingString:@"."];
         [a runModal];
         return;
     }
@@ -2217,7 +2602,7 @@ static NSString *defaultDescription(NSString *name) {
         ]];
     }
     self.settingsName.stringValue = self.config.name ?: @"";
-    self.settingsDescription.stringValue = self.config.descriptionText ?: defaultDescription(self.config.name);
+    self.settingsDescription.stringValue = self.config.descriptionText ?: defaultDescription(self.config.name, [self.config isDirect]);
     [self.settingsReview selectItemAtIndex:[@[@"trust", @"changes", @"all"] indexOfObject:reviewLevel(self.paths)]];
     self.settingsDock.state = self.appConfig.dock ? NSControlStateValueOn : NSControlStateValueOff;
     self.settingsNotify.state = self.appConfig.notifications ? NSControlStateValueOn : NSControlStateValueOff;
@@ -2242,7 +2627,7 @@ static NSString *defaultDescription(NSString *name) {
     NSString *name = [self.settingsName.stringValue stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
     if (name.length) self.config.name = name;
     NSString *desc = [self.settingsDescription.stringValue stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    self.config.descriptionText = desc.length && ![desc isEqualToString:defaultDescription(self.config.name)] ? desc : nil;
+    self.config.descriptionText = desc.length && ![desc isEqualToString:defaultDescription(self.config.name, [self.config isDirect])] ? desc : nil;
     self.appConfig.dock = self.settingsDock.state == NSControlStateValueOn;
     self.appConfig.notifications = self.settingsNotify.state == NSControlStateValueOn;
     NSMutableDictionary *kinds = [NSMutableDictionary new];

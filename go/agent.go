@@ -26,6 +26,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/nbd-wtf/go-nostr"
@@ -48,6 +49,9 @@ type Agent struct {
 	st  Storage
 	sk  string
 	pk  string
+
+	liveMu sync.Mutex
+	live   *connection // the connection Listen holds, while it runs
 }
 
 // New makes an agent on st. hubURL overrides (and saves) the hub URL;
@@ -217,18 +221,13 @@ func (a *Agent) SyncCards(ctx context.Context) ([]Contact, error) {
 	if err != nil || len(due) == 0 {
 		return nil, err
 	}
-	conn, err := a.connect(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer conn.close()
 	var told []Contact
 	for _, c := range due {
 		pk, _, err := findContact(a.st, c.Npub)
 		if err != nil {
 			return told, err
 		}
-		if _, err := a.sendCard(ctx, conn, pk, c); err != nil {
+		if _, err := a.sendCard(ctx, pk, c); err != nil {
 			continue
 		}
 		told = append(told, c)
@@ -245,17 +244,15 @@ func (a *Agent) SendCard(ctx context.Context, name string) (Entry, error) {
 	if c.Status != Approved {
 		return Entry{}, fmt.Errorf("%s is %s", c.Alias, c.Status)
 	}
-	conn, err := a.connect(ctx, nil)
-	if err != nil {
-		return Entry{}, err
-	}
-	defer conn.close()
-	return a.sendCard(ctx, conn, pk, c)
+	return a.sendCard(ctx, pk, c)
 }
 
-func (a *Agent) sendCard(ctx context.Context, conn *connection, pk string, c Contact) (Entry, error) {
+func (a *Agent) sendCard(ctx context.Context, pk string, c Contact) (Entry, error) {
 	name, about := a.Alias(), a.Card()
-	if _, err := conn.sendMessage(ctx, pk, cardText(name, about), nil, nil); err != nil {
+	if err := a.withConn(ctx, func(conn *connection) error {
+		_, err := conn.sendMessage(ctx, pk, cardText(name, about), nil, nil)
+		return err
+	}); err != nil {
 		return Entry{}, err
 	}
 	unlock, _, err := lock(a.st, "state", true)
@@ -278,15 +275,32 @@ func (a *Agent) IsRegistered() bool {
 // Register publishes profile and inbox relays. The first time, with proof
 // of work, this registers the key with the hub. Safe to repeat.
 func (a *Agent) Register(ctx context.Context, alias string) error {
+	return a.RegisterAbout(ctx, alias, "")
+}
+
+// RegisterAbout is Register that also says what kind of agent this is
+// ("myoushq worker" for a worker; WorkerAbout). It is kept in the
+// settings, so later registrations say the same; "" keeps what is there
+// (default "myoushq agent").
+func (a *Agent) RegisterAbout(ctx context.Context, alias, about string) error {
+	settings, err := loadSettings(a.st)
+	if err != nil {
+		return err
+	}
 	if alias != "" {
-		settings, err := loadSettings(a.st)
-		if err != nil {
-			return err
-		}
 		settings["alias"] = alias
+	}
+	if about != "" {
+		settings["about"] = about
+	}
+	if alias != "" || about != "" {
 		if err := a.st.Put("settings", settings); err != nil {
 			return err
 		}
+	}
+	about, _ = settings["about"].(string)
+	if about == "" {
+		about = "myoushq agent"
 	}
 	cfg, err := a.Hub.Config(ctx, true)
 	if err != nil {
@@ -301,12 +315,12 @@ func (a *Agent) Register(ctx context.Context, alias string) error {
 	if a.IsRegistered() {
 		difficulty = 0
 	}
-	if err := conn.register(ctx, a.Alias(), difficulty); err != nil {
+	if err := conn.register(ctx, a.Alias(), about, difficulty); err != nil {
 		if !strings.Contains(err.Error(), "pow:") {
 			return err
 		}
 		// The hub forgot us (e.g. rebuilt): register again with proof of work.
-		if err := conn.register(ctx, a.Alias(), cfg.PowDifficulty); err != nil {
+		if err := conn.register(ctx, a.Alias(), about, cfg.PowDifficulty); err != nil {
 			return err
 		}
 	}
@@ -423,27 +437,27 @@ func (a *Agent) Send(ctx context.Context, name, text string) (Entry, error) {
 	if err != nil {
 		return Entry{}, err
 	}
-	conn, err := a.connect(ctx, nil)
-	if err != nil {
-		return Entry{}, err
-	}
-	defer conn.close()
-	if len(chunks) == 1 {
-		if _, err := conn.sendMessage(ctx, pk, text, nil, nil); err != nil {
-			return Entry{}, err
+	// A retry on a fresh connection sends every part again under the same
+	// id; the recipient drops parts it already has.
+	id, total := newPartID(), strconv.Itoa(len(chunks))
+	if err := a.withConn(ctx, func(conn *connection) error {
+		if len(chunks) == 1 {
+			_, err := conn.sendMessage(ctx, pk, text, nil, nil)
+			return err
 		}
-	} else {
 		targets, err := conn.deliveryTargets(ctx, pk)
 		if err != nil {
-			return Entry{}, err
+			return err
 		}
-		id, total := newPartID(), strconv.Itoa(len(chunks))
 		for i, chunk := range chunks {
 			tag := nostr.Tags{{"part", id, strconv.Itoa(i + 1), total}}
 			if _, err := conn.sendMessage(ctx, pk, chunk, tag, targets); err != nil {
-				return Entry{}, fmt.Errorf("sent %d of %d parts, then: %w", i, len(chunks), err)
+				return fmt.Errorf("sent %d of %d parts, then: %w", i, len(chunks), err)
 			}
 		}
+		return nil
+	}); err != nil {
+		return Entry{}, err
 	}
 	unlock, _, err := lock(a.st, "state", true)
 	if err != nil {
@@ -463,6 +477,15 @@ func (a *Agent) SendFile(ctx context.Context, name, path string, extraTags nostr
 	}
 	if c.Status != Approved {
 		return Entry{}, fmt.Errorf("%s is %s", c.Alias, c.Status)
+	}
+	// Check the size before reading: a file a worker was asked for may be
+	// anything a command left in its work directory.
+	info, err := os.Stat(path)
+	if err != nil {
+		return Entry{}, err
+	}
+	if info.Size() > maxPlaintext {
+		return Entry{}, fmt.Errorf("file is %d bytes; the limit is %d", info.Size(), maxPlaintext)
 	}
 	plain, err := os.ReadFile(path)
 	if err != nil {
@@ -488,12 +511,10 @@ func (a *Agent) SendFile(ctx context.Context, name, path string, extraTags nostr
 	if mimeType == "" {
 		mimeType = http.DetectContentType(plain)
 	}
-	conn, err := a.connect(ctx, nil)
-	if err != nil {
-		return Entry{}, err
-	}
-	defer conn.close()
-	if _, err := conn.sendFileMessage(ctx, pk, desc.URL, fileTags(ef, fileName, mimeType, extraTags)); err != nil {
+	if err := a.withConn(ctx, func(conn *connection) error {
+		_, err := conn.sendFileMessage(ctx, pk, desc.URL, fileTags(ef, fileName, mimeType, extraTags))
+		return err
+	}); err != nil {
 		return Entry{}, err
 	}
 	unlock, _, err := lock(a.st, "state", true)
@@ -517,26 +538,7 @@ func (a *Agent) SendFile(ctx context.Context, name, path string, extraTags nostr
 // never overwriting: a second copy gets a numeric suffix. It returns the
 // path written.
 func (a *Agent) Fetch(ctx context.Context, e Entry, dir string) (string, error) {
-	if e.Type != "file" {
-		return "", fmt.Errorf("entry %d is not a file", e.Seq)
-	}
-	key, err := hex.DecodeString(e.Key)
-	if err != nil {
-		return "", err
-	}
-	nonce, err := hex.DecodeString(e.Nonce)
-	if err != nil {
-		return "", err
-	}
-	blobs, err := a.blobs(ctx)
-	if err != nil {
-		return "", err
-	}
-	ciphertext, err := blobs.Get(ctx, e.X)
-	if err != nil {
-		return "", err
-	}
-	plain, err := DecryptFile(ciphertext, key, nonce, e.X, e.Ox)
+	plain, err := a.FetchBytes(ctx, e)
 	if err != nil {
 		return "", err
 	}
@@ -569,6 +571,34 @@ func (a *Agent) Fetch(ctx context.Context, e Entry, dir string) (string, error) 
 		}
 		return f.Name(), f.Close()
 	}
+}
+
+// FetchBytes downloads and decrypts a received file entry's blob,
+// checking the size the message announced and both hashes.
+func (a *Agent) FetchBytes(ctx context.Context, e Entry) ([]byte, error) {
+	if e.Type != "file" {
+		return nil, fmt.Errorf("entry %d is not a file", e.Seq)
+	}
+	key, err := hex.DecodeString(e.Key)
+	if err != nil {
+		return nil, err
+	}
+	nonce, err := hex.DecodeString(e.Nonce)
+	if err != nil {
+		return nil, err
+	}
+	blobs, err := a.blobs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	ciphertext, err := blobs.Get(ctx, e.X)
+	if err != nil {
+		return nil, err
+	}
+	if e.Size != 0 && int64(len(ciphertext)) != e.Size {
+		return nil, fmt.Errorf("the blob is %d bytes, the message said %d", len(ciphertext), e.Size)
+	}
+	return DecryptFile(ciphertext, key, nonce, e.X, e.Ox)
 }
 
 func (a *Agent) filesDir() string {
@@ -640,10 +670,16 @@ func (a *Agent) Poll(ctx context.Context) ([]Entry, error) {
 
 // Listen stays connected and handles messages as they arrive, until ctx
 // ends or the connection is lost (it returns an error then; reconnecting is
-// up to the caller). onNew gets new messages and pairing results; onTick
-// runs every tick (every 3 seconds while a pairing is pending).
+// up to the caller). onNew gets new messages and pairing results, each
+// entry once and in order, from one goroutine at a time (keep it quick, or
+// hand the work off: the next entries wait for it); onTick runs every tick
+// (every 3 seconds while a pairing is pending).
 func (a *Agent) Listen(ctx context.Context, onNew func([]Entry), onTick func(), tick time.Duration) error {
 	sk, _, err := a.Keys()
+	if err != nil {
+		return err
+	}
+	cursor, err := a.nextSeq()
 	if err != nil {
 		return err
 	}
@@ -652,25 +688,42 @@ func (a *Agent) Listen(ctx context.Context, onNew func([]Entry), onTick func(), 
 		return err
 	}
 	defer conn.close()
+	// While it runs, what this agent sends (a reply from onNew, a card)
+	// goes out on this connection instead of opening another.
+	a.liveMu.Lock()
+	outer := a.live
+	a.live = conn
+	a.liveMu.Unlock()
+	defer func() { // before the close above
+		a.liveMu.Lock()
+		a.live = outer
+		a.liveMu.Unlock()
+	}()
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	notify := func(entries []Entry) {
-		if len(entries) > 0 && onNew != nil {
+	// Both paths (the wrap stream, and housekeeping after pairings and
+	// notices) hand over what is new since one cursor, so an entry stored
+	// by one while the other looks isn't handed over twice.
+	var delivering sync.Mutex
+	deliver := func() {
+		delivering.Lock()
+		defer delivering.Unlock()
+		entries, err := a.entriesSince(cursor)
+		if err != nil || len(entries) == 0 {
+			return
+		}
+		cursor = entries[len(entries)-1].Seq + 1
+		if onNew != nil {
 			onNew(entries)
 		}
 	}
 	go func() {
 		for {
-			before, err := a.nextSeq()
-			if err == nil {
-				a.AdvancePairings(ctx)
-				a.checkNotices(ctx)
-				a.SyncCards(ctx) // a network problem: next round
-				if entries, err := a.entriesSince(before); err == nil {
-					notify(entries)
-				}
-			}
+			a.AdvancePairings(ctx)
+			a.checkNotices(ctx)
+			a.SyncCards(ctx) // a network problem: next round
+			deliver()
 			if onTick != nil {
 				onTick()
 			}
@@ -696,12 +749,12 @@ func (a *Agent) Listen(ctx context.Context, onNew func([]Entry), onTick func(), 
 			if err != nil {
 				return err
 			}
-			stored, err := handleWraps(a.st, sk, []*nostr.Event{w})
+			_, err = handleWraps(a.st, sk, []*nostr.Event{w})
 			unlock()
 			if err != nil {
 				return err
 			}
-			notify(stored)
+			deliver()
 		case err := <-errc:
 			return err
 		}
@@ -766,6 +819,27 @@ func (a *Agent) changeContact(name string, change func(*Contact)) (Contact, erro
 }
 
 // --- internals -------------------------------------------------------
+
+// withConn runs send on the connection Listen holds while it is connected
+// (go-nostr's Relay takes publishes from any goroutine alongside its
+// subscriptions: one writer goroutine, replies matched by event id); else,
+// or if that fails, on a fresh connection, closed afterwards.
+func (a *Agent) withConn(ctx context.Context, send func(*connection) error) error {
+	a.liveMu.Lock()
+	live := a.live
+	a.liveMu.Unlock()
+	if live != nil && live.connected() {
+		if err := send(live); err == nil {
+			return nil
+		}
+	}
+	conn, err := a.connect(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer conn.close()
+	return send(conn)
+}
 
 func (a *Agent) connect(ctx context.Context, cfg *HubConfig) (*connection, error) {
 	sk, _, err := a.Keys()

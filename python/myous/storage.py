@@ -15,16 +15,22 @@ What should be durable:
 What can be lost:
   hub        cached hub config, refetched
   pending/*  pairings in progress, which expire after 15 minutes anyway
+  claiming/* the id of a claim in flight, until its pairing is saved
 """
 from __future__ import annotations
 
 import abc
 import contextlib
-import fcntl
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any, ContextManager, Iterator
+
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
 
 
 SKIP_DIRS = {"venv", "bin", "node_modules", "locks", "target", ".git"}
@@ -151,15 +157,13 @@ class FileStorage(Storage):
         lock_dir.mkdir(mode=0o700, exist_ok=True)
         fd = os.open(lock_dir / name.replace("/", "_"), os.O_WRONLY | os.O_CREAT, 0o600)
         try:
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | (0 if wait else fcntl.LOCK_NB))
-            except BlockingIOError:
+            if not _lock(fd, wait):
                 yield False
                 return
             try:
                 yield True
             finally:
-                fcntl.flock(fd, fcntl.LOCK_UN)
+                _unlock(fd)
         finally:
             os.close(fd)
 
@@ -174,3 +178,31 @@ class FileStorage(Storage):
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp, p)
+
+
+def _lock(fd: int, wait: bool) -> bool:
+    """An exclusive lock on an open file (flock; on Windows, a lock on its
+    first byte). False if it is held elsewhere and wait is False."""
+    if os.name != "nt":
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | (0 if wait else fcntl.LOCK_NB))
+        except BlockingIOError:
+            return False
+        return True
+    os.lseek(fd, 0, os.SEEK_SET)
+    while True:
+        try:
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            return True
+        except OSError:
+            if not wait:
+                return False
+            time.sleep(0.05)
+
+
+def _unlock(fd: int) -> None:
+    if os.name != "nt":
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return
+    os.lseek(fd, 0, os.SEEK_SET)
+    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)

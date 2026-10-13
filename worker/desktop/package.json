@@ -1,0 +1,17 @@
+{
+  "name": "myous-desktop",
+  "private": true,
+  "description": "myous for Linux and Windows: the human's side of a worker (Tauri 2, plain TypeScript)",
+  "scripts": {
+    "build:ui": "tsc -p ui/tsconfig.json && cp ui/index.html ui/style.css ui/dist/",
+    "test": "tsc -p ui/tsconfig.test.json && node --test 'ui/test-dist/*.test.js'",
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2",
+    "@types/node": "^22.20.5",
+    "typescript": "^5"
+  },
+  "type": "module",
+  "version": "0.7.0"
+}

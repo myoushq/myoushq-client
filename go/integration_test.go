@@ -34,6 +34,7 @@ var (
 	sharedErr  string
 	sharedOnce sync.Once
 	hubProc    *exec.Cmd
+	runs       int // tests run so far (they run one at a time)
 )
 
 func TestMain(m *testing.M) {
@@ -58,6 +59,12 @@ func setup(t *testing.T) *env {
 	}
 	e := *shared
 	e.t = t
+	// Agents of their own for each run of a test (-count=N reuses the names).
+	runs++
+	e.dir = filepath.Join(shared.dir, fmt.Sprintf("run%d", runs))
+	if err := os.MkdirAll(e.dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	return &e
 }
 

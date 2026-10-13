@@ -1,0 +1,267 @@
+# myous for Linux and Windows
+
+`myous` is the human's side of a worker on a Linux or Windows computer:
+a tray icon whose colour shows the state, and a window that walks through
+the steps. Find a container runtime, name the worker, start it (with the
+phases shown while it downloads, starts the browser and registers), hand
+the pairing message to an agent, confirm the verification code, then the
+everyday view: every request the agent made with its outcome (click a row
+for the command and its output), Allow and Refuse when the review level
+asks, Pause, Stop this command, and "Open browser". It is the same app as
+myous for Mac (`worker/mac`): the same screens and words, the same worker
+container, the same files in the worker folder, so a folder moves between
+them unchanged.
+
+## Download
+
+Each release has, on the GitHub release page and at the links below (their
+SHA-256 sums are in `SHA256SUMS`):
+
+- **Windows:** `myous-<version>-windows-x64-setup.exe`
+  (https://myoushq.com/download/windows). An installer for your user
+  only, no administrator rights; it fetches Microsoft's WebView2 if the PC
+  lacks it (Windows 11 has it). It is not code-signed yet, so SmartScreen
+  asks once: More info, then Run anyway. For containers you need Docker
+  Desktop or Rancher Desktop, running; both need WSL 2. Without it, see
+  "Without containers" below.
+- **Linux:** `myous-<version>-linux-x86_64.AppImage`
+  (https://myoushq.com/download/linux): make it executable and run it.
+  Or `myous-<version>-linux-amd64.deb` for Debian and Ubuntu. You need
+  Docker Engine (add yourself to the `docker` group), Podman, or Docker
+  Desktop. On GNOME the tray icon needs the AppIndicator extension
+  (Ubuntu has it on).
+
+The app runs the published container image `ghcr.io/myoushq/worker:<version>`
+(the same version as the app) from the compose file built into it
+(`compose.yml` here, the same services as `worker/mac/compose-image.yml`;
+a test keeps them equal). The first start pulls about 2 GB. Everything the
+worker keeps lives in `~/.myous-worker` on Linux and
+`%LOCALAPPDATA%\myous\worker` on Windows; the browser's logins and the work
+directory are container volumes. The app writes its own log to `app.log`
+there.
+
+What differs from the Mac app: with a container the worker's browser
+runs only in the container (shown through the browser view in your own
+browser); without one it runs on the computer (below). Notifications have
+no buttons (Allow and Refuse are in the window).
+
+## The first launch
+
+The window draws at once and checks the computer in parallel: whether
+containers can run here (Windows: WSL 2 and virtualization), the runtime
+(`docker version` and `docker compose version`, 5 s each), the agents on the
+computer, and whether it reaches myoushq.com (one GET of `/config.json`,
+5 s). The answers fill a short list at the top of the Set up card (✓, ✗,
+"⟳" while a check is out; after 10 s without an answer, "couldn't check"
+with Retry, never a tick or a cross it didn't earn; a row that moves on,
+say Python found, flashes green and says what it found and what comes
+next for 8 s), and the rest of the card is the one thing still needed:
+
+- **Set up** (the form) once the runtime answers, or after 10 s if it
+  doesn't.
+- **Get a container runtime** when there is none: Docker Engine, Podman and
+  Docker Desktop on Linux, Docker Desktop and Rancher Desktop on Windows.
+  Where the tool for it is there the app installs it itself (**Install**:
+  winget on Windows; on Linux apt, dnf or pacman through `pkexec`, which
+  asks for the password, and for Docker Engine also starts the service and
+  adds you to the `docker` group), with the output in the app log;
+  otherwise the button opens its download page. The card leaves by itself
+  when the runtime answers. Folded underneath: "Run without a container
+  (not recommended)".
+- **Start the container runtime** when it is installed but not running:
+  "Open Docker Desktop" (or Rancher Desktop); for Docker Engine on Linux
+  "Start Docker Engine" (`pkexec systemctl enable --now docker`) where
+  pkexec and systemd are there, else the line to type.
+- **Allow yourself to use it** when the runtime says permission denied:
+  the `docker` group line (Windows: `docker-users`), then log out and in.
+- **Install compose** when `docker compose` is missing (Debian's and
+  Ubuntu's `docker.io` has none): the distribution's package
+  (`docker-compose-v2`, `docker-compose-plugin` from Docker's repository,
+  `podman-compose` for Podman), installed through pkexec or as the line to
+  type.
+- **Container runtime** with the runtime's own error, when it answers with
+  one.
+- **Turn on WSL** and **Containers can't run here** (Windows), below.
+
+While a Set up card is up the runtime is checked every 2 s and the hub
+every 15 s. When the hub can't be reached a red line says so on whatever
+card is up, with Retry; Start stays available (the worker registers once
+it can reach the hub). When a start fails, **Needs attention** under the
+red line shows the last lines it wrote, with Show log and **Try again**
+(the same start, no Stop needed).
+
+## Without containers
+
+On Windows the runtimes need WSL 2, and WSL 2 needs virtualization. When
+there is no runtime, the app checks (`containers.rs`): WSL not turned on
+on a PC that can have it offers **Turn on WSL…** (`wsl --install
+--no-distribution`, as administrator, then a restart); a virtual machine
+that doesn't pass virtualization on (an AWS WorkSpace, most cloud
+desktops), or virtualization turned off in the firmware, says so. Either
+way, and on Linux as an option, the owner can go on without containers:
+the app remembers it (`"containers": false` in the first worker's
+`app.json`), goes straight to Set up, every worker then runs directly on
+the computer, as the Mac app's direct mode does, and the ⋯ menu offers
+the way back. Without a container, commands run as the owner
+(PowerShell on Windows, `/bin/sh` elsewhere), and the review starts at
+"Ask me before anything that changes things". The agents on the
+computer are found and paired the same way.
+
+**The worker's browser without a container** (`browser.rs`) runs on the
+computer. The app looks for Edge then Chrome on Windows (where their
+installers put them, else the registry's App Paths), `google-chrome`,
+`chromium` or `microsoft-edge` on PATH on Linux (not a snap's Chromium,
+which can't use a profile in a hidden folder), and for Playwright in an
+environment of its own (`%LOCALAPPDATA%\myous\browser-python`, or
+`~/.local/share/myous/browser-python`). The owner provides Python 3.10
+or newer (`py -3`, `python`, `python3` on Windows; `python3`, `python`,
+`python3.1x` elsewhere); the Set up card says what is missing, one thing
+at a time: a browser ("Get Edge", "Get Chrome"), Python ("Get Python",
+python.org on Windows; the distribution's package line on Linux, with
+`python3-venv` on Debian and Ubuntu), or Playwright (**Install
+Playwright**: `python -m venv` with that Python, then `pip install
+playwright==<the container's version>`, the output in the app log; no
+`playwright install`, as no browser is downloaded). When a worker
+starts, the app starts the browser first: `--user-data-dir=<folder>/browser/<msedge|chrome|chromium>`
+(its own profile, named "<worker> · myous", downloads into
+`work/downloads`), `--remote-debugging-port=<a free port>` and a start
+page (`browser/start.html`) that says whose window it is. It is a plain
+process, never launched through Playwright, so pages aren't marked as
+automated. The port goes into `browser.json` once it answers (the keys
+the Mac app writes, plus `python` and `kind: "host"`), which the worker
+reads at each `help`: a line with the address for Playwright's
+`connect_over_cdp`, and on the shell line the Python that has Playwright
+(as PowerShell takes it on Windows), its version, and whether the plain
+`python` lacks Playwright. A worker started without its browser (before
+Playwright was installed, say) gets one from "Open browser" on the
+Browser card, no restart: its next `help` names it. The browser stops
+with the worker and when the app quits (asked to close first, ended
+after 8 s); "Show browser" (the Browser card, the tray, the ⋯ menu)
+brings its page to the front, or starts it again on the same port if
+the owner closed it. "Continue
+without a browser" on the Set up card, or the checkbox in Settings,
+turns it off for that worker (`"browser": "none"` in its `app.json`;
+`"host"` turns it back on; a change while the worker runs takes effect
+at its next start). While it is on, the worker's default description
+says, as the container worker's does, that its browser is where the
+owner logs into sites ("the myous browser" means that one).
+
+The worker is the Go client's `myous worker`, which the app carries inside
+itself as `myous-worker` (`myous-worker.exe`; never `myous`, which on
+Windows is the app): a Tauri bundled program (`externalBin`), so it lands
+next to the app's own program in every package (`/usr/bin` in the deb,
+`usr/bin` inside the AppImage, the install folder on Windows) and the app
+runs it from there by its full path. It is always the app's own version,
+and nothing needs installing: no Python, no pip. The app starts it as
+`myous-worker worker --alias … --description … --work <folder>/work`
+with `MYOUS_HOME` set to the worker folder; the review rules are built
+into it (the level in `review.json`, `worker.paused`, the questions in
+`approvals/`), the same as `worker/review.py`'s. The worker's own output
+is in `worker.log` (Show worker log, in the ⋯ menu).
+
+## How it is built
+
+[Tauri 2](https://tauri.app): a small Rust program that owns the tray, the
+worker folders and the container runtime, and a window drawn by the
+system's web view (WebView2 on Windows, WebKitGTK on Linux). The window
+is plain HTML, CSS and TypeScript with no framework. An earlier version
+drew with OpenGL (Go and Fyne) and showed no window at all on PCs
+without a graphics driver, such as cloud desktops and many virtual
+machines; a web view has no such need.
+
+| Where | What |
+|---|---|
+| `ui/src/model.ts` | The state machine: which screen each worker is on, the state word and colour, notifications. A port of the Mac app's `evaluate`. |
+| `ui/src/app.ts` | The window: renders the model, runs the buttons, keeps the tray menu in step. |
+| `ui/src/menu.ts` | The tray menu, built from the model. |
+| `ui/src/backend.ts` | Every call into Rust, and a stand-in for a plain browser (previews, screenshots, tests). |
+| `ui/src/fake.ts` | Made-up data for every screen. |
+| `ui/src/text.ts` | The words and numbers: times, sizes, the pairing message, the default description. |
+| `src-tauri/src/lib.rs` | The commands the window calls; the tray; notifications, dialogs, clipboard, open at login. |
+| `src-tauri/src/files.rs`, `paths.rs` | The worker folders and the files in them (`worker.json`, `requests/`, `approvals/`, `app.json`, `review.json`, command files). |
+| `ui/src/setup.ts` | The first launch's words: the checklist, the runtime cards, the hub's red line, Needs attention. |
+| `src-tauri/src/engine.rs` | Docker or Podman: the runtime check (ok, missing, not running, no permission, no compose, its own error), `compose up` and `down` with the output streamed to the log, the browser view's port, stale containers. |
+| `src-tauri/src/install.rs` | Which runtimes this system can have and whether the app can install each (winget, Homebrew, apt/dnf/pacman through pkexec), starting Docker Engine, compose's package. |
+| `src-tauri/src/hub.rs` | Whether the hub answers (`/config.json`), and the newest release. |
+| `src-tauri/src/agents.rs` | The agents on this computer, read with their own client's `myous status --json`; accepting a pairing code as one of them. |
+| `src-tauri/src/containers.rs` | Whether containers can run here at all (WSL 2 and virtualization on Windows); turning WSL on. |
+| `src-tauri/src/direct.rs` | Workers without a container: finding the bundled worker, starting and stopping it. |
+| `../build-worker.sh` | Builds that worker (the Go client) into `src-tauri/binaries/myous-worker-<target>`, where Tauri takes it from. |
+
+## Building
+
+You need Node 22, Rust (stable) and Go (the toolchain `go/go.mod` pins;
+the `go` command fetches it). On Linux also the system libraries Tauri
+uses:
+
+```sh
+sudo apt install libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev build-essential file
+```
+
+Then, on the system you build for (Windows builds on Windows):
+
+```sh
+sh worker/build-worker.sh host worker/desktop/src-tauri/binaries   # the worker the app carries; any Rust build needs it
+cd worker/desktop
+npm ci
+npm test                      # the state machine, the menu, the words
+(cd src-tauri && cargo test)  # the folders, the runtime, the compose file, the worker's command line, the worker browser without a container
+npx tauri build               # Linux: AppImage and deb; Windows: the NSIS installer
+npx tauri dev                 # run it from source
+```
+
+## Looking at the screens without a worker
+
+The window runs in any browser with made-up data:
+
+```sh
+npm run build:ui
+python3 -m http.server -d ui/dist 8000   # then open http://localhost:8000/index.html?state=pair&os=windows
+python3 screens.py /tmp/screens          # every state as a PNG (Playwright for Python), failing on any script error
+python3 clicks.py                        # clicks the first-launch buttons and checks what each asks for (CI runs both)
+```
+
+`state` is one of checking, couldntcheck, setup, hubdown, noruntime,
+installing, stoppedruntime, stoppedengine, nopermission, nocompose,
+runtimeerror, nowsl, novirt, direct, directstarting, directrunning,
+starting, failed, pair, paired, running, paused, stopping, stopped,
+approval, busy, agents, agent, pairlocal, workers (`screens.py` renders
+all 30, and two of them dark too). The app itself takes the same names in
+`MYOUS_FAKE_STATE`. In a plain browser the page's backend only records
+what the buttons ask for (`window.myous.backend.calls`), and
+`window.myous.backend.emit(event, payload)` plays what Rust would send (an
+install's end, a log line), so the buttons can be clicked in tests.
+
+Other environment variables, for tests: `MYOUS_WORKER_HOME` (another
+worker folder), `MYOUS_COMPOSE_PROJECT` (the first worker's compose
+project name, so a test never touches an installed worker's containers),
+`MYOUS_DOCKER_BIN` (the runtime command; a missing path simulates a
+computer without Docker), `MYOUS_AGENT_HOMES` (replaces the search for
+agents' folders), `MYOUS_HUB` (the hub the app checks and asks for the
+latest release),
+`MYOUS_IMAGE_TAG` (the worker image tag instead of the app's version),
+`MYOUS_WORKER_BIN` (another worker program to run without a
+container, such as a local `go build` of `go/cmd/myous`; the app log
+says when it is used), `MYOUS_BROWSER_BIN` (another Chromium for the
+worker's browser without a container) and `MYOUS_APP_DATA` (the folder
+for the app's Python environment instead of the system's).
+
+The way without a container, end to end with the real Go worker, a local
+hub and a Python agent (starts the worker as the app does, pairs the
+agent, runs a read and a change the review asks about at "changes",
+answered as the app answers, and stops it): `cargo test -- --ignored e2e`
+in `src-tauri`. It builds and starts the hub from `../myoushq/hub` next
+to this checkout (`MYOUS_HUB_SRC` elsewhere, or `MYOUS_E2E_HUB=<url>` for
+one already running) and needs a Python with the client
+(`MYOUS_PYTHON`, default `/tmp/myous-venv/bin/python`). With a Chromium
+(`MYOUS_E2E_BROWSER`, else Playwright's Chrome for Testing in its cache)
+it also starts the worker's browser as the app does (headless; once the
+worker runs, as "Open browser" does), checks that the worker's `help`
+names it (read from `browser.json`) and the Python with Playwright
+(`MYOUS_E2E_PW_PYTHON`, default `/tmp/pw-venv/bin/python`), has the
+agent run a Playwright script through `myous exec` that reads the start
+page's title over the browser's port, brings it forward as Show browser
+does, and checks it ends with the worker. `cargo test -- --ignored
+playwright_install` makes the Python environment and installs Playwright
+for real in a temporary folder (`MYOUS_E2E_SYSTEM_PYTHON` names the
+Python 3.10+ to make it with).

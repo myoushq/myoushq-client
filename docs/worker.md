@@ -20,12 +20,16 @@ container is published for every release at
 `ghcr.io/myoushq/worker:<version>` (amd64 and arm64, signed with cosign;
 `<version>` is `latest_release` from https://myoushq.com/config.json
 without the `v`), so nothing needs building, and only Docker is needed.
-On a Mac, there is **myous for Mac** (`myous.app`, a notarized disk
-image at https://myoushq.com/download/mac, also on the GitHub release
-page as `myous-v<version>.dmg`): open it, drag the app to Applications,
-launch it, give the worker a name and press "Start the worker"; it pulls
-that image, shows the pairing message in its window, and keeps its data
-in `~/.myous-worker`. With the app, continue at step 5. **From source** (the alternative, and
+There is an app for each system: **myous for Mac** (`myous.app`, a
+notarized disk image at https://myoushq.com/download/mac, also on the
+GitHub release page as `myous-v<version>.dmg`), **myous for Linux**
+(https://myoushq.com/download/linux, `myous-v<version>-linux-x86_64.AppImage`,
+or the `.deb`) and **myous for Windows** (https://myoushq.com/download/windows,
+`myous-v<version>-windows-x64-setup.exe`). Open it, give the worker a name
+and press "Start the worker"; it pulls that image, shows the pairing
+message in its window, and keeps its data in `~/.myous-worker`
+(`%LOCALAPPDATA%\myous\worker` on Windows). With the app, continue at
+step 5. **From source** (the alternative, and
 the way to change anything): steps 1 and 3 below build the image from
 the verified checkout.
 
@@ -211,9 +215,16 @@ and its history, which holds the key of every file it received. That is
 why the container is the default. Only do this if the user understands
 that, and keep the review hook strict. Keep the review hook outside the
 work directory (the worker refuses to start otherwise: a request could
-replace it there). Steps are in `worker/README.md`, "Direct mode".
+replace it there). Steps are in `worker/README.md`, "Direct mode". The
+Go client's `myous worker` (one binary, no Python; `go/README.md`) is
+the same worker with `review.py`'s rules built in, and serves the same
+worker folder; the myous apps carry it for direct mode. On Windows the
+worker's shell is PowerShell, not a Linux shell: its `help` reply and
+pairing message say so, a command PowerShell doesn't know comes back
+with a hint to send `help`, and the review hook's read-only list knows
+PowerShell's reading commands.
 
-## 9. Optional: myous for Mac
+## 9. Optional: myous for Mac, Linux and Windows
 
 `worker/mac/make-app.sh` builds `myous.app` from source with the clang
 that comes with Xcode's command line tools (Objective-C, no Xcode, no
@@ -224,6 +235,31 @@ and "Open browser" (or "Show browser" when the worker's browser is a
 Chrome on the Mac, sandboxed to the worker's folder). It also lists the agents whose myous directories are
 on this Mac and can accept a pairing code on their behalf (the contact
 then carries `added_by: owner`). Details in `worker/mac/README.md`.
+
+`worker/desktop` is myous for Linux and Windows, the same screens over
+the same worker folder, built with Tauri (Rust, and the window in the
+system's web view): `npm ci && npx tauri build` there, on the system you
+build for. Its browser is the container's, shown through the browser
+view. Where containers can't run (Windows without WSL 2, such as a cloud
+desktop) it says so and offers direct mode instead. All three apps carry
+the Go worker for direct mode (`myous-worker`, of the app's own version),
+so it needs no Python. Without a container the app runs the worker's
+browser on the computer itself (Edge or Chrome, with a profile of its
+own) and installs Playwright into an environment of its own, which needs
+Python 3.10 or newer on the computer; the worker's `help` tells agents
+the browser's address and that Python (and that the plain `python` has
+no Playwright), reading the browser's record at each `help`, so a
+browser opened after the worker started is in the next one; and when
+the browser becomes ready the worker tells its paired agents so, with
+the same lines, once per browser. Details in `worker/desktop/README.md`.
+
+On the first launch every app checks the computer before it asks
+anything (containers, the runtime and its `compose`, the agents on it,
+whether it reaches myoushq.com) and shows the answers as a short list on
+the Set up card, then the one thing still missing: a runtime to get (the
+app installs it with winget, Homebrew, or the distribution's packages
+through pkexec where those are there, else opens its page), a runtime to
+start, the `docker` group, or compose.
 
 ## When something's wrong
 

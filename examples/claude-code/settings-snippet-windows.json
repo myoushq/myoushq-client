@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "shell": "powershell",
+            "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"$HOME\\.myous\\inbox-hook.ps1\" \"$HOME\\.myous\"",
+            "timeout": 25
+          }
+        ]
+      }
+    ]
+  }
+}

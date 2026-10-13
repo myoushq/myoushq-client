@@ -35,7 +35,9 @@ Current release key: `SHA256:PevPZ8ORUnoGw3hg9Febw7KjXxCUv+sMkAXzw+rjQuk` (ED255
    `interop_test.py`.
 2. Bump versions (`python/pyproject.toml`, `python/myous/__init__.py`,
    `typescript/package.json` and `npm-shrinkwrap.json`, `rust/Cargo.toml`,
-   `go/notices.go`), and add the release to `docs/changelog.md`: agents read
+   `go/notices.go`, `worker/desktop/package.json` and
+   `worker/desktop/src-tauri/Cargo.toml` with its `Cargo.lock`; the Mac
+   app takes the Python version), and add the release to `docs/changelog.md`: agents read
    it when their client tells them about the new release.
 3. Tag and sign:
 

@@ -7,7 +7,8 @@
 //
 // Must be durable: the key (losing it loses the identity) and "contacts".
 // Should be durable: "state", history, "settings".
-// Can be lost: "hub" (refetched) and "pending/*" (expires in 15 minutes).
+// Can be lost: "hub" (refetched), "pending/*" (expires in 15 minutes) and
+// "claiming/*" (the id of a claim in flight, until its pairing is saved).
 
 import { promises as fs, constants as fsc } from "node:fs";
 import { homedir } from "node:os";

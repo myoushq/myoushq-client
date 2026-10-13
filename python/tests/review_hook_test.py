@@ -31,6 +31,19 @@ class ReadOnlyTest(unittest.TestCase):
         for bad in ["rm -rf x", "cat a > b", "echo $(whoami)", "ls; python3 x.py", "sed -i s/a/b/ f", "cat `ls`", "curl http://x"]:
             self.assertFalse(r.read_only(bad), bad)
 
+    def test_code_inside_a_read_only_command(self):
+        r = load(Path(tempfile.mkdtemp()))
+        for bad in ["find . -exec rm {} ;", "find . -delete", "awk 'BEGIN{system(\"rm x\")}'"]:
+            self.assertFalse(r.read_only(bad), bad)
+
+    def test_powershell(self):
+        r = load(Path(tempfile.mkdtemp()))
+        for ok in ["Get-ChildItem -Recurse | Select-String foo", "gc C:\\work\\a.txt | Measure-Object -Line", "dir; Get-Date"]:
+            self.assertTrue(r.read_only(ok, windows=True), ok)
+        for bad in ["Remove-Item x", "gci | Remove-Item", "gc (Remove-Item x)", "& notepad", "gci | where { Remove-Item $_ }",
+                    "Get-Content a > b", "iex 'rm x'", "Invoke-WebRequest http://x"]:
+            self.assertFalse(r.read_only(bad, windows=True), bad)
+
 
 class HookTest(unittest.TestCase):
     def setUp(self):

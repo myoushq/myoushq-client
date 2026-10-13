@@ -17,14 +17,13 @@ import math
 import os
 import platform
 import shlex
-import signal
 import subprocess
 import sys
 import tempfile
 import time
 from pathlib import Path
 
-from myous import files, inbox, relay
+from myous import files, inbox, processes, relay
 from myous.agent import Agent
 from myous.storage import Storage
 
@@ -38,6 +37,12 @@ REVIEW_TIMEOUT = 150  # the hook may wait for the owner (worker/review.py: 120 s
 STATUS_EVERY = 5
 TICK = 5  # seconds between ticks: status writes and the owner's commands
 REQUESTS_KEEP = 200  # request records kept in <home>/requests for the owner's app
+# On Windows the shell is PowerShell: agents used to the container's Linux
+# workers are told so in the help, the pairing message and a failed command.
+WINDOWS_HELP = ("This worker runs on Windows: commands are PowerShell, not Linux shell commands "
+                "(use `Get-ChildItem` or `dir`, not `ls`; `Select-String`, not `grep`).")
+WINDOWS_HINT = "This worker runs PowerShell on Windows; send `help` for what it takes."
+NOT_RECOGNIZED = "is not recognized as the name of a cmdlet"  # PowerShell's CommandNotFoundException
 
 
 class Worker:
@@ -75,16 +80,19 @@ class Worker:
         replace: nothing in it may live under the work directory."""
         if not cmd:
             return None
-        words = shlex.split(cmd)
+        # Windows paths have backslashes, which POSIX quoting would eat; there
+        # the words keep their quotes and the command runs under cmd.exe.
+        words = shlex.split(cmd, posix=not processes.WINDOWS)
         for i, word in enumerate(words):
-            p = Path(word).expanduser()
-            if ("/" in word or p.exists()) and p.exists():
+            bare = word.strip('"') if processes.WINDOWS else word
+            p = Path(bare).expanduser()
+            if p.exists():
                 p = p.resolve()
-                words[i] = str(p)
+                words[i] = f'"{p}"' if processes.WINDOWS else str(p)
                 if p == self.work or self.work in p.parents:
-                    raise ValueError(f"the review hook ({word}) is inside the work directory {self.work}, "
+                    raise ValueError(f"the review hook ({bare}) is inside the work directory {self.work}, "
                                      "where requests can replace it; keep it elsewhere")
-        return shlex.join(words)
+        return " ".join(words) if processes.WINDOWS else shlex.join(words)
 
     # --- running -------------------------------------------------------------
 
@@ -234,8 +242,15 @@ class Worker:
             await self.refuse(e, req["id"], why)
             return
         started = time.time()
-        stop_file = self.commands_dir / f"stop-{req['id']}" if self.commands_dir else None
+        # Only for an id that is a plain name: "stop-../../key" must not
+        # reach outside commands/ (Windows resolves ".." in a path itself).
+        plain = "/" not in req["id"] and "\\" not in req["id"]
+        stop_file = self.commands_dir / f"stop-{req['id']}" if self.commands_dir and plain else None
         result = await asyncio.get_running_loop().run_in_executor(None, run_command, cmd, self.work, timeout, stop_file)
+        if processes.WINDOWS and NOT_RECOGNIZED in result["stderr"]:
+            # An agent that took this for a Linux worker: say so where it looks.
+            stderr = result["stderr"]
+            result = dict(result, stderr=stderr + ("\n" if stderr and not stderr.endswith("\n") else "") + WINDOWS_HINT)
         self.note(e, "exec", True)
         self.record(req["id"], done_at=int(time.time()), duration=round(time.time() - started, 2), **result)
         await self.reply(e, dict(result, myous="result", id=req["id"]))
@@ -339,12 +354,14 @@ class Worker:
         lines = [
             f"{self.agent.alias} is a myoushq worker: it runs commands and moves files for its owner's agents.",
         ]
+        if processes.WINDOWS:
+            lines.append(WINDOWS_HELP)
         if self.agent.card:
             lines.append(f"Its owner describes it: {self.agent.card}")
         lines += [
             "Use `myous exec <me> -- CMD`, `myous cp FILE <me>:PATH` and `myous cp <me>:PATH FILE` "
             "(protocol.md, section 7). Wait for each reply before the next request.",
-            f"Shell: /bin/sh on {platform.system()} {platform.machine()}; Python {platform.python_version()}"
+            f"Shell: {processes.shell_name()} on {platform.system()} {platform.machine()}; Python {platform.python_version()}"
             + ("; Playwright installed" if has_playwright else ""),
             f"Work directory: {self.work} (paths are relative to it"
             + ("; absolute paths allowed)" if self.allow_absolute else "; absolute paths refused)"),
@@ -414,14 +431,13 @@ class Worker:
 
 
 def run_command(cmd: str, cwd: Path, timeout: int, stop_file: Path | None = None) -> dict:
-    """Run a shell command in its own process group, so a timeout kills
+    """Run a shell command (PowerShell on Windows) in its own process group, so a timeout kills
     whatever it started too. Output goes to temporary files (a daemon the
     command leaves behind can't hold us up by keeping a pipe open) and is
     cut to fit a message. While it runs, the owner's app can create
     `stop_file` to end it ("stopped by you" to the agent)."""
     with tempfile.TemporaryFile() as out_f, tempfile.TemporaryFile() as err_f:
-        proc = subprocess.Popen(cmd, shell=True, cwd=cwd, stdin=subprocess.DEVNULL,
-                                stdout=out_f, stderr=err_f, start_new_session=True)
+        proc = processes.shell_popen(cmd, cwd=cwd, stdin=subprocess.DEVNULL, stdout=out_f, stderr=err_f)
         deadline = time.time() + timeout
         note, stopped = None, False
         while True:
@@ -437,10 +453,7 @@ def run_command(cmd: str, cwd: Path, timeout: int, stop_file: Path | None = None
                 note = f"[myous: killed after {timeout} seconds]"
             else:
                 continue
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except OSError:
-                pass
+            processes.kill_tree(proc)
             proc.wait()
             break
         if stop_file is not None:
@@ -468,14 +481,17 @@ def _cut(data: bytes, limit: int) -> tuple[str, bool]:
     return data[:limit].decode("utf-8", "replace") + f"\n[myous: output cut at {limit} bytes]", True
 
 
-def pairing_message(code: str, alias: str, about: str = "") -> str:
+def pairing_message(code: str, alias: str, about: str = "", windows: bool | None = None) -> str:
     """One sentence the owner pastes to their agent along with the code, so
     the agent knows what it is pairing with and what to do next (an agent
     that only gets a code may guess, for instance that it should become a
     worker itself). The owner's description of the worker, when set, goes
-    in too: it is what the agent should remember the worker by."""
+    in too: it is what the agent should remember the worker by. On Windows
+    (default: this system) it says the worker takes PowerShell commands."""
     desc = f" It describes itself: \"{about}\"." if about else ""
+    windows = processes.WINDOWS if windows is None else windows
     return (f"Pair with my worker \"{alias}\" (an environment I set up for you, not something to run yourself): "
             f"accept the pairing code {code} with relationship other and sharing \"my own worker; run commands "
             f"there for me\".{desc} Then send it the message help, and read the Workers section of "
-            f"https://myoushq.com/skill.md before using it.")
+            f"https://myoushq.com/skill.md before using it."
+            + (" It runs on Windows and takes PowerShell commands." if windows else ""))
