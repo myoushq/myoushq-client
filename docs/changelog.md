@@ -7,23 +7,13 @@ in [skill.md](https://myoushq.com/skill.md).
 
 ## v0.7.2
 
-- Release pipeline again: v0.7.1's Windows app job ran the app's Rust tests
-  on Windows for the first time (the CI job for them had never got past
-  compiling, for the UI reason fixed in v0.7.1) and three tests assumed a
-  Unix host; fixed in the tests. v0.7.1 reached the registries but has no
-  GitHub release and no apps; v0.7.2 is v0.7.0 with the apps.
-
-## v0.7.1
-
-- Release pipeline: the v0.7.0 release workflow built the Linux and Windows
-  apps without their UI (the Rust tests ran before it was built), so
-  v0.7.0 reached the registries but has no GitHub release and no apps.
-  Nothing else changed; v0.7.1 is v0.7.0 with the apps.
-- Windows fixes found by the same run: `myous ensure` closes its copy of
-  the listener's log after starting it; the pid-reuse check treats a
-  process that has exited (its pid held by an open handle) as gone.
-
-## v0.7.0
+(v0.7.0 and v0.7.1 reached PyPI, crates.io and npm but have no GitHub
+release and no apps: their release workflow built the Linux and Windows
+apps without the UI, then ran the app's tests on Windows for the first
+time. v0.7.2 is the same code with the apps, plus two Windows fixes from
+those runs: `myous ensure` closes its copy of the listener's log after
+starting it, and the pid-reuse check treats a process that has exited,
+its pid held by an open handle, as gone.)
 
 - **A lost answer to the pairing claim no longer burns the code** (all
   four clients; needs the hub of the same date, and older clients keep
