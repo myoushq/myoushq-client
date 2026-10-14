@@ -5,7 +5,7 @@
 
 import { Backend, makeBackend, PreviewBackend, TrayItem } from "./backend.js";
 import { applyFake } from "./fake.js";
-import { browserItems, buildMenu, MenuActions, modeEntries } from "./menu.js";
+import { appMenu, buildMenu, MenuActions, moreMenu } from "./menu.js";
 import { Advance, Agent, agentContacts, agentName, isUrgent, Kind, Model, notifyKinds, RuntimeStep, shortNpub, verb, what, Worker } from "./model.js";
 import { attentionCard, browserAdvance, browserCard, BrowserRow, browserRow, checkAdvance, CheckName, checklist, hubLine, installLine, Row, runtimeCard } from "./setup.js";
 import { byteCount, capitalize, clockTime, countdown, dayLabel, defaultDescription, dict, isDefaultDescription, newer, num, pairingMessage, plural, setHostOs, str, timeAgo } from "./text.js";
@@ -52,6 +52,8 @@ let logLines: string[] = [];
 let trayActions = new Map<string, () => void>();
 let lastTrayItems = "";
 let lastTrayIcon = "";
+let appMenuActions = new Map<string, () => void>();
+let lastAppMenu = "";
 let lastCounts = 0;
 let setupFilledFor = "";
 let lastRequestsKey = "";
@@ -353,6 +355,7 @@ function render() {
   fillSidebar();
   if (m.selectedAgent) fillAgent(m.selectedAgent);
   renderTray();
+  renderAppMenu();
 }
 
 /** A row that just moved on: it flashes green (picking up where the flash
@@ -721,7 +724,14 @@ function fillPair(w: Worker) {
   const code = str(invite?.code);
   const msg = pairingMessage(invite, w.config.name);
   const area = $<HTMLTextAreaElement>("pair-message");
-  if (area.value !== msg) area.value = msg;
+  if (area.value !== msg) {
+    area.value = msg;
+    // A Mac shows the message as a block of text, as tall as it is.
+    if (info.os === "macos") {
+      area.style.height = "0"; // so scrollHeight is the text's, not the rows
+      area.style.height = `${area.scrollHeight + 2}px`;
+    }
+  }
   const left = Math.max(0, num(invite?.expires_at) - m.now());
   setText($("pair-code"), `Code ${code} · valid for ${countdown(left)}`);
   $<HTMLProgressElement>("pair-bar").value = Math.min(1, left / INVITE_SECONDS);
@@ -765,6 +775,7 @@ function fillRequests(w: Worker) {
   const now = m.now();
   show($("stop-command"), !!w.runningRequest(now));
   show($("paused-note"), w.paused);
+  show($("requests-log-row"), info.os === "macos"); // the log has no ⋯ menu to be in there
   setText($("pause"), w.paused ? "Resume" : "Pause");
   setText($("requests-title"), w.requests.length ? `${w.requests.length} recent, newest first` : `Nothing yet. Ask your agent to run something on ${sys}.`);
   const key = `${w.home}|${w.config.seenRequestsAt}|${w.requests.map((r) => `${str(r.id)}:${"done_at" in r}:${str(r.decision)}`).join(",")}|${dayLabel(now, now)}`;
@@ -984,25 +995,48 @@ function openMoreMenu() {
     menu.hidden = true;
     return;
   }
-  const w = m.current;
-  const running = w.screen === "running" || w.screen === "pair" || w.screen === "paired";
-  const browser = running ? browserItems(w).map((label) => [label, () => void openBrowserView(w)] as [string, () => void]) : [];
-  const entries: ([string, () => void] | null)[] = [
-    ...browser, ...(browser.length ? [null] : []),
-    ["Settings…", menuActions.settings], ["Check for updates…", menuActions.checkUpdates], null,
-    ["Show app log", menuActions.showLog], [m.current.config.isDirect ? "Show worker log" : "Show container log", menuActions.containerLog],
-    ["Open worker folder", menuActions.openFolder], ...(m.appConfig.containersOff ? [] : [["Remove stale containers", menuActions.removeContainers] as [string, () => void]]), null,
-    ["Add a worker…", menuActions.addWorker], ["Add an agent's folder…", menuActions.addAgentHome], null,
-    ...modeEntries(m.current, m.appConfig.containersOff, menuActions).map(([label, run]) => [label, run] as [string, () => void]), null,
-    ["Quit myous", menuActions.quit],
-  ];
-  menu.replaceChildren(...entries.map((e) => {
+  menu.replaceChildren(...moreMenu(m, menuActions).map((e) => {
     if (!e) return el("hr");
     const b = el("button", { textContent: e[0] });
     b.onclick = () => { menu.hidden = true; e[1](); };
     return b;
   }));
   menu.hidden = false;
+}
+
+/** A Mac: the ⋯ menu's entries in the app menu, sent when they change. */
+function renderAppMenu() {
+  if (info.os !== "macos") return;
+  const { items, actions } = appMenu(m, menuActions);
+  appMenuActions = actions;
+  const key = JSON.stringify(items);
+  if (key === lastAppMenu) return;
+  lastAppMenu = key;
+  void be.setAppMenu(items).catch((e) => appendLog(`app menu: ${e}`));
+}
+
+// --- a Mac's window fits its content ---------------------------------------------------
+
+/** As myous for Mac: 560 points wide (and the list of workers when it shows), as high as what the
+ * screen shows (Rust keeps it on the screen), the top edge staying where it is. An open dialog
+ * gets the room it needs. Asked whenever the content's size changes. */
+const FIT_WIDTH = 560, FIT_SIDEBAR = 150, FIT_MIN = 320, FIT_MAX = 760;
+let lastFit = "";
+function fitWindow() {
+  if (info.os !== "macos") return;
+  const width = FIT_WIDTH + ($("sidebar").hidden ? 0 : FIT_SIDEBAR);
+  let height = $("layout").offsetHeight;
+  const d = $<HTMLDialogElement>("dlg");
+  if (d.open) {
+    // What its scrolled parts (the settings, a log) would need, within the 86% of the window a dialog takes.
+    const extra = [...d.querySelectorAll<HTMLElement>(".settings, pre")].reduce((n, e) => n + e.scrollHeight - e.clientHeight, 0);
+    height = Math.max(height, Math.ceil((d.offsetHeight + extra) / 0.86) + 8);
+  }
+  height = Math.min(Math.max(Math.ceil(height), FIT_MIN), FIT_MAX);
+  const key = `${width}x${height}`;
+  if (key === lastFit) return;
+  lastFit = key;
+  void be.fitWindow(width, height).catch((e) => appendLog(`window size: ${e}`));
 }
 
 // --- actions ------------------------------------------------------------------------
@@ -1483,6 +1517,7 @@ function wire() {
     void refresh();
   };
   $("pause").onclick = () => void togglePaused();
+  $("requests-log").onclick = () => void showLog();
   $("stop-command").onclick = async () => {
     const w = m.current;
     const r = w.runningRequest(m.now());
@@ -1500,7 +1535,8 @@ function wire() {
   $("agent-pair").onclick = () => void pairAgentWithCode();
   $("side-add").onclick = () => void addWorker();
 
-  be.listen("tray", (id: string) => trayActions.get(id)?.());
+  // The tray's menu and a Mac's app menu (Tauri reports both through the tray's handler).
+  be.listen("tray", (id: string) => (trayActions.get(id) ?? appMenuActions.get(id))?.());
   be.listen("window", (visible: boolean) => {
     windowShown = visible;
     if (visible) markSeen();
@@ -1572,6 +1608,8 @@ function wire() {
 
 async function main() {
   info = await be.appInfo();
+  // The system's look where it has its own (style.css's .os-macos); the other systems share one.
+  document.documentElement.classList.add(`os-${info.os}`);
   setHostOs(info.os);
   sys = info.system_name;
   sep = info.os === "windows" ? "\\" : "/";
@@ -1602,6 +1640,12 @@ async function main() {
   }
   for (const w of m.workers) m.evaluate(w);
   render();
+  if (info.os === "macos") {
+    fitWindow(); // before it shows, so it opens at its size
+    const watch = new ResizeObserver(() => fitWindow());
+    watch.observe($("layout"));
+    watch.observe($("dlg"));
+  }
   if (m.current.screen !== "running" || be.preview) await showWindow();
   appendLog(`myous ${info.version} on ${info.os}${info.fake ? ` (made-up state: ${info.fake})` : ""}`);
   if (!m.fake) {

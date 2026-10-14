@@ -142,3 +142,51 @@ export function browserItems(w: Worker): string[] {
   if (w.browserUp) return ["Show browser"];
   return w.browserLaunch === "starting" ? ["Open browser"] : [];
 }
+
+/** One entry of the window's own menu (label and action), or a separator. */
+export type Entry = [string, () => void] | null;
+
+function browserEntries(m: Model, act: MenuActions): Entry[] {
+  const w = m.current;
+  const running = w.screen === "running" || w.screen === "pair" || w.screen === "paired";
+  return running ? browserItems(w).map((label) => [label, () => act.openBrowser(w)] as Entry) : [];
+}
+
+function toolEntries(m: Model, act: MenuActions): Entry[] {
+  return [
+    ["Show app log", act.showLog], [m.current.config.isDirect ? "Show worker log" : "Show container log", act.containerLog],
+    ["Open worker folder", act.openFolder], ...(m.appConfig.containersOff ? [] : [["Remove stale containers", act.removeContainers] as Entry]), null,
+    ["Add a worker…", act.addWorker], ["Add an agent's folder…", act.addAgentHome], null,
+    ...modeEntries(m.current, m.appConfig.containersOff, act),
+  ];
+}
+
+/** The ⋯ menu in the window (Linux and Windows): the browser, settings, the logs and folders, the modes, Quit. */
+export function moreMenu(m: Model, act: MenuActions): Entry[] {
+  const browser = browserEntries(m, act);
+  return [
+    ...browser, ...(browser.length ? [null] : []),
+    ["Settings…", act.settings], ["Check for updates…", act.checkUpdates], null,
+    ...toolEntries(m, act), null,
+    ["Quit myous", act.quit],
+  ];
+}
+
+/** A Mac has no ⋯: the same entries are the app menu's, Settings… first with ⌘, as on every Mac
+ * app. Rust puts About above them and Hide and Quit below (and adds the Edit and Window menus). */
+export function appMenu(m: Model, act: MenuActions): { items: TrayItem[]; actions: Map<string, () => void> } {
+  const actions = new Map<string, () => void>();
+  const browser = browserEntries(m, act);
+  const entries: Entry[] = [
+    ["Settings…", act.settings], ["Check for updates…", act.checkUpdates], null,
+    ...browser, ...(browser.length ? [null] : []),
+    ...toolEntries(m, act),
+  ];
+  const items = entries.map((e, i): TrayItem => {
+    if (!e) return { separator: true };
+    const id = `app${i}`;
+    actions.set(id, e[1]);
+    return { id, label: e[0], enabled: true, ...(e[0] === "Settings…" ? { accelerator: "CmdOrCtrl+," } : {}) };
+  });
+  return { items, actions };
+}

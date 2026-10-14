@@ -10,7 +10,6 @@ export const fakeStates = ["checking", "couldntcheck", "setup", "hubdown", "noru
   "directnoplaywright", "found", "directinstalling", "directoff", "directstarting", "directrunning", "directbrowserclosed", "directbrowserlater", "starting", "failed", "pair",
   "paired", "running", "paused", "stopping", "stopped", "approval", "busy", "agents", "agent", "pairlocal", "workers"] as const;
 
-const NAME = "Max's PC";
 
 function files(home: string, extra: Partial<WorkerFiles> = {}): WorkerFiles {
   return { home, folder: home.split(/[\\/]/).pop()!, is_default: !/-\d+$/.test(home), project: "myous-worker", config: {},
@@ -19,6 +18,7 @@ function files(home: string, extra: Partial<WorkerFiles> = {}): WorkerFiles {
 
 export function applyFake(m: Model, state: string, home = "/home/max/.myous-worker") {
   m.fake = state;
+  const NAME = m.os === "macos" ? "Max's Mac" : "Max's PC";
   const now = m.now();
   // Every check answered: ok, no agents; the cases below change what they're about.
   for (const c of Object.values(m.checks)) {
@@ -227,8 +227,8 @@ export function applyFake(m: Model, state: string, home = "/home/max/.myous-work
       named();
       status("running");
       requests();
-      extraWorkers.push(files(`${home}-2`, { project: "myous-worker-2", config: { name: "Max's PC for Codex" },
-        status: { phase: "running", alias: "Max's PC for Codex", contacts: 0, invite: { code: "9012-ABCDEF", expires_at: now + 500 } }, status_modified: now }));
+      extraWorkers.push(files(`${home}-2`, { project: "myous-worker-2", config: { name: `${NAME} for Codex` },
+        status: { phase: "running", alias: `${NAME} for Codex`, contacts: 0, invite: { code: "9012-ABCDEF", expires_at: now + 500 } }, status_modified: now }));
       break;
   }
   m.workers = [];

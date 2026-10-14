@@ -190,3 +190,134 @@ dialog > input { margin-top: 6px; }
 @media (prefers-reduced-motion: reduce) { .advanced { animation: none; } }
 .found { color: var(--green-text); }
 .found .mk.ok { color: inherit; }
+
+/* ---- macOS: the window as myous for Mac (AppKit) draws it -------------------------------------
+   Only under html.os-macos (set from the system at start), so Linux and Windows don't change.
+   The window colour (#ececec / #323232) has no CSS name; everything else is the system's own
+   colour where WebKit knows it (the @supports block: dark mode, the accent colour and Increase
+   Contrast follow System Settings), with the same values written out for the previews in
+   Chromium, which doesn't. Push buttons and pop-ups are WebKit's native ones there. */
+:root.os-macos {
+  --bg: #ececec; --side: #e3e3e3; --box: rgba(0, 0, 0, .03); --box-line: rgba(0, 0, 0, .09); --card: var(--box); --raised: #f6f6f6;
+  --fg: rgba(0, 0, 0, .847); --muted: rgba(0, 0, 0, .498); --faint: rgba(0, 0, 0, .26); --line: rgba(0, 0, 0, .1);
+  --accent: #007aff; --accent-fg: #ffffff; --danger: #ff3b30; --input: #ffffff; --field-line: rgba(0, 0, 0, .16); --hover: rgba(0, 0, 0, .05);
+  --focus: rgba(0, 122, 255, .5); --grey: #8e8e93; --blue: #007aff; --green: #28cd41; --orange: #ff9500; --red: #ff3b30;
+  --green-text: #1d7f3a; --orange-text: #c26a00; --red-text: #ff3b30;
+  --even: #ffffff; --odd: #f4f5f5; --selected: #0063e1; --selected-fg: #ffffff;
+  --button: #ffffff; --button-fg: rgba(0, 0, 0, .847);
+  --button-shadow: 0 0 0 .5px rgba(0, 0, 0, .16), 0 .5px 1.5px rgba(0, 0, 0, .18);
+}
+@media (prefers-color-scheme: dark) {
+  :root.os-macos {
+    --bg: #323232; --side: #2a2a2a; --box: rgba(255, 255, 255, .03); --box-line: rgba(255, 255, 255, .09); --raised: #3a3a3a;
+    --fg: rgba(255, 255, 255, .847); --muted: rgba(255, 255, 255, .55); --faint: rgba(255, 255, 255, .25); --line: rgba(255, 255, 255, .1);
+    --accent: #007aff; --danger: #ff453a; --input: rgba(255, 255, 255, .05); --field-line: rgba(255, 255, 255, .16); --hover: rgba(255, 255, 255, .06);
+    --grey: #98989d; --blue: #0a84ff; --green: #32d74b; --orange: #ff9f0a; --red: #ff453a;
+    --green-text: #32d74b; --orange-text: #ff9f0a; --red-text: #ff453a;
+    --even: #1e1e1e; --odd: #292929; --selected: #0058d0; --button: #656565; --button-fg: rgba(255, 255, 255, .847);
+    --button-shadow: inset 0 .5px 0 rgba(255, 255, 255, .22), 0 0 0 .5px rgba(0, 0, 0, .3), 0 .5px 1px rgba(0, 0, 0, .3);
+  }
+}
+@supports (color: -apple-system-label) {
+  :root.os-macos {
+    --fg: -apple-system-label; --muted: -apple-system-secondary-label; --faint: -apple-system-tertiary-label; --line: -apple-system-separator;
+    --accent: -apple-system-control-accent; --accent-fg: -apple-system-alternate-selected-text; --danger: -apple-system-red;
+    --grey: -apple-system-gray; --blue: -apple-system-blue; --green: -apple-system-green; --orange: -apple-system-orange; --red: -apple-system-red;
+    --red-text: -apple-system-red; --even: -apple-system-even-alternating-content-background;
+    --selected: -apple-system-selected-content-background; --selected-fg: -apple-system-alternate-selected-text;
+  }
+}
+/* Increase Contrast: the boxes and fields get a line that shows. */
+@media (prefers-contrast: more) {
+  :root.os-macos { --box-line: rgba(0, 0, 0, .45); --field-line: rgba(0, 0, 0, .55); --line: rgba(0, 0, 0, .4); }
+}
+@media (prefers-contrast: more) and (prefers-color-scheme: dark) {
+  :root.os-macos { --box-line: rgba(255, 255, 255, .5); --field-line: rgba(255, 255, 255, .6); --line: rgba(255, 255, 255, .45); }
+}
+
+/* Type: 13 points, captions and the table at 11 (as AppKit's labels). */
+.os-macos body { font: 13px/1.3 -apple-system, BlinkMacSystemFont, system-ui, sans-serif; -webkit-user-select: none; user-select: none; cursor: default; }
+.os-macos :is(input, textarea, pre, #pair-message, .big, #pair-code) { -webkit-user-select: text; user-select: text; }
+.os-macos main { max-width: none; padding: 16px 20px 20px; }
+/* The window takes the content's height (fitWindow), so the page doesn't fill the window. */
+.os-macos, .os-macos body { height: auto; }
+.os-macos #layout { min-height: 0; }
+/* The ⋯ menu's entries are in the app menu. */
+.os-macos #more, .os-macos #more-menu { display: none !important; }
+.os-macos h1 { font-size: 17px; font-weight: 600; }
+.os-macos .head-row { min-height: 24px; }
+.os-macos #head-right { font-size: 13px; }
+.os-macos #head-facts { margin: 2px 0 0; font-size: 12px; }
+.os-macos header { margin-bottom: 10px; }
+.os-macos .hint { font-size: 11px; }
+.os-macos .checks button.link { font-size: 11px; }
+.os-macos h3 { font-size: 12px; margin: 10px 0 4px; }
+
+/* Group boxes: the title above a grey box on the window colour, not a white card. */
+.os-macos .card { position: relative; background: var(--box); border: 1px solid var(--box-line); border-radius: 6px; padding: 8px 12px 10px; margin: 26px 0 12px; }
+.os-macos .card p { margin: 5px 0; }
+.os-macos .card > h2:first-child, .os-macos .card > .row:first-child > h2 { position: absolute; top: -21px; left: 12px; right: 12px; margin: 0;
+  font-size: 13px; font-weight: 600; line-height: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.os-macos .card > h2:first-child + * { margin-top: 0; }
+/* Requests: Stop and Pause at the top right of the box, beside "5 recent, newest first". */
+.os-macos #card-requests > .row:first-child { float: right; margin: 0 0 4px 8px; }
+.os-macos #requests-title { margin-top: 3px; font-size: 12px; }
+.os-macos #card-requests > :not(.row:first-child, #requests-title, #requests-log-row, .hint) { clear: both; }
+/* Open log at the bottom right, the hint beside it (the log has no ⋯ menu here). */
+.os-macos #requests-log-row { float: right; margin: 8px 0 0 8px; }
+.os-macos #card-requests > .hint:last-child { margin-top: 10px; }
+.os-macos .row { margin-top: 10px; }
+.os-macos .checks { margin-bottom: 8px; padding-bottom: 6px; }
+.os-macos .steps li { padding-top: 1px; padding-bottom: 1px; }
+.os-macos label { margin: 10px 0 4px; }
+.os-macos .banner, .os-macos .approval { border-radius: 6px; padding: 6px 10px; }
+.os-macos .big { font-size: 26px; }
+
+/* Push buttons, as AppKit draws them (WebKit's own in the @supports block below); the primary in
+   the accent colour; links in it too. */
+.os-macos button:not(.link, .icon) { font: 13px/19px -apple-system, BlinkMacSystemFont, system-ui, sans-serif; color: var(--button-fg); background: var(--button);
+  border: none; border-radius: 5px; padding: 1px 12px 1px; box-shadow: var(--button-shadow); cursor: default; }
+.os-macos button:not(.link, .icon):hover { background: var(--button); }
+.os-macos button:not(.link, .icon):active { filter: brightness(.94); }
+.os-macos button.danger { color: var(--danger); }
+.os-macos button.primary, .os-macos button.primary:hover { background: var(--accent); color: var(--accent-fg); box-shadow: 0 0 0 .5px rgba(0, 0, 0, .12), 0 .5px 1px rgba(0, 0, 0, .2); }
+.os-macos button.link { cursor: default; }
+@supports (color: -apple-system-label) {
+  .os-macos button:not(.link, .icon, .primary), .os-macos button:not(.link, .icon, .primary):hover {
+    -webkit-appearance: auto; appearance: auto; background: revert; border: revert; border-radius: revert; box-shadow: none; padding: revert; color: revert; filter: none; }
+  .os-macos button.danger { color: var(--danger); }
+  .os-macos select, .os-macos select:focus { -webkit-appearance: auto; appearance: auto; background: revert; border: revert; border-radius: revert; padding: revert; box-shadow: none; font: 13px -apple-system; color: revert; }
+}
+
+/* Text fields: square, white, a thin line; no resize grip. */
+.os-macos :is(input:not([type=checkbox]), textarea) { border: 1px solid var(--field-line); border-radius: 0; padding: 3px 5px; background: var(--input); }
+.os-macos textarea { resize: none; line-height: 1.3; }
+.os-macos #setup-desc { font-size: 12px; }
+.os-macos :is(input, textarea):focus { border-color: var(--field-line); box-shadow: 0 0 0 3px var(--focus); }
+.os-macos select { padding: 2px 6px; border-radius: 5px; }
+/* The message to paste: grey text in a sunken box, to read and copy, not to edit. */
+.os-macos #pair-message { color: var(--muted); font-size: 12px; background: var(--even); border: 1px solid var(--line); border-radius: 6px; padding: 7px 8px; overflow: hidden; }
+.os-macos #pair-message:focus { box-shadow: none; }
+.os-macos progress[value] { height: 4px; margin-top: 8px; }
+
+/* The table: AppKit's alternating rows (filling the empty part too), no cell lines, the selected
+   row in the accent colour. */
+.os-macos .table-wrap { border: 1px solid var(--box-line); border-radius: 0; margin-top: 6px;
+  background: repeating-linear-gradient(transparent 0 20px, var(--odd) 20px 40px) local, var(--even); }
+.os-macos #card-requests .table-wrap { height: 202px; max-height: none; }
+.os-macos table { font-size: 11px; }
+.os-macos td { padding: 0 6px; height: 20px; line-height: 20px; border-bottom: none; }
+.os-macos #requests td:nth-child(4) { font: 11px/20px var(--mono); }
+.os-macos #requests tr { cursor: default; }
+.os-macos #requests tr:hover td { background: none; }
+.os-macos #requests tr:focus { outline: none; }
+.os-macos #requests tr:focus td { background: var(--selected); color: var(--selected-fg); }
+.os-macos #requests td:nth-child(1) { width: 64px; }
+.os-macos #requests td:nth-child(2) { width: 96px; }
+.os-macos #requests td:nth-child(3) { width: 36px; }
+.os-macos #requests td:nth-child(5) { width: 96px; }
+
+.os-macos pre.lines, .os-macos dialog pre { font-size: 11px; background: var(--even); border-color: var(--box-line); border-radius: 0; }
+.os-macos dialog { background: var(--bg); border: 1px solid var(--box-line); border-radius: 10px; padding: 16px 20px; }
+.os-macos nav { width: 150px; background: var(--side); border-right-color: var(--box-line); padding: 12px 6px; }
+.os-macos .side-row { padding: 3px 8px; border-radius: 5px; }

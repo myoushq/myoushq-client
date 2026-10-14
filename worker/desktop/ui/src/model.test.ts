@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { applyFake, fakeStates, previewBrowserCheck } from "./fake.js";
-import { buildMenu, MenuActions } from "./menu.js";
+import { appMenu, buildMenu, MenuActions, moreMenu } from "./menu.js";
 import { ADVANCE_SHOWS, Check, isAdvance, isUrgent, Model, Screen, UNKNOWN_AFTER, Worker, WorkerFiles } from "./model.js";
 import { advanceWords, attentionCard, browserAdvance, browserCard, browserRow, checkAdvance, checklist, hubHost, hubLine, installLine, runtimeCard } from "./setup.js";
 import { byteCount, countdown, dayLabel, defaultDescription, isDefaultDescription, newer, pairingMessage, plural, setHostOs, timeAgo } from "./text.js";
@@ -186,6 +186,30 @@ test("app.json keeps keys this app doesn't know", () => {
 const noop = new Proxy({}, { get: () => () => {} }) as MenuActions;
 const labels = (items: { label?: string; separator?: boolean; children?: unknown[] }[]): string[] =>
   items.map((i) => (i.separator ? "----" : i.label ?? ""));
+
+test("the ⋯ menu, and on a Mac the app menu with the same entries", () => {
+  const m = model();
+  applyFake(m, "running");
+  evaluate(m);
+  const more = moreMenu(m, noop).map((e) => (e ? e[0] : "----"));
+  assert.deepEqual(more, ["Open browser", "----", "Settings…", "Check for updates…", "----", "Show app log", "Show container log", "Open worker folder",
+    "Remove stale containers", "----", "Add a worker…", "Add an agent's folder…", "----", "Use a checkout…", "Run without a container…", "----", "Quit myous"]);
+  const { items, actions } = appMenu(m, noop);
+  const l = labels(items);
+  assert.deepEqual(l.slice(0, 5), ["Settings…", "Check for updates…", "----", "Open browser", "----"]);
+  assert.equal(items[0].accelerator, "CmdOrCtrl+,");
+  assert.ok(!l.includes("Quit myous"), "Quit is the app menu's own (Rust)");
+  assert.deepEqual(new Set(more.filter((x) => x !== "----" && x !== "Quit myous")), new Set(l.filter((x) => x !== "----")));
+  assert.equal(actions.size, l.filter((x) => x !== "----").length);
+  assert.ok([...actions.keys()].every((id) => id.startsWith("app")), "ids apart from the tray's");
+});
+
+test("a Mac's made-up worker is Max's Mac", () => {
+  const m = model();
+  m.os = "macos";
+  applyFake(m, "running");
+  assert.equal(m.current.name, "Max's Mac");
+});
 
 test("the tray menu offers what the state allows", () => {
   const m = model();

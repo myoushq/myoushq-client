@@ -23,6 +23,8 @@ export interface TrayItem {
   label?: string;
   enabled?: boolean;
   separator?: boolean;
+  /** A Mac's app menu: the item's shortcut ("CmdOrCtrl+,"). */
+  accelerator?: string;
   children?: TrayItem[];
 }
 
@@ -58,6 +60,10 @@ export interface Backend {
   setCounts(fresh: number): Promise<void>;
   /** A Mac: the Dock icon on or off, at once. */
   setDock(on: boolean): Promise<void>;
+  /** A Mac: the window's size (points), as its content needs, as myous for Mac sizes its window. */
+  fitWindow(width: number, height: number): Promise<void>;
+  /** A Mac: the app menu's own items (the ⋯ menu elsewhere); a click comes back as a "tray" event. */
+  setAppMenu(items: TrayItem[]): Promise<void>;
   showWindow(): Promise<void>;
   quit(): Promise<void>;
   logLine(line: string): Promise<void>;
@@ -118,6 +124,8 @@ class TauriBackend implements Backend {
   setTray(icon: string | null, tooltip: string, items: TrayItem[]) { return this.invoke("set_tray", { icon, tooltip, items }); }
   setCounts(fresh: number) { return this.invoke("set_counts", { fresh }); }
   setDock(on: boolean) { return this.invoke("set_dock", { on }); }
+  fitWindow(width: number, height: number) { return this.invoke("fit_window", { width, height }); }
+  setAppMenu(items: TrayItem[]) { return this.invoke("set_app_menu", { items }); }
   showWindow() { return this.invoke("show_window"); }
   quit() { return this.invoke("quit"); }
   logLine(line: string) { return this.invoke("log_line", { line }); }
@@ -153,7 +161,7 @@ export class PreviewBackend implements Backend {
   }
   appInfo(): Promise<AppInfo> {
     const os = this.info.os ?? "linux";
-    return Promise.resolve({ version: "0.6.1", fake: "running", hostname: "maxs-pc", hub: "https://myoushq.com", image_tag: "0.6.1",
+    return Promise.resolve({ version: "0.6.1", fake: "running", hostname: os === "macos" ? "Max's Mac" : "maxs-pc", hub: "https://myoushq.com", image_tag: "0.6.1",
       system_name: os === "windows" ? "this PC" : os === "macos" ? "this Mac" : "this computer",
       product_name: os === "windows" ? "myous for Windows" : os === "macos" ? "myous for Mac" : "myous for Linux",
       download_path: `/download/${os}`, ...this.info, os });
@@ -191,6 +199,12 @@ export class PreviewBackend implements Backend {
   }
   setCounts(...a: [number]) { return this.rec("setCounts", a, undefined); }
   setDock(...a: [boolean]) { return this.rec("setDock", a, undefined); }
+  fitWindow(...a: [number, number]) { return this.rec("fitWindow", a, undefined); }
+  appMenu: TrayItem[] = [];
+  setAppMenu(items: TrayItem[]) {
+    this.appMenu = items;
+    return this.rec("setAppMenu", [items.length], undefined);
+  }
   showWindow() { return this.rec("showWindow", [], undefined); }
   quit() { return this.rec("quit", [], undefined); }
   logLine(...a: [string]) { return this.rec("logLine", a, undefined); }
