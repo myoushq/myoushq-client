@@ -1,11 +1,11 @@
-# myous for Mac on Tauri: draft (phase 1)
+# myous for Mac on Tauri
 
-A draft on the branch `wip/mac-tauri`: this app (`worker/desktop`) built
-and run on macOS, so the owner can judge whether it can replace
-`worker/mac` (Objective-C). Phase 1 of `TAURI-PORT-SPIKE.md` in the
-private repo. Nothing here changes the app on Linux or Windows: the Mac
-parts are behind `cfg(target_os = "macos")` or the window's
-`info.os === "macos"`. `worker/mac` is untouched.
+This app (`worker/desktop`) is myous for Mac since 2026-10-14, replacing
+`worker/mac` (Objective-C), which is kept in the repository for now and
+no longer built or released. This file says what the Mac parts are, how
+the app is built and released for the Mac, and what a Mac user notices.
+Nothing here changes the app on Linux or Windows: the Mac parts are
+behind `cfg(target_os = "macos")` or the window's `info.os === "macos"`.
 
 ## What works on a Mac
 
@@ -167,7 +167,7 @@ parts are behind `cfg(target_os = "macos")` or the window's
   several workers, the agents on the Mac, the update check against
   `/download/mac`.
 
-## Phase 2 (not built)
+## Not ported from myous for Mac
 
 - **The Option-held Advanced menu**: not planned. Its items are always
   in the app menu (the ⋯ menu on Linux and Windows), so there is nothing

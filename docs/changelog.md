@@ -11,10 +11,11 @@ in [skill.md](https://myoushq.com/skill.md).
   (`worker/desktop`): one codebase for the three systems, built universal
   (Apple Silicon and Intel, macOS 13 or newer), signed and notarized, at
   the same download (`/download/mac`, `myous-v<version>.dmg`). What a Mac
-  gains from the shared app: the first-launch checks, the cards that
-  install a container runtime (with Homebrew), the approval banner, the
-  ok / refused column in the requests, and direct mode with the Go worker
-  inside the app. What it keeps from the Objective-C app: a menu bar app
+  gains from the shared app: one Install per runtime with a Website link
+  (the Objective-C app had the checklist and the Homebrew installs
+  already), the approval banner with "Needs attention", the ok / refused
+  column in the requests, and direct mode with the Go worker inside the
+  app. What it keeps from the Objective-C app: a menu bar app
   (the mark in the state's colour, the count of new requests) with the
   Dock icon as a setting; a question's notification with Allow and
   Refuse (UserNotifications), either of which answers it without the

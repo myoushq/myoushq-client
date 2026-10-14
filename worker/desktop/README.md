@@ -317,8 +317,8 @@ runtimeerror, nowsl, novirt, direct, directnobrowser, directnopython,
 directnovenv, directnoplaywright, found, directinstalling, directoff,
 directstarting, directrunning, directbrowserclosed, directbrowserlater,
 starting, failed, pair, paired, running, paused, stopping, stopped,
-approval, busy, agents, agent, pairlocal, workers (`screens.py` renders
-all 39, and two of them dark too). The app itself takes the same names in
+approval, busy, agents, agent, pairlocal, workers, macbrowser (`screens.py`
+renders all 40, and two of them dark too). The app itself takes the same names in
 `MYOUS_FAKE_STATE`. In a plain browser the page's backend only records
 what the buttons ask for (`window.myous.backend.calls`), and
 `window.myous.backend.emit(event, payload)` plays what Rust would send (an
