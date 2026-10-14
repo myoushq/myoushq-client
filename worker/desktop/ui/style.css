@@ -103,6 +103,9 @@ button.link:focus-visible { outline-offset: 1px; border-radius: 3px; }
 @media (prefers-reduced-motion: reduce) { .mk.busy::before { animation: none; } }
 #runtime-install { margin-top: 10px; }
 #setup-browser { margin-top: 10px; }
+/* A Mac's "Where should its browser run?" (a worker in a container). */
+#setup-macbrowser > .row { margin-top: 0; }
+#setup-get { flex: none; }
 #runtime-install.bad { color: var(--red-text); }
 #direct-toggle { margin-top: 10px; }
 #direct-more { margin-top: 4px; }

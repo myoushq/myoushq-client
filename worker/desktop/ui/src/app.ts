@@ -6,8 +6,8 @@
 import { Backend, makeBackend, PreviewBackend, TrayItem } from "./backend.js";
 import { applyFake } from "./fake.js";
 import { appMenu, buildMenu, MenuActions, moreMenu } from "./menu.js";
-import { Advance, Agent, agentContacts, agentName, isUrgent, Kind, Model, notifyKinds, RuntimeStep, shortNpub, verb, what, Worker } from "./model.js";
-import { attentionCard, browserAdvance, browserCard, BrowserRow, browserRow, checkAdvance, CheckName, checklist, hubLine, installLine, Row, runtimeCard } from "./setup.js";
+import { Advance, Agent, agentContacts, agentName, isUrgent, Kind, MAC_BROWSER_LINKS, Model, notifyKinds, RuntimeStep, shortNpub, verb, what, Worker } from "./model.js";
+import { attentionCard, browserAdvance, browserCard, BrowserRow, browserRow, checkAdvance, CheckName, checklist, hubLine, installLine, macBrowserHint, macBrowserName, macBrowserQuestion, Row, runtimeCard } from "./setup.js";
 import { byteCount, capitalize, clockTime, countdown, dayLabel, defaultDescription, dict, isDefaultDescription, newer, num, pairingMessage, plural, setHostOs, str, timeAgo } from "./text.js";
 
 const INVITE_SECONDS = 900;
@@ -64,6 +64,10 @@ let hubChecking = false;
 let lastHubCheck = 0;
 let browserChecking = false;
 let lastBrowserCheck = 0;
+let macBrowsersChecking = false;
+let lastMacBrowsersCheck = 0;
+/** A Mac: each container worker's browser on the Mac as the window last asked for it (its last answer or error, when). */
+const macBrowserAsked = new Map<string, { at: number; said: string; busy: boolean }>();
 let lastStep: RuntimeStep | "none" = "none";
 const startLines = new Map<string, string[]>(); // each worker's output since its last start
 
@@ -139,7 +143,8 @@ function composeEnv(w: Worker): Record<string, string> {
   const env: Record<string, string> = {
     MYOUS_WORKER_HOME: w.home,
     MYOUS_DESCRIPTION: w.config.effectiveDescription,
-    MYOUS_BROWSER: "container",
+    // A Mac: the browser on the Mac (forward.py in the container relays to it), as myous for Mac sets it.
+    MYOUS_BROWSER: m.macBrowser(w) ? "host" : "container",
   };
   if (w.config.name) env.MYOUS_ALIAS = w.config.name;
   return env;
@@ -186,6 +191,11 @@ async function start(w: Worker) {
     w.launchedAt = 0;
     return;
   }
+  if (info.os === "macos") {
+    // A Mac: its browser on the Mac starts with it, or one from before (the browser moved into the container) ends.
+    if (m.macBrowser(w)) void keepMacBrowser(w);
+    else void be.browserStop(w.home);
+  }
   w.launchStage = "pulling";
   const args = ["up", "-d", ...(w.config.isImage ? [] : ["--build"])];
   await be.composeRun(w.home, file, w.project, args, composeEnv(w), "start");
@@ -207,12 +217,17 @@ async function stop(w: Worker) {
     void refresh();
     return;
   }
+  if (info.os === "macos") {
+    macBrowserAsked.delete(w.home);
+    void be.browserStop(w.home);
+  }
   await be.composeRun(w.home, composePath(w), w.project, ["down", "--remove-orphans"], {}, "stop");
   void refresh();
 }
 
 async function openBrowserView(w: Worker = m.current) {
   if (w.config.isDirect) return showBrowser(w);
+  if (m.macBrowser(w)) return showMacBrowser(w);
   const port = await be.browserPort(composePath(w), w.project, w.isDefault);
   if (!port) {
     appendLog("the worker isn't running, so there's no browser to open");
@@ -237,6 +252,77 @@ async function showBrowser(w: Worker) {
     await alertBox("Couldn't show the browser", String(e));
   }
   void refresh();
+}
+
+/** A Mac, a worker in a container with its browser on the Mac: Show browser (out of hiding and to
+ * the front, or started), as myous for Mac's. */
+async function showMacBrowser(w: Worker) {
+  if (m.fake && !be.preview) return;
+  try {
+    appendLog(`browser: ${await be.macBrowserShow(w.home, w.config.name, w.config.browserApp)}`);
+  } catch (e) {
+    appendLog(`browser: ${e}`);
+    await alertBox("Couldn't show the browser", String(e));
+  }
+  void refresh();
+}
+
+/** A Mac: the browser on the Mac of a worker in a container, started unless it runs. Asked every
+ * tick while the worker starts or runs (a browser the owner quit comes back, as in myous for Mac). */
+async function keepMacBrowser(w: Worker) {
+  const asked = macBrowserAsked.get(w.home) ?? { at: 0, said: "", busy: false };
+  if (asked.busy) return;
+  asked.busy = true;
+  asked.at = m.now();
+  macBrowserAsked.set(w.home, asked);
+  try {
+    await be.macBrowserEnsure(w.home, w.config.name, w.config.browserApp, w.config.browserHidden);
+    asked.said = "";
+  } catch (e) {
+    // The app log has the launches; a reason it can't, once until it changes.
+    const said = `browser: ${e}`;
+    if (said !== asked.said) appendLog(said);
+    asked.said = said;
+  } finally {
+    asked.busy = false;
+  }
+}
+
+/** A Mac: each container worker's browser on the Mac lives and dies with the worker (myous for Mac's
+ * render): kept while it starts or runs, ended once it has stopped. */
+function keepMacBrowsers() {
+  if (m.fake || info.os !== "macos") return;
+  for (const w of m.workers) {
+    if (!w.config.usesDocker) continue;
+    const fresh = w.fresh(m.now());
+    const booting = fresh && ["starting", "browser", "registering"].includes(w.phase);
+    if (m.macBrowser(w) && (w.alive || booting) && !w.stopping) void keepMacBrowser(w);
+    else if (macBrowserAsked.has(w.home) && w.screen === "stopped") {
+      macBrowserAsked.delete(w.home);
+      void be.browserStop(w.home);
+    }
+  }
+}
+
+/** A Mac: which browsers it has for a worker in a container (Set up, Settings, the Browser card). */
+async function checkMacBrowsers() {
+  if (info.os !== "macos" || m.fake || macBrowsersChecking) return;
+  macBrowsersChecking = true;
+  lastMacBrowsersCheck = m.now();
+  try {
+    m.macBrowsers = await be.macBrowsers();
+  } catch (e) {
+    appendLog(`browsers on this Mac: ${e}`);
+  } finally {
+    macBrowsersChecking = false;
+  }
+}
+
+/** myous for Mac's "Get a browser…": where each browser it can run is downloaded. */
+async function getMacBrowser() {
+  const r = await dialog({ title: "Get a browser", text: "Any one of these will do (all free). Once it is installed, the choice turns on by itself.",
+    buttons: [{ label: "Cancel", value: "" }, ...MAC_BROWSER_LINKS.map(([name, url], i) => ({ label: name, value: url, primary: i === 0 }))] });
+  if (r?.value) await be.openUrl(r.value);
 }
 
 async function togglePaused(w: Worker = m.current) {
@@ -413,11 +499,48 @@ function fillSetup(w: Worker) {
   setText($("setup-browser"), direct
     ? `Without a container, nothing but the review stands between your agent's commands and ${sys}. The review starts at "Ask me before anything that changes things" (Settings).`
     : "Its browser runs in the container, shown through a window in your own browser. Some sites take it for a bot, even when it's you.");
+  // A Mac: where its browser runs, asked as myous for Mac asks it (the line above is the question's hint there).
+  const askWhere = info.os === "macos" && !direct;
+  show($("setup-macbrowser"), askWhere);
+  show($("setup-browser"), !askWhere);
+  if (askWhere) fillMacBrowserQuestion(w);
   $("setup-browser").className = direct ? "warn" : "";
   setText($("setup-desc-hint"), direct && !w.config.hostBrowser
     ? "Sent to the agent when it pairs, and again when you change it. Say it in your own words."
     : "Sent to the agent when it pairs, and again when you change it. Say it in your own words; the default binds \"the myous browser\" to this worker's browser.");
   setText($("setup-hint"), `Already have an agent on ${sys}? It installs the myous client itself (see the skill). This app runs workers: computers an agent can use.`);
+}
+
+/** A Mac's "Where should its browser run?" on Set up: the choices rebuilt when they change (the
+ * owner's pick kept otherwise), "Get a browser…" when there is none, the line for the choice. */
+function fillMacBrowserQuestion(w: Worker) {
+  const q = macBrowserQuestion(m, w);
+  const where = $<HTMLSelectElement>("setup-where");
+  const key = `${w.home}|${JSON.stringify(q.options)}`;
+  if (where.dataset.key !== key) {
+    where.dataset.key = key;
+    where.replaceChildren(...q.options.map((o, i) => el("option", { value: String(i), text: o.label, disabled: o.disabled })));
+    where.selectedIndex = q.selected;
+    where.dataset.ids = JSON.stringify(q.options.map((o) => o.id));
+  }
+  const get = $<HTMLSelectElement>("setup-get");
+  show(get, q.get);
+  if (get.options.length === 1) {
+    get.append(...MAC_BROWSER_LINKS.map(([name, url]) => el("option", { value: url, text: name })));
+    get.onchange = () => {
+      if (get.value) void be.openUrl(get.value);
+      get.selectedIndex = 0;
+    };
+  }
+  where.onchange = () => setText($("setup-where-hint"), macBrowserHint(m, macBrowserChosen() !== ""));
+  setText($("setup-where-hint"), macBrowserHint(m, macBrowserChosen() !== ""));
+}
+
+/** The bundle id chosen on Set up ("" the container, or not a Mac). */
+function macBrowserChosen(): string {
+  const where = $<HTMLSelectElement>("setup-where");
+  const ids: string[] = JSON.parse(where.dataset.ids || "[]");
+  return ids[where.selectedIndex] ?? "";
 }
 
 /** The worker browser's row without a container (Set up, and the Browser
@@ -705,7 +828,9 @@ function fillStarting(w: Worker) {
   const rows = [
     "✓ Container runtime ready",
     `${mark(pulled, !pulled)} Downloading the worker (first time only)${!pulled ? clock : ""}`,
-    `${mark(browserDone, pulled && inContainer)} Starting the browser${!browserDone && pulled && inContainer ? clock : ""}`,
+    m.macBrowser(w)
+      ? `${w.macBrowserUp ? "✓" : "⟳"} Starting ${str(w.browserFile?.app) || macBrowserName(m, w)} on ${sys}`
+      : `${mark(browserDone, pulled && inContainer)} Starting the browser${!browserDone && pulled && inContainer ? clock : ""}`,
     phase.startsWith("error") ? `✗ Registering with myoushq.com: ${phase.replace(/^error:?\s*/, "")}`
       : browserDone ? `⟳ Registering with myoushq.com${clock}` : "○ Registering with myoushq.com",
   ];
@@ -1324,6 +1449,18 @@ async function openSettings() {
   const [browserCheckEl, browserBox] = check(`A worker browser on ${sys} (it needs Python; it starts with the worker)`, w.config.hostBrowser);
   const browserRowEl = el("div", {}, browserCheckEl);
   if (w.alive) browserRowEl.append(el("p", { className: "hint indent", textContent: "A change takes effect at the worker's next start; a browser that is open stays until the worker stops." }));
+  // A Mac, a worker in a container: where its browser runs and whether it starts hidden (myous for
+  // Mac's Advanced › Browser and its setting).
+  const macWhere = mac && w.config.usesDocker;
+  const where = macBrowserQuestion(m, w, false);
+  const whereBox = el<HTMLSelectElement>("select");
+  whereBox.append(...where.options.map((o, i) => el("option", { value: String(i), text: o.label, disabled: o.disabled, selected: i === where.selected })));
+  const [hiddenRow, hiddenBox] = check("Start this worker's browser hidden", w.config.browserHidden);
+  const hiddenHint = el("p", { className: "hint indent", textContent: "It works while hidden; Show browser brings it up." });
+  const syncWhere = () => { hiddenRow.hidden = hiddenHint.hidden = !where.options[whereBox.selectedIndex]?.id; };
+  whereBox.onchange = syncWhere;
+  syncWhere();
+  const macRows = macWhere ? [el("label", { textContent: "Its browser" }), whereBox, hiddenRow, hiddenHint] : [];
   body.append(
     el("label", { textContent: "Worker name" }), name,
     el("p", { className: "hint", textContent: "The name your agent sees. A new name applies at the next start, and the agent is told (it keeps its own name for this computer until it renames)." }),
@@ -1331,6 +1468,7 @@ async function openSettings() {
     el("p", { className: "hint", textContent: "How it describes this computer to your agent (its card). Sent at the next start." }),
     el("label", { textContent: "Review" }), review,
     ...(w.config.isDirect ? [browserRowEl] : []),
+    ...macRows,
     el("p", { className: "hint", textContent: "Questions arrive as notifications and at the top of the Requests list; an agent waits up to two minutes for your answer." }),
     ...(mac ? [dockRow] : []), loginRow, notifyRow, ...kinds.map(([row]) => row), updateRow, agentsRow,
   );
@@ -1339,6 +1477,21 @@ async function openSettings() {
   if (name.value.trim()) w.config.name = name.value.trim();
   const d = desc.value.trim();
   w.config.description = isDefaultDescription(d, w.config.name, w.config.isDirect) ? "" : d;
+  let switchBrowser = false;
+  if (macWhere) {
+    const id = where.options[whereBox.selectedIndex]?.id ?? "";
+    const which = id && !m.macBrowsers?.why ? "mac" : "container";
+    if (which !== (w.config.macBrowser ? "mac" : "container") || (id && id !== w.config.browserApp)) {
+      w.config.data.browser = which;
+      if (id) w.config.browserApp = id;
+      appendLog(`browser: ${which === "mac" ? `on this Mac, in ${macBrowserName(m, w)}` : "in the container"}`);
+      switchBrowser = w.screen === "running" || w.screen === "pair" || w.screen === "paired" || w.screen === "starting";
+    }
+    if (hiddenBox.checked !== w.config.browserHidden) {
+      w.config.browserHidden = hiddenBox.checked;
+      if (!m.fake) void be.macBrowserHidden(w.home, hiddenBox.checked);
+    }
+  }
   if (w.config.isDirect && browserBox.checked === w.config.browserOff) {
     w.config.browserOff = !browserBox.checked;
     appendLog(w.config.browserOff ? `${w.name}: no worker browser` : `${w.name}: worker browser on ${sys}`);
@@ -1365,6 +1518,12 @@ async function openSettings() {
     } catch (e) {
       appendLog(`open at login: ${e}`);
     }
+  }
+  const restart = switchBrowser && await dialog({ title: "Restart the worker to switch its browser?", text: "The browser choice applies when the worker starts. Each browser keeps its own logins, so sites may ask you to log in again.",
+    buttons: [{ label: "Later", value: "no" }, { label: "Restart now", value: "yes", primary: true }] });
+  if (restart && restart.value === "yes") {
+    w.restartAfterStop = true;
+    await stop(w);
   }
   void refresh();
 }
@@ -1427,6 +1586,8 @@ async function refresh() {
       // The worker browser's needs, while something shows them: every 5 s then, else every 5 min.
       const browserShown = m.current.config.hostBrowser && m.browserStep(m.current) !== "ready";
       if (m.now() - lastBrowserCheck >= (browserShown ? 5 : 300)) void checkBrowser();
+      // A Mac's browsers for a worker in a container: every tick while Set up shows the question, else every 30 s.
+      if (info.os === "macos" && (setupUp || m.now() - lastMacBrowsersCheck >= 30)) void checkMacBrowsers();
       if (m.appConfig.showAgents && (m.agents === null || m.ticks % AGENTS_EVERY === 0)) void readAgents();
       if (!m.appConfig.showAgents) {
         m.agents = [];
@@ -1434,6 +1595,7 @@ async function refresh() {
       }
     }
     for (const w of m.workers) m.evaluate(w);
+    keepMacBrowsers();
     // A finished install's line stays until the card moves on.
     const step = m.runtimeStep();
     if (step !== lastStep && lastStep !== "none" && m.install && !m.install.running) m.install = null;
@@ -1456,6 +1618,7 @@ function wire() {
       case "Start": return void start(m.current);
       case "Show log": return void showLog();
       case "Download": return void be.openUrl(info.hub + info.download_path);
+      case "Get a browser…": return void getMacBrowser();
       case "Retry": m.checks.hub.retry(m.now()); return void checkHub();
     }
   };
@@ -1473,6 +1636,12 @@ function wire() {
     w.config.name = name;
     const d = $<HTMLTextAreaElement>("setup-desc").value.trim();
     w.config.description = isDefaultDescription(d, name, w.config.isDirect) ? "" : d;
+    if (info.os === "macos" && w.config.usesDocker) {
+      // Where its browser runs, kept as myous for Mac keeps it.
+      const id = macBrowserChosen();
+      w.config.data.browser = id && !m.macBrowsers?.why ? "mac" : "container";
+      if (id) w.config.browserApp = id;
+    }
     await saveConfig(w);
     await start(w);
     void refresh();
@@ -1638,6 +1807,7 @@ async function main() {
     }
     void checkHub();
     void checkBrowser();
+    await checkMacBrowsers();
   }
   for (const w of m.workers) m.evaluate(w);
   render();

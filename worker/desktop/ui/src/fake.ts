@@ -2,13 +2,13 @@
 // screenshotted, and tested) without a worker: MYOUS_FAKE_STATE in the
 // app, ?state= in a browser preview of ui/dist.
 
-import { Agent, BrowserCheck, Model, RuntimeOptions, Worker, WorkerFiles } from "./model.js";
+import { Agent, BrowserCheck, MacBrowsers, Model, RuntimeOptions, Worker, WorkerFiles } from "./model.js";
 import { advanceWords } from "./setup.js";
 
 export const fakeStates = ["checking", "couldntcheck", "setup", "hubdown", "noruntime", "installing", "stoppedruntime", "stoppedengine",
   "nopermission", "nocompose", "runtimeerror", "nowsl", "novirt", "direct", "directnobrowser", "directnopython", "directnovenv",
   "directnoplaywright", "found", "directinstalling", "directoff", "directstarting", "directrunning", "directbrowserclosed", "directbrowserlater", "starting", "failed", "pair",
-  "paired", "running", "paused", "stopping", "stopped", "approval", "busy", "agents", "agent", "pairlocal", "workers"] as const;
+  "paired", "running", "macbrowser", "paused", "stopping", "stopped", "approval", "busy", "agents", "agent", "pairlocal", "workers"] as const;
 
 
 function files(home: string, extra: Partial<WorkerFiles> = {}): WorkerFiles {
@@ -31,6 +31,7 @@ export function applyFake(m: Model, state: string, home = "/home/max/.myous-work
   m.options = previewOptions(m.os);
   m.install = null;
   m.browserCheck = previewBrowserCheck(m.os, "ready");
+  m.macBrowsers = m.os === "macos" ? previewMacBrowsers(m.os) : null;
   m.browserInstall = null;
   m.seen = {};
   m.advances = {};
@@ -185,6 +186,16 @@ export function applyFake(m: Model, state: string, home = "/home/max/.myous-work
       status("running", { paired: { alias: "Max's Muse", verify: "4821", at: now - 5 } });
       f.config!.seen_paired_at = now - 10;
       break;
+    case "macbrowser":
+      // A Mac: a worker in a container with its browser on the Mac (myous for Mac's made-up
+      // "macbrowser"); elsewhere the same as "running".
+      named();
+      status("running");
+      requests();
+      f.config!.browser = "mac";
+      f.config!.browser_app = "com.google.Chrome";
+      f.browser = { host: "host.docker.internal", port: 52345, pid: 4244, app: "Google Chrome", at: now };
+      break;
     case "running":
     case "agents":
     case "agent":
@@ -250,6 +261,15 @@ export function fakeAgents(now: number): Agent[] {
 }
 
 /** What browser.rs finds: everything ("ready"), or one thing missing. */
+/** A Mac's browsers in the previews: Google Chrome and Microsoft Edge (myous for Mac's made-up "setup"); none elsewhere. */
+export function previewMacBrowsers(os: string): MacBrowsers {
+  if (os !== "macos") return { installed: [], why: "not a Mac" };
+  return { installed: [
+    { id: "com.google.Chrome", name: "Google Chrome", path: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" },
+    { id: "com.microsoft.edgemac", name: "Microsoft Edge", path: "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge" },
+  ], why: "" };
+}
+
 export function previewBrowserCheck(os: string, kind: string): BrowserCheck {
   const win = os === "windows";
   if (os === "macos") return macBrowserCheck(kind);

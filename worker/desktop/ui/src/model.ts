@@ -110,6 +110,22 @@ export interface BrowserCheck {
   get: { name: string; url: string }[];
 }
 
+/** A Mac: the browsers a worker in a container can have on the Mac (browser.rs's mac::choices). */
+export interface MacBrowsers {
+  /** In myous for Mac's order; the first is the recommended one. */
+  installed: { id: string; name: string; path: string }[];
+  /** Why "On this Mac" can't be offered ("" when it can): no browser, or no sandbox. */
+  why: string;
+}
+
+/** Where to get each browser the Mac's worker browser can be (myous for Mac's "Get a browser…"). */
+export const MAC_BROWSER_LINKS: [string, string][] = [
+  ["Google Chrome", "https://www.google.com/chrome/"],
+  ["Microsoft Edge", "https://www.microsoft.com/edge/download"],
+  ["Brave", "https://brave.com/download/"],
+  ["Chromium", "https://www.chromium.org/getting-involved/download-chromium/"],
+];
+
 /** What the worker's browser without a container still needs: "off" (the
  * owner went on without one), "checking", "unknown", "nobrowser",
  * "nopython" (none, or too old), "novenv" (Debian's python3-venv),
@@ -183,6 +199,15 @@ export class Config {
   set browserOff(v: boolean) { this.data.browser = v ? "none" : "host"; }
   /** The worker runs without a container and wants its browser on this computer. */
   get hostBrowser() { return this.isDirect && !this.browserOff; }
+  /** A worker in a container whose browser runs on the Mac (myous for Mac's `browser: "mac"`;
+   * "container" or nothing: in the container). Only a Mac acts on it (Model.macBrowser). */
+  get macBrowser() { return this.usesDocker && this.data.browser === "mac"; }
+  /** Which browser on the Mac: a bundle id (myous for Mac's `browser_app`; "" the first installed). */
+  get browserApp() { return str(this.data.browser_app); }
+  set browserApp(v: string) { this.set("browser_app", v); }
+  /** That browser starts hidden, until Show browser (myous for Mac's `browser_hidden`, on unless set off). */
+  get browserHidden() { return this.data.browser_hidden !== false; }
+  set browserHidden(v: boolean) { this.data.browser_hidden = v; }
   /** The published image: also what nothing configured means. */
   get isImage() { return this.mode === "image" || (!this.isDirect && !this.repo); }
   get usesDocker() { return !this.isDirect; }
@@ -237,6 +262,8 @@ export class Worker {
 
   /** Its browser on this computer answers (browser.json, written by the app once the port opens). */
   get browserUp() { return num(this.browserFile?.port) > 0 && str(this.browserFile?.kind) === "host"; }
+  /** A Mac: the browser on the Mac of a worker in a container answers (myous for Mac's browser.json, for the container). */
+  get macBrowserUp() { return num(this.browserFile?.port) > 0 && str(this.browserFile?.host) === "host.docker.internal"; }
 
   get name() { return this.config.name || "myous"; }
   get isSetUp() { return !!this.config.name || this.status !== null; }
@@ -342,6 +369,8 @@ export class Model {
   options: RuntimeOptions | null = null;
   install: Install | null = null;
   browserCheck: BrowserCheck | null = null;
+  /** A Mac: the browsers a worker in a container can have on it (null elsewhere, or not asked yet). */
+  macBrowsers: MacBrowsers | null = null;
   /** "Install Playwright", running or done. */
   browserInstall: Install | null = null;
   wslPending = false;   // WSL turned on; Windows needs a restart
@@ -452,6 +481,9 @@ export class Model {
     }
   }
 
+  /** A worker in a container whose browser runs on this Mac (never on Linux or Windows). */
+  macBrowser(w: Worker) { return this.os === "macos" && w.config.macBrowser; }
+
   /** The first worker's app.json holds the app's settings. */
   get appConfig() { return this.workers[0].config; }
 
@@ -497,6 +529,15 @@ export class Model {
       if (w.stoppedAt !== 0 && now - w.stoppedAt > 90 && now - w.stoppedAt < 120) {
         attention = "The worker didn't stop. The log says why.";
         button = "Show log";
+      }
+      // A Mac: its browser on the Mac can't run (myous for Mac's words).
+      const why = this.macBrowser(w) ? this.macBrowsers?.why ?? "" : "";
+      if (why && !attention) {
+        const sandbox = why.includes("sandbox");
+        attention = sandbox
+          ? `The worker's browser can't run on this Mac: ${why}. Choose the browser in the container (Settings).`
+          : "The worker's browser can't run on this Mac: none of Google Chrome, Microsoft Edge, Brave or Chromium is installed. Any one will do (all free); or choose the browser in the container (Settings).";
+        button = sandbox ? "Show log" : "Get a browser…";
       }
     } else {
       screen = "stopped";

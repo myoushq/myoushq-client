@@ -243,6 +243,13 @@ function browserRowFor(m: Model, w: Worker, sys: string, now: number): BrowserRo
  * the browser is wanted. */
 export function browserCard(m: Model, w: Worker): { shown: boolean; text: string; button: "" | "show" | "open"; label: string; row: boolean } {
   const say = `Say "${w.name}'s browser" to your agent when you mean this one.`;
+  if (m.macBrowser(w)) {
+    // A Mac, a worker in a container with its browser on the Mac: myous for Mac's card.
+    const app = str(w.browserFile?.app) || macBrowserName(m, w);
+    return w.macBrowserUp
+      ? { shown: true, text: `Your agent uses ${app} on this Mac, with its own profile kept to the worker's folder. Log into sites there; it is you at the keyboard, so sites behave. ${say}`, button: "show", label: "Show browser", row: false }
+      : { shown: true, text: `Starting ${app} on this Mac… (browser.log in the worker folder says why if it doesn't).`, button: "show", label: "Show browser", row: false };
+  }
   if (!w.config.isDirect) {
     return { shown: true, text: `Your agent can use sites you're logged into here. Open it to log in or to watch. ${say}`, button: "show", label: "Open browser", row: false };
   }
@@ -257,6 +264,42 @@ export function browserCard(m: Model, w: Worker): { shown: boolean; text: string
   // worker reads browser.json at each help; no restart).
   if (m.browserStep(w) !== "ready") return { shown: true, text: "The worker runs without its browser until it has what it needs:", button: "", label: "", row: true };
   return { shown: true, text: "The worker runs without its browser. Open it to give it one; your agent learns about it from its next help.", button: "open", label: "Open browser", row: false };
+}
+
+/** A Mac: the browser on the Mac a worker in a container runs (its `browser_app`, else the first installed). */
+export function macBrowserName(m: Model, w: Worker): string {
+  const all = m.macBrowsers?.installed ?? [];
+  return (all.find((b) => b.id === w.config.browserApp) ?? all[0])?.name ?? "the browser";
+}
+
+/** A Mac's Set up, for a worker in a container: "Where should its browser run?", as myous for Mac
+ * asks it. One choice per browser it can run ("On this Mac, in …", the first recommended), then the
+ * container; with none, one line that says why (not to be chosen). `selected` follows app.json's
+ * `browser` and `browser_app`; with neither, on Set up (`fresh`) the Mac when it has a browser (the
+ * recommendation), in Settings the container (where it runs). `get`: "Get a browser…" is offered. */
+export interface MacBrowserQuestion { options: { id: string; label: string; disabled: boolean }[]; selected: number; get: boolean }
+
+export function macBrowserQuestion(m: Model, w: Worker, fresh = true): MacBrowserQuestion {
+  const why = m.macBrowsers?.why ?? "";
+  const installed = why ? [] : m.macBrowsers?.installed ?? [];
+  const options: MacBrowserQuestion["options"] = [];
+  if (why) options.push({ id: "", label: `On this Mac (${why})`, disabled: true });
+  installed.forEach((b, i) => options.push({ id: b.id, label: `On this Mac, in ${b.name}${i === 0 ? " (recommended)" : ""}`, disabled: false }));
+  options.push({ id: "", label: "In the container", disabled: false });
+  const browser = str(w.config.data.browser);
+  const mac = browser === "mac" || browser === "container" || !fresh ? browser === "mac" : installed.length > 0;
+  const want = (installed.find((b) => b.id === w.config.browserApp) ?? installed[0])?.id ?? "";
+  const at = options.findIndex((o) => o.id !== "" && o.id === want);
+  return { options, selected: mac && installed.length && at >= 0 ? at : options.length - 1, get: installed.length === 0 && !why.includes("sandbox") };
+}
+
+/** The line under the question, for the choice made. */
+export function macBrowserHint(m: Model, onMac: boolean): string {
+  const why = m.macBrowsers?.why ?? "";
+  if (onMac) return "A real browser with its own profile, kept to the worker's folder by a sandbox: sites see an ordinary Mac, and you use the window itself.";
+  return why && !why.includes("sandbox")
+    ? "A Chromium inside the container, shown through a window in your browser. Some sites take it for a bot, even when it's you. To run a real browser on this Mac instead, install any of Google Chrome, Microsoft Edge, Brave or Chromium (all free): the choice above turns on by itself."
+    : "A Chromium inside the container, shown through a window in your browser. Some sites take it for a bot, even when it's you.";
 }
 
 // --- a row that moved on ------------------------------------------------------

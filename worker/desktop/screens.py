@@ -23,7 +23,7 @@ from playwright.sync_api import sync_playwright
 STATES = ["checking", "couldntcheck", "setup", "hubdown", "noruntime", "installing", "stoppedruntime", "stoppedengine",
           "nopermission", "nocompose", "runtimeerror", "nowsl", "novirt", "direct", "directnobrowser", "directnopython", "directnovenv",
           "directnoplaywright", "found", "directinstalling", "directoff", "directstarting", "directrunning", "directbrowserclosed", "directbrowserlater", "starting",
-          "failed", "pair", "paired", "running", "paused", "stopping", "stopped", "approval", "busy", "agents", "agent", "pairlocal",
+          "failed", "pair", "paired", "running", "macbrowser", "paused", "stopping", "stopped", "approval", "busy", "agents", "agent", "pairlocal",
           "workers"]
 
 
