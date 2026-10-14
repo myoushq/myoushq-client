@@ -4,7 +4,9 @@ with made-up data (the page's own preview mode: no Tauri, no worker), and
 fails on any script error. The screenshots and the tray menu of each go to
 OUTDIR for a look. Needs Playwright for Python with Chromium.
 
-    npm run build:ui && python3 screens.py OUTDIR [--os windows]
+    npm run build:ui && python3 screens.py OUTDIR [--os windows|macos] [--engine webkit]
+
+--engine webkit draws them as a Mac's web view (WKWebView) does.
 """
 
 import functools
@@ -26,6 +28,7 @@ STATES = ["checking", "couldntcheck", "setup", "hubdown", "noruntime", "installi
 def main() -> int:
     out = Path(sys.argv[1] if len(sys.argv) > 1 else "screens")
     os_name = sys.argv[sys.argv.index("--os") + 1] if "--os" in sys.argv else "linux"
+    engine = sys.argv[sys.argv.index("--engine") + 1] if "--engine" in sys.argv else "chromium"
     out.mkdir(parents=True, exist_ok=True)
     dist = Path(__file__).parent / "ui" / "dist"
     class Quiet(http.server.SimpleHTTPRequestHandler):
@@ -38,7 +41,7 @@ def main() -> int:
     port = server.server_address[1]
     failures = []
     with sync_playwright() as p:
-        browser = p.chromium.launch()
+        browser = getattr(p, engine).launch()
         for scheme in ("light", "dark"):
             page = browser.new_page(viewport={"width": 640, "height": 700}, color_scheme=scheme)
             errors: list[str] = []

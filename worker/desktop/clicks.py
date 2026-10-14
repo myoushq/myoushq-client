@@ -219,6 +219,20 @@ def main() -> int:
         page.wait_for_function("document.querySelector('#browser-text').innerText.includes('closed')")
         check("closed" in text("#browser-text"), "then it is the worker's browser (starting; not up in the preview)")
 
+        # A Mac: Settings has the Dock icon, applied at once on Save; the other systems have none.
+        def settings(os_name: str) -> None:
+            go("running", os_name)
+            page.click("#more")
+            page.click("#more-menu button:has-text('Settings…')")
+
+        settings("linux")
+        check("Dock" not in text("#dlg") and "setCounts" not in names(), "Linux: no Dock setting, no counts")
+        page.click("#dlg button:has-text('Cancel')")
+        settings("macos")
+        page.click("#dlg label:has-text('Dock') input")
+        page.click("#dlg button:has-text('Save')")
+        check(["setDock", [True]] in calls(), "a Mac: the Dock setting applies at once")
+
         check(not errors, f"no script errors {errors}")
         browser.close()
     server.shutdown()
