@@ -6,6 +6,10 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-# Magic Wormhole's SPAKE2 variant; compatible with python-spake2 and gospake2.
+# Magic Wormhole's SPAKE2 variant; compatible with python-spake2 and the Go
+# client's go/internal/spake2.
 spake2 = { version = "0.4", default-features = false }
+# The spake2 crate's own curve library (same version, not re-exported), used
+# to check the peer's point before the crate sees it.
+curve25519-dalek = { version = "4.1.3", default-features = false }
 rand_chacha = { version = "0.3", default-features = false }
