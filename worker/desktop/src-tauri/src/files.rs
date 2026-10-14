@@ -115,15 +115,35 @@ pub fn write_config(home: &Path, config: &Value) -> io::Result<()> {
     write_atomic(&paths::config_file(home), text.as_bytes())
 }
 
+/// Whether a request id is a plain name: 1 to 64 characters from A-Z,
+/// a-z, 0-9, - and _. The workers and review.py hold ids to the same rule
+/// (they refuse a request with any other id), and ids name the files the
+/// app writes (approvals/<id>.answer, commands/stop-<id>).
+pub fn valid_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
+}
+
+/// Whether `name` is a command the worker takes from commands/: new-code,
+/// unpair, or stop-<id> for a request id.
+pub fn valid_command(name: &str) -> bool {
+    matches!(name, "new-code" | "unpair") || name.strip_prefix("stop-").is_some_and(valid_id)
+}
+
 /// Writes approvals/<id>.answer with "allow" or "refuse".
 pub fn answer_approval(home: &Path, id: &str, verdict: &str) -> io::Result<()> {
-    let safe: String = id.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
-    if safe.is_empty() {
-        return Ok(());
+    if !valid_id(id) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("not a request id: {id:?}"),
+        ));
     }
     let dir = paths::approvals_dir(home);
     fs::create_dir_all(&dir)?;
-    write_atomic(&dir.join(format!("{safe}.answer")), verdict.as_bytes())
+    write_atomic(&dir.join(format!("{id}.answer")), verdict.as_bytes())
 }
 
 /// review.json's level: trust (the default), changes or all.
@@ -177,15 +197,37 @@ mod tests {
         assert!(w.config.is_null());
         assert!(w.status.is_null());
         assert_eq!(w.review, "trust");
-        answer_approval(&home, "r5/../x", "allow").unwrap();
+        answer_approval(&home, "r-5_x", "allow").unwrap();
         assert_eq!(
-            fs::read_to_string(paths::approvals_dir(&home).join("r5x.answer")).unwrap(),
+            fs::read_to_string(paths::approvals_dir(&home).join("r-5_x.answer")).unwrap(),
             "allow"
         );
+        answer_approval(&home, "r5/../x", "allow").unwrap_err();
+        let answers = fs::read_dir(paths::approvals_dir(&home)).unwrap().count();
+        assert_eq!(answers, 1);
         set_review_level(&home, "all").unwrap();
         assert_eq!(review_level(&home), "all");
         write_config(&home, &serde_json::json!({"name": "x"})).unwrap();
         assert_eq!(read_worker(&home).config["name"], "x");
         fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn ids_follow_the_workers_rule() {
+        let x64 = "x".repeat(64);
+        for id in ["a", "a-b_C9", "0123456789abcdef0123456789abcdef", x64.as_str()] {
+            assert!(valid_id(id), "{id}");
+        }
+        let x65 = "x".repeat(65);
+        for id in ["", "caf\u{e9}", "a.b", "a b", "a/b", "a\\b", "../x", "a\n", x65.as_str()] {
+            assert!(!valid_id(id), "{id:?}");
+        }
+        let stop_x64 = format!("stop-{x64}");
+        for name in ["new-code", "unpair", "stop-a-b_C9", stop_x64.as_str()] {
+            assert!(valid_command(name), "{name}");
+        }
+        for name in ["", "stop-", "stop-a.b", "stop-../x", "new_code", "rm"] {
+            assert!(!valid_command(name), "{name:?}");
+        }
     }
 }

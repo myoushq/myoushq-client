@@ -52,7 +52,41 @@ const (
 	windowsHint     = "This worker runs PowerShell on Windows; send `help` for what it takes."
 	notRecognized   = "is not recognized as the name of a cmdlet"
 	invitePairingIn = 30 // seconds: an invite closer than this to expiring is renewed
+
+	// Request ids name files the owner's app reads and writes
+	// (requests/<id>.json, approvals/<id>.json and .answer,
+	// commands/stop-<id>), so they must be plain names (validID).
+	badID = "bad request: the id must be 1 to 64 characters from A-Z, a-z, 0-9, - and _"
+	// Stopping the worker (Run's context ending: SIGTERM, SIGINT) ends the
+	// command it is running and answers that request, then Run returns.
+	stoppingWhy       = "stopped by the owner (the worker is shutting down)"
+	shutdownReplyWait = 10 * time.Second // how long an answer may take once the worker is stopping
 )
+
+// validID is whether a request id is a plain name: 1 to 64 characters
+// from A-Z, a-z, 0-9, - and _ (clients send 32 hex). The Python worker,
+// review.py and the owner's apps hold ids to the same rule.
+func validID(id string) bool {
+	if len(id) == 0 || len(id) > 64 {
+		return false
+	}
+	for i := 0; i < len(id); i++ {
+		c := id[i]
+		if !('a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9' || c == '-' || c == '_') {
+			return false
+		}
+	}
+	return true
+}
+
+// answerContext is ctx for answering a request: it ends shutdownReplyWait
+// after ctx does, so a request cut short by the worker stopping still gets
+// its answer.
+func answerContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	actx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	stop := context.AfterFunc(ctx, func() { time.AfterFunc(shutdownReplyWait, cancel) })
+	return actx, func() { stop(); cancel() }
+}
 
 // WorkerOptions are a worker's settings (`myous worker`'s flags).
 type WorkerOptions struct {
@@ -271,6 +305,7 @@ func (w *Worker) Run(ctx context.Context) error {
 		}, workerTick)
 		cancel()
 		if ctx.Err() != nil {
+			w.say("stopping")
 			return nil
 		}
 		tickMu.Lock()
@@ -492,6 +527,14 @@ func (b badRequest) Error() string { return b.err.Error() }
 func (w *Worker) handle(ctx context.Context, e Entry) {
 	rid := ""
 	failed := func(err error, bad bool) {
+		if ctx.Err() != nil && rid != "" && validID(rid) {
+			// Cut short by the worker stopping: the requester is told so.
+			w.log(pyObj{{"op", "error"}, {"id", rid}, {"sender", e.Peer}, {"error", err.Error()}})
+			if err2 := w.refuse(ctx, e, rid, stoppingWhy); err2 != nil {
+				w.say(fmt.Sprintf("could not answer request %s: %v", rid, err2))
+			}
+			return
+		}
 		if !bad {
 			// Our side (relay, hub, disk): log it; the requester's command times out.
 			w.log(pyObj{{"op", "error"}, {"id", nullable(rid)}, {"sender", e.Peer}, {"error", err.Error()}})
@@ -521,6 +564,9 @@ func (w *Worker) handle(ctx context.Context, e Entry) {
 		if e.Type == "file" {
 			if len(e.W) >= 3 && e.W[0] == "put" {
 				rid = e.W[1]
+				if !validID(rid) {
+					return w.refuse(ctx, e, rid, badID)
+				}
 				return w.doPut(ctx, e, e.W[1], e.W[2])
 			}
 			return nil
@@ -530,6 +576,9 @@ func (w *Worker) handle(ctx context.Context, e Entry) {
 		if isRequest && (obj["myous"] == "exec" || obj["myous"] == "get") {
 			req = obj
 			rid = obj["id"].(string)
+			if !validID(rid) {
+				return w.refuse(ctx, e, rid, badID)
+			}
 		}
 		switch {
 		case req != nil && req["myous"] == "exec":
@@ -580,17 +629,17 @@ func (w *Worker) doExec(ctx context.Context, e Entry, req map[string]any, rid st
 		}
 	}
 	seconds := int(min(max(timeout, 1), workerMaxTimeout))
-	if why := w.reviewRequest(e, rid, pyObj{{"op", "exec"}}, pyKV{"cmd", cmd}); why != "" {
+	if why := w.reviewRequest(ctx, e, rid, pyObj{{"op", "exec"}}, pyKV{"cmd", cmd}); why != "" {
 		return w.refuse(ctx, e, rid, why)
 	}
 	started := time.Now()
-	// Only for an id that is a plain name: "stop-../../key" must not reach
-	// outside commands/ (filepath.Join, and Windows, resolve ".." by name).
+	// The id is a plain name (handle checked it): "stop-../../key" can't
+	// reach outside commands/.
 	stopFile := ""
-	if w.commandsDir != "" && !strings.ContainsAny(rid, `/\`) {
+	if w.commandsDir != "" && validID(rid) {
 		stopFile = filepath.Join(w.commandsDir, "stop-"+rid)
 	}
-	r, err := runCommand(cmd, w.work, seconds, stopFile)
+	r, err := runCommand(ctx, cmd, w.work, seconds, stopFile)
 	if err != nil {
 		return err
 	}
@@ -615,7 +664,7 @@ func (w *Worker) doGet(ctx context.Context, e Entry, req map[string]any, rid str
 	path := req["path"]
 	target, why := w.resolve(path)
 	if why == "" {
-		why = w.reviewRequest(e, rid, pyObj{{"op", "get"}}, pyKV{"path", path})
+		why = w.reviewRequest(ctx, e, rid, pyObj{{"op", "get"}}, pyKV{"path", path})
 	}
 	var info os.FileInfo
 	if why == "" {
@@ -629,8 +678,8 @@ func (w *Worker) doGet(ctx context.Context, e Entry, req map[string]any, rid str
 	}
 	if _, err := w.agent.SendFile(ctx, e.Peer, target, nostr.Tags{{"w", "file", rid}}); err != nil {
 		var re *RelayError
-		if errors.As(err, &re) {
-			return err
+		if errors.As(err, &re) || ctx.Err() != nil {
+			return err // handle answers "stopped" when the worker is stopping
 		}
 		return w.refuse(ctx, e, rid, fmt.Sprintf("could not send the file: %v", err))
 	}
@@ -642,7 +691,7 @@ func (w *Worker) doGet(ctx context.Context, e Entry, req map[string]any, rid str
 func (w *Worker) doPut(ctx context.Context, e Entry, rid, path string) error {
 	target, why := w.resolve(path)
 	if why == "" {
-		why = w.reviewRequest(e, rid, pyObj{{"op", "put"}}, pyKV{"path", path}, pyKV{"size", e.Size})
+		why = w.reviewRequest(ctx, e, rid, pyObj{{"op", "put"}}, pyKV{"path", path}, pyKV{"size", e.Size})
 	}
 	if why != "" {
 		return w.refuse(ctx, e, rid, why)
@@ -654,6 +703,9 @@ func (w *Worker) doPut(ctx context.Context, e Entry, rid, path string) error {
 		}
 	}
 	if err != nil {
+		if ctx.Err() != nil {
+			return w.refuse(ctx, e, rid, stoppingWhy)
+		}
 		return w.refuse(ctx, e, rid, fmt.Sprintf("could not write the file: %v", err))
 	}
 	w.note(e, "put", true)
@@ -666,7 +718,7 @@ func (w *Worker) doPut(ctx context.Context, e Entry, rid, path string) error {
 
 // reviewRequest is why the request is refused, or "" to go ahead
 // (protocol.md 7.2): the review command, or review.py's rules built in.
-func (w *Worker) reviewRequest(e Entry, rid string, op pyObj, fields ...pyKV) string {
+func (w *Worker) reviewRequest(ctx context.Context, e Entry, rid string, op pyObj, fields ...pyKV) string {
 	request := append(op, pyKV{"id", rid}, pyKV{"sender", e.Peer}, pyKV{"alias", e.Alias})
 	request = append(request, fields...)
 	// Recorded first: the review may ask the owner, and the app shows the
@@ -675,9 +727,9 @@ func (w *Worker) reviewRequest(e Entry, rid string, op pyObj, fields ...pyKV) st
 	var why string
 	if w.reviewCmd != "" {
 		// Not in the work directory: the hook must not pick up anything a request wrote there.
-		why = runReviewHook(w.reviewCmd, w.home, request, reviewTimeout)
+		why = runReviewHook(ctx, w.reviewCmd, w.home, request, reviewTimeout)
 	} else {
-		why = w.review.decide(request)
+		why = w.review.decide(ctx, request)
 	}
 	decision, logged := "allow", "allow"
 	if why != "" {
@@ -723,6 +775,8 @@ func (w *Worker) reply(ctx context.Context, e Entry, obj pyObj) error {
 	if _, err := splitMessage(text); err != nil {
 		return badRequest{err} // too long to send: the requester gets a refusal instead
 	}
+	ctx, cancel := answerContext(ctx) // answered even when the worker is stopping
+	defer cancel()
 	_, err := w.agent.Send(ctx, e.Peer, text)
 	return err
 }
@@ -1035,10 +1089,10 @@ func (w *Worker) log(record pyObj) {
 // list. Fields with a nil value are left as they are. The newest
 // requestsKeep are kept.
 func (w *Worker) record(rid string, fields pyObj) {
-	name := safeName(rid)
-	if w.requestsDir == "" || name == "" {
-		return
+	if w.requestsDir == "" || !validID(rid) {
+		return // an id that isn't a plain name was refused; worker.log has it
 	}
+	name := rid
 	err := func() error {
 		if err := os.MkdirAll(w.requestsDir, 0o777); err != nil {
 			return err

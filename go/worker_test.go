@@ -42,6 +42,7 @@ type fakeAgent struct {
 	contacts map[string]Contact
 	invites  int
 	failSend map[string]error // Send to these fails
+	listen   func(ctx context.Context, onNew func([]Entry)) error
 }
 
 func newFakeAgent() *fakeAgent {
@@ -97,6 +98,9 @@ func (f *fakeAgent) FetchBytes(ctx context.Context, e Entry) ([]byte, error) {
 	return b, nil
 }
 func (f *fakeAgent) Listen(ctx context.Context, onNew func([]Entry), onTick func(), tick time.Duration) error {
+	if f.listen != nil {
+		return f.listen(ctx, onNew)
+	}
 	return errors.New("no relay in tests")
 }
 
@@ -357,11 +361,72 @@ func TestWorkerARequestIDCannotNameAStopFileElsewhere(t *testing.T) {
 	victim := filepath.Join(f.home, "victim")
 	os.WriteFile(victim, []byte("keep me"), 0o600)
 	f.w.handle(f.ctx, request(map[string]any{"myous": "exec", "id": "../../../victim", "cmd": "echo ran"}))
-	if r := f.last(); r["stdout"] != "ran\n" || r["stopped"] != nil {
+	if r := f.last(); r["ok"] != false || r["error"] != badID || r["id"] != "../../../victim" {
 		t.Fatalf("%v", r)
 	}
 	if b, err := os.ReadFile(victim); err != nil || string(b) != "keep me" {
 		t.Fatalf("the file outside commands/: %q %v", b, err)
+	}
+}
+
+func TestWorkerRequestIDsArePlainNames(t *testing.T) {
+	needPOSIX(t)
+	// One rule for ids, as the apps and review.py have it: 1 to 64 of
+	// A-Z, a-z, 0-9, - and _. Anything else is refused before it runs.
+	f := newWorkerFixture(t)
+	good := []string{"a-b_C9", strings.Repeat("x", 64), "0"}
+	for _, rid := range good {
+		f.w.handle(f.ctx, request(map[string]any{"myous": "exec", "id": rid, "cmd": "echo ran"}))
+		if r := f.last(); r["stdout"] != "ran\n" || !exists(filepath.Join(f.home, "requests", rid+".json")) {
+			t.Fatalf("%q: %v", rid, r)
+		}
+	}
+	for _, rid := range []string{strings.Repeat("x", 65), "", "caf\u00e9", "\u0661\u0662", "a.b", "a b", "a/b", `a\b`, "a\n"} {
+		f.w.handle(f.ctx, request(map[string]any{"myous": "exec", "id": rid, "cmd": "touch ran"}))
+		want := pyDumps(pyObj{{"myous", "ack"}, {"id", rid}, {"ok", false}, {"error", badID}}, false)
+		if got := f.lastText(); got != want {
+			t.Fatalf("%q: %s", rid, got)
+		}
+	}
+	if exists(filepath.Join(f.work, "ran")) {
+		t.Fatal("a request with a bad id ran")
+	}
+	f.w.handle(f.ctx, Entry{Type: "file", Direction: "in", Peer: testPeer, Alias: "muse", Name: "in.txt", Size: 1,
+		W: []string{"put", "a.b", "in.txt"}, Seq: 2})
+	if r := f.last(); r["ok"] != false || r["error"] != badID || r["id"] != "a.b" {
+		t.Fatalf("put: %v", r)
+	}
+	entries, _ := os.ReadDir(filepath.Join(f.home, "requests"))
+	var names []string
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	if got := strings.Join(names, " "); got != "0.json a-b_C9.json "+strings.Repeat("x", 64)+".json" {
+		t.Fatalf("records: %s", got)
+	}
+	for id, ok := range map[string]bool{"ab": true, "A-_9": true, "": false, "é": false, "a.b": false,
+		strings.Repeat("z", 64): true, strings.Repeat("z", 65): false} {
+		if validID(id) != ok {
+			t.Fatalf("validID(%q) != %v", id, ok)
+		}
+	}
+}
+
+func TestWorkerStoppingEndsAReviewThatWaits(t *testing.T) {
+	needPOSIX(t)
+	// A review hook waiting for the owner when the worker is stopped:
+	// ended, and the agent is told.
+	f := newWorkerFixture(t)
+	f.w.reviewCmd = "sleep 30"
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(500*time.Millisecond, cancel)
+	started := time.Now()
+	f.w.handle(ctx, request(map[string]any{"myous": "exec", "id": testRID, "cmd": "touch ran"}))
+	if got, want := f.lastText(), `{"myous": "ack", "id": "`+testRID+`", "ok": false, "error": "`+stoppingWhy+`"}`; got != want {
+		t.Fatalf("got %s", got)
+	}
+	if exists(filepath.Join(f.work, "ran")) || time.Since(started) > 5*time.Second {
+		t.Fatalf("ran, or took %v", time.Since(started))
 	}
 }
 
@@ -658,14 +723,14 @@ func TestWorkerRequestRecordsForTheOwner(t *testing.T) {
 	if rec["decision"] != "refuse" || rec["reason"] != pausedByOwner {
 		t.Fatalf("%v", rec)
 	}
-	// Odd ids can't escape the directory.
+	// Odd ids are refused, and can't name a record elsewhere.
 	f.w.handle(f.ctx, request(map[string]any{"myous": "exec", "id": "../x", "cmd": "echo"}))
 	entries, _ := os.ReadDir(filepath.Join(f.home, "requests"))
 	var names []string
 	for _, e := range entries {
 		names = append(names, e.Name())
 	}
-	if got := strings.Join(names, " "); got != testRID+".json "+cd+".json x.json" {
+	if got := strings.Join(names, " "); got != testRID+".json "+cd+".json" {
 		t.Fatalf("records: %s", got)
 	}
 }

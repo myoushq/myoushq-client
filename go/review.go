@@ -13,7 +13,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
 )
 
 // The worker's review (protocol.md 7.2). With a review command (`myous
@@ -127,7 +126,7 @@ func (r *builtinReview) level() string {
 }
 
 // decide is review.py's decide: "" to allow, else why not.
-func (r *builtinReview) decide(req pyObj) string {
+func (r *builtinReview) decide(ctx context.Context, req pyObj) string {
 	if r.pauseFile != "" && exists(r.pauseFile) {
 		return pausedByOwner
 	}
@@ -146,21 +145,23 @@ func (r *builtinReview) decide(req pyObj) string {
 			return ""
 		}
 	}
-	return r.ask(req)
+	return r.ask(ctx, req)
 }
 
 // ask writes the question to approvals/<id>.json and waits for the
-// owner's approvals/<id>.answer ("allow" or "refuse").
-func (r *builtinReview) ask(req pyObj) string {
+// owner's approvals/<id>.answer ("allow" or "refuse"). The id names the
+// files, so one that isn't a plain name (validID) is refused, as review.py
+// does: the owner's app couldn't answer it. ctx ending (the worker
+// stopping) ends the wait.
+func (r *builtinReview) ask(ctx context.Context, req pyObj) string {
+	id, _ := req.get("id")
+	name, _ := id.(string)
+	if !validID(name) {
+		return badID
+	}
 	dir := filepath.Join(r.home, "approvals")
 	if err := os.MkdirAll(dir, 0o777); err != nil {
 		return err.Error()
-	}
-	id, _ := req.get("id")
-	sid, _ := id.(string)
-	name := safeName(sid)
-	if name == "" {
-		name = strconv.FormatInt(time.Now().Unix(), 10)
 	}
 	question := filepath.Join(dir, name+".json")
 	answer := filepath.Join(dir, name+".answer")
@@ -182,7 +183,11 @@ func (r *builtinReview) ask(req pyObj) string {
 	for time.Now().Before(deadline) {
 		raw, err := os.ReadFile(answer)
 		if errors.Is(err, os.ErrNotExist) {
-			time.Sleep(500 * time.Millisecond)
+			select {
+			case <-ctx.Done():
+				return stoppingWhy
+			case <-time.After(500 * time.Millisecond):
+			}
 			continue
 		}
 		if err != nil {
@@ -208,9 +213,10 @@ func approvalWait() time.Duration {
 }
 
 // runReviewHook runs a review command with the request on stdin, in dir:
-// "" to allow, else the first line of its stderr.
-func runReviewHook(cmd, dir string, req pyObj, limit time.Duration) string {
-	ctx, cancel := context.WithTimeout(context.Background(), limit)
+// "" to allow, else the first line of its stderr. ctx ending (the worker
+// stopping) ends the hook.
+func runReviewHook(stop context.Context, cmd, dir string, req pyObj, limit time.Duration) string {
+	ctx, cancel := context.WithTimeout(stop, limit)
 	defer cancel()
 	c := hookCommand(ctx, cmd)
 	c.Dir = dir
@@ -221,6 +227,9 @@ func runReviewHook(cmd, dir string, req pyObj, limit time.Duration) string {
 	c.Stderr = &stderr
 	c.WaitDelay = 5 * time.Second
 	err := c.Run()
+	if stop.Err() != nil {
+		return stoppingWhy
+	}
 	if ctx.Err() != nil {
 		return "the review hook didn't answer"
 	}
@@ -235,23 +244,6 @@ func runReviewHook(cmd, dir string, req pyObj, limit time.Duration) string {
 		return lines[0]
 	}
 	return "refused by the review hook"
-}
-
-// safeName is an id as a file name: letters, digits, - and _, at most 64
-// characters (review.py's and the worker's rule).
-func safeName(id string) string {
-	var b strings.Builder
-	n := 0
-	for _, r := range id {
-		if n == 64 {
-			break
-		}
-		if unicode.IsLetter(r) || unicode.IsNumber(r) || r == '-' || r == '_' {
-			b.WriteRune(r)
-			n++
-		}
-	}
-	return b.String()
 }
 
 func exists(path string) bool {

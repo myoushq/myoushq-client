@@ -16,10 +16,13 @@ import json
 import math
 import os
 import platform
+import re
 import shlex
+import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -43,6 +46,21 @@ WINDOWS_HELP = ("This worker runs on Windows: commands are PowerShell, not Linux
                 "(use `Get-ChildItem` or `dir`, not `ls`; `Select-String`, not `grep`).")
 WINDOWS_HINT = "This worker runs PowerShell on Windows; send `help` for what it takes."
 NOT_RECOGNIZED = "is not recognized as the name of a cmdlet"  # PowerShell's CommandNotFoundException
+# Request ids name files the owner's app reads and writes (requests/<id>.json,
+# approvals/<id>.json and .answer, commands/stop-<id>), so they must be plain
+# names: 1 to 64 ASCII letters, digits, - and _ (clients send 32 hex). The
+# apps and review.py hold ids to the same rule.
+ID_RULE = re.compile(r"[A-Za-z0-9_-]{1,64}")
+BAD_ID = "bad request: the id must be 1 to 64 characters from A-Z, a-z, 0-9, - and _"
+# Stopping the worker (SIGTERM, SIGINT; CTRL_BREAK on Windows) ends the
+# command it is running, answers that request, then exits.
+STOPPING = "stopped by the owner (the worker is shutting down)"
+SHUTDOWN_WAIT = 10  # seconds the request being handled has to be answered before the worker exits anyway
+
+
+def valid_id(rid) -> bool:
+    """Whether a request id is a plain name (ID_RULE)."""
+    return isinstance(rid, str) and ID_RULE.fullmatch(rid) is not None
 
 
 class Worker:
@@ -72,6 +90,7 @@ class Worker:
         self.help_sent: dict[str, float] = {}
         self._status_written = 0.0
         self._busy: asyncio.Lock | None = None  # one request at a time, whichever path delivered it
+        self.stopping = threading.Event()  # set by SIGTERM / SIGINT: finish the current request, then exit
 
     def _check_review_cmd(self, cmd: str | None) -> str | None:
         """The review command with its relative paths made absolute now,
@@ -97,15 +116,57 @@ class Worker:
     # --- running -------------------------------------------------------------
 
     async def run(self) -> None:
-        """Serve requests until stopped. Reconnects if the relay drops."""
+        """Serve requests until stopped. Reconnects if the relay drops. A
+        SIGTERM or SIGINT (CTRL_BREAK on Windows) stops it: the command
+        running is ended with its process group, the agent that asked gets
+        its answer ("stopped by the owner"), and run returns."""
         self.ensure_invite()
         self.write_status()
-        while True:
+        main = asyncio.current_task()
+        loop = asyncio.get_running_loop()
+
+        def on_signal(signum, frame):
+            if self.stopping.is_set():
+                return
+            self.stopping.set()   # run_command and review see it within a quarter second
+            loop.call_soon_threadsafe(lambda: loop.create_task(self._shut_down(main, signum)))
+
+        installed = {}
+        for name in ("SIGTERM", "SIGINT", "SIGBREAK"):
+            sig = getattr(signal, name, None)
+            if sig is None:
+                continue
             try:
-                await self.agent.listen(on_new=self.on_new, on_tick=self.tick, tick=TICK)
-            except (OSError, relay.RelayError) as e:
-                self.say(f"connection lost ({e}); retrying in 10 seconds")
-                await asyncio.sleep(10)
+                installed[sig] = signal.signal(sig, on_signal)
+            except (ValueError, OSError):
+                pass   # not the main thread, or not this system's
+        try:
+            while not self.stopping.is_set():
+                try:
+                    await self.agent.listen(on_new=self.on_new, on_tick=self.tick, tick=TICK)
+                except (OSError, relay.RelayError) as e:
+                    self.say(f"connection lost ({e}); retrying in 10 seconds")
+                    await asyncio.sleep(10)
+        except asyncio.CancelledError:
+            if not self.stopping.is_set():
+                raise
+        finally:
+            for sig, old in installed.items():
+                try:
+                    signal.signal(sig, old)
+                except (ValueError, OSError):
+                    pass
+
+    async def _shut_down(self, main: asyncio.Task, signum: int) -> None:
+        """After a stop signal: let the request being handled be answered
+        (its command is being ended), then end run()."""
+        self.say(f"stopping (signal {signum})")
+        if self._busy is not None:
+            try:
+                await asyncio.wait_for(self._busy.acquire(), SHUTDOWN_WAIT)
+            except asyncio.TimeoutError:
+                self.say("the current request wasn't answered in time; stopping anyway")
+        main.cancel()
 
     def tick(self) -> None:
         self.handle_commands()
@@ -173,6 +234,8 @@ class Worker:
             self._busy = asyncio.Lock()
         async with self._busy:
             for e in entries:
+                if self.stopping.is_set():
+                    return   # stopping: what is left waits for the next start
                 if e.get("direction") == "out":
                     continue
                 if e["type"] == "paired":
@@ -203,11 +266,17 @@ class Worker:
                 w = e.get("w") or []
                 if len(w) >= 3 and w[0] == "put":
                     rid = w[1]
+                    if not valid_id(rid):
+                        await self.refuse(e, rid, BAD_ID)
+                        return
                     await self.do_put(e, w[1], w[2])
                 return
             req = e.get("request")
             if req:
                 rid = req["id"]
+                if not valid_id(rid):
+                    await self.refuse(e, rid, BAD_ID)
+                    return
             if req and req["myous"] == "exec":
                 await self.do_exec(e, req)
             elif req and req["myous"] == "get":
@@ -242,11 +311,11 @@ class Worker:
             await self.refuse(e, req["id"], why)
             return
         started = time.time()
-        # Only for an id that is a plain name: "stop-../../key" must not
-        # reach outside commands/ (Windows resolves ".." in a path itself).
-        plain = "/" not in req["id"] and "\\" not in req["id"]
-        stop_file = self.commands_dir / f"stop-{req['id']}" if self.commands_dir and plain else None
-        result = await asyncio.get_running_loop().run_in_executor(None, run_command, cmd, self.work, timeout, stop_file)
+        # The id is a plain name (handle checked it): "stop-../../key" can't
+        # reach outside commands/.
+        stop_file = self.commands_dir / f"stop-{req['id']}" if self.commands_dir and valid_id(req["id"]) else None
+        result = await asyncio.get_running_loop().run_in_executor(None, run_command, cmd, self.work, timeout, stop_file,
+                                                                  self.stopping)
         if processes.WINDOWS and NOT_RECOGNIZED in result["stderr"]:
             # An agent that took this for a Linux worker: say so where it looks.
             stderr = result["stderr"]
@@ -297,21 +366,37 @@ class Worker:
         request = {"op": op, "id": rid, "sender": e.get("peer"), "alias": e.get("alias"), **fields}
         if self.review_cmd:
             self.record(rid, **request, at=int(time.time()), decision="pending")   # the hook may ask the owner
-            try:
-                # Not in the work directory: the hook must not pick up anything a request wrote there.
-                r = subprocess.run(self.review_cmd, shell=True, input=json.dumps(request), capture_output=True,
-                                   text=True, timeout=REVIEW_TIMEOUT, cwd=self.home)
-            except subprocess.TimeoutExpired:
-                why = "the review hook didn't answer"
-            except OSError as err:
-                why = f"the review hook could not run ({err})"
-            else:
-                why = None if r.returncode == 0 else ((r.stderr.strip().splitlines() or ["refused by the review hook"])[0])
+            why = self.run_review_hook(json.dumps(request))
         else:
             why = "worker is paused" if self.paused() else None
         self.log(dict(request, decision="allow" if why is None else f"refuse: {why}"))
         self.record(rid, **request, at=int(time.time()), decision="allow" if why is None else "refuse", reason=why)
         return why
+
+    def run_review_hook(self, request: str) -> str | None:
+        """Run the review command with the request on stdin: None to allow,
+        else why not. It may wait for the owner; stopping the worker ends
+        the wait (and the hook)."""
+        try:
+            # Not in the work directory: the hook must not pick up anything a request wrote there.
+            proc = subprocess.Popen(self.review_cmd, shell=True, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE, text=True, cwd=self.home,
+                                    **({} if processes.WINDOWS else {"start_new_session": True}))
+        except OSError as err:
+            return f"the review hook could not run ({err})"
+        deadline = time.time() + REVIEW_TIMEOUT
+        stdin: str | None = request
+        while True:
+            try:
+                _, stderr = proc.communicate(stdin, timeout=0.25)
+                break
+            except subprocess.TimeoutExpired:
+                stdin = None   # given once; communicate keeps sending it
+            if self.stopping.is_set() or time.time() >= deadline:
+                processes.kill_tree(proc)
+                proc.communicate()
+                return STOPPING if self.stopping.is_set() else "the review hook didn't answer"
+        return None if proc.returncode == 0 else ((stderr.strip().splitlines() or ["refused by the review hook"])[0])
 
     def paused(self) -> bool:
         return bool(self.pause_file and self.pause_file.exists())
@@ -404,14 +489,11 @@ class Worker:
         """One JSON file per request in <home>/requests, updated as it
         progresses (decision, then outcome and output), for the owner's app
         to list. The newest REQUESTS_KEEP are kept."""
-        if not self.requests_dir or not isinstance(rid, str):
-            return
-        name = "".join(c for c in rid if c.isalnum() or c in "-_")[:64]
-        if not name:
-            return
+        if not self.requests_dir or not valid_id(rid):
+            return   # an id that isn't a plain name was refused; worker.log has it
         try:
             self.requests_dir.mkdir(parents=True, exist_ok=True)
-            path = self.requests_dir / f"{name}.json"
+            path = self.requests_dir / f"{rid}.json"
             try:
                 current = json.loads(path.read_text())
             except (OSError, ValueError):
@@ -430,12 +512,14 @@ class Worker:
         print(text, file=self.out, flush=True)
 
 
-def run_command(cmd: str, cwd: Path, timeout: int, stop_file: Path | None = None) -> dict:
+def run_command(cmd: str, cwd: Path, timeout: int, stop_file: Path | None = None,
+                stopping: threading.Event | None = None) -> dict:
     """Run a shell command (PowerShell on Windows) in its own process group, so a timeout kills
     whatever it started too. Output goes to temporary files (a daemon the
     command leaves behind can't hold us up by keeping a pipe open) and is
     cut to fit a message. While it runs, the owner's app can create
-    `stop_file` to end it ("stopped by you" to the agent)."""
+    `stop_file` to end it ("stopped by you" to the agent), and `stopping`
+    (the worker being stopped) ends it too."""
     with tempfile.TemporaryFile() as out_f, tempfile.TemporaryFile() as err_f:
         proc = processes.shell_popen(cmd, cwd=cwd, stdin=subprocess.DEVNULL, stdout=out_f, stderr=err_f)
         deadline = time.time() + timeout
@@ -446,7 +530,10 @@ def run_command(cmd: str, cwd: Path, timeout: int, stop_file: Path | None = None
                 break
             except subprocess.TimeoutExpired:
                 pass
-            if stop_file is not None and stop_file.exists():
+            if stopping is not None and stopping.is_set():
+                stopped = True
+                note = f"[myous: {STOPPING}]"
+            elif stop_file is not None and stop_file.exists():
                 stopped = True
                 note = "[myous: stopped by the owner]"
             elif time.time() >= deadline:

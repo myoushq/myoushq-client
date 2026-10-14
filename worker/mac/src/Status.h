@@ -85,9 +85,16 @@ NSArray<NSDictionary *> *loadRequests(Paths *paths, NSUInteger limit);
 /// Drop a command file for the worker (it removes the file once done).
 void sendWorkerCommand(Paths *paths, NSString *name);
 
+/// Whether a request id is a plain name: 1 to 64 characters from A-Z, a-z,
+/// 0-9, - and _. The workers and review.py hold ids to the same rule (they
+/// refuse a request with any other id), and ids name the files the app
+/// writes (approvals/<id>.answer, commands/stop-<id>).
+BOOL validRequestId(NSString *rid);
+
 /// approvals/*.json: requests the review hook is waiting on, oldest first.
 NSArray<NSDictionary *> *loadApprovals(Paths *paths);
-/// Answer a question: "allow" or "refuse" into approvals/<id>.answer.
+/// Answer a question: "allow" or "refuse" into approvals/<id>.answer
+/// (nothing for an id that isn't validRequestId).
 void answerApproval(Paths *paths, NSString *rid, NSString *verdict);
 /// The review level ("trust", "changes", "all"); missing file means "trust".
 NSString *reviewLevel(Paths *paths);

@@ -5,6 +5,17 @@ the hub (`latest_release` in `/config.json`); the reference clients put an
 "update" item in the inbox. Get it, verify its signature and build it as
 in [skill.md](https://myoushq.com/skill.md).
 
+## Unreleased
+
+- **Stopping a worker ends the command it runs**: on SIGTERM or SIGINT
+  both workers kill the command's process group, answer the agent "stopped
+  by the owner" and exit. The apps give a stopped worker ten seconds
+  before SIGKILL (on Windows the app ends the worker's process tree).
+- **One rule for request ids**: 1 to 64 characters from A-Z, a-z, 0-9, -
+  and _, in both workers, review.py and both apps; workers refuse other
+  ids, and approvals with - or _ in the id can now be answered from the
+  apps.
+
 ## v0.7.3
 
 A release for the skill, the guides and the site; the clients are unchanged

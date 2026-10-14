@@ -5,6 +5,7 @@ package myous
 // the same commands, when a Python is there to ask).
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -69,11 +70,11 @@ func req(op, id string, fields ...pyKV) pyObj {
 
 func TestReviewTrustAllowsAndPauseRefuses(t *testing.T) {
 	r, home := reviewFor(t)
-	if why := r.decide(req("exec", "a", pyKV{"cmd", "rm -rf x"})); why != "" {
+	if why := r.decide(context.Background(), req("exec", "a", pyKV{"cmd", "rm -rf x"})); why != "" {
 		t.Fatal(why)
 	}
 	os.WriteFile(filepath.Join(home, "worker.paused"), nil, 0o600)
-	if why := r.decide(req("exec", "a", pyKV{"cmd", "ls"})); why != "the worker is paused by its owner" {
+	if why := r.decide(context.Background(), req("exec", "a", pyKV{"cmd", "ls"})); why != "the worker is paused by its owner" {
 		t.Fatal(why)
 	}
 }
@@ -81,14 +82,14 @@ func TestReviewTrustAllowsAndPauseRefuses(t *testing.T) {
 func TestReviewChangesLevel(t *testing.T) {
 	r, home := reviewFor(t)
 	setLevel(t, home, "changes")
-	if why := r.decide(req("exec", "a", pyKV{"cmd", "ls -la"})); why != "" {
+	if why := r.decide(context.Background(), req("exec", "a", pyKV{"cmd", "ls -la"})); why != "" {
 		t.Fatal(why)
 	}
-	if why := r.decide(req("get", "b", pyKV{"path", "x"})); why != "" {
+	if why := r.decide(context.Background(), req("get", "b", pyKV{"path", "x"})); why != "" {
 		t.Fatal(why)
 	}
 	// A change with nobody answering: refused after the wait, question removed.
-	if why := r.decide(req("put", "c", pyKV{"path", "x"}, pyKV{"size", 1})); why != "the owner didn't answer in time" {
+	if why := r.decide(context.Background(), req("put", "c", pyKV{"path", "x"}, pyKV{"size", 1})); why != "the owner didn't answer in time" {
 		t.Fatal(why)
 	}
 	if left, _ := os.ReadDir(filepath.Join(home, "approvals")); len(left) != 0 {
@@ -117,7 +118,7 @@ func TestReviewAllLevelAsksAndTakesTheAnswer(t *testing.T) {
 	}
 	done := make(chan map[string]any, 1)
 	go answer("allow", done)
-	if why := r.decide(req("exec", "q1", pyKV{"cmd", "ls"})); why != "" {
+	if why := r.decide(context.Background(), req("exec", "q1", pyKV{"cmd", "ls"})); why != "" {
 		t.Fatal(why)
 	}
 	q := <-done
@@ -125,16 +126,34 @@ func TestReviewAllLevelAsksAndTakesTheAnswer(t *testing.T) {
 		t.Fatalf("question: %v", q)
 	}
 	go answer("Refuse", done)
-	if why := r.decide(req("exec", "q2", pyKV{"cmd", "ls"})); why != "refused by the owner" {
+	if why := r.decide(context.Background(), req("exec", "q2", pyKV{"cmd", "ls"})); why != "refused by the owner" {
 		t.Fatal(why)
 	}
 	<-done
+	// Ids with - and _ are asked about under their own name, which the apps answer.
+	go answer("allow", done)
+	if why := r.decide(context.Background(), req("exec", "q-2_b", pyKV{"cmd", "ls"})); why != "" {
+		t.Fatal(why)
+	}
+	<-done
+	// Ids the apps can't answer are refused, not asked about (as review.py).
+	for _, id := range []string{"a.b", "caf\u00e9", strings.Repeat("x", 65), ""} {
+		if why := r.decide(context.Background(), req("exec", id, pyKV{"cmd", "ls"})); why != badID {
+			t.Fatalf("%q: %s", id, why)
+		}
+	}
+	// Stopping the worker ends the wait.
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(300*time.Millisecond, cancel)
+	if why := r.decide(ctx, req("exec", "q-stop", pyKV{"cmd", "ls"})); why != stoppingWhy {
+		t.Fatal(why)
+	}
 	if left, _ := os.ReadDir(approvals); len(left) != 0 {
 		t.Fatalf("left behind: %v", left)
 	}
 	// A wait longer than the worker allows a review: the review's limit, as with a hook program.
 	r.wait, r.limit = time.Hour, time.Second
-	if why := r.decide(req("exec", "q3", pyKV{"cmd", "ls"})); why != "the review hook didn't answer" {
+	if why := r.decide(context.Background(), req("exec", "q3", pyKV{"cmd", "ls"})); why != "the review hook didn't answer" {
 		t.Fatal(why)
 	}
 	// The question file is what review.py writes.
@@ -147,7 +166,7 @@ func TestReviewAllLevelAsksAndTakesTheAnswer(t *testing.T) {
 		done <- map[string]any{"raw": string(raw)}
 		os.WriteFile(filepath.Join(approvals, "q4.answer"), []byte("allow"), 0o600)
 	}()
-	r.decide(req("exec", "q4", pyKV{"cmd", "ls é"}))
+	r.decide(context.Background(), req("exec", "q4", pyKV{"cmd", "ls é"}))
 	raw := (<-done)["raw"].(string)
 	prefix := `{"op": "exec", "id": "q4", "sender": "npub1x", "alias": "muse", "cmd": "ls \u00e9", "asked_at": `
 	if !strings.HasPrefix(raw, prefix) || !strings.HasSuffix(raw, `, "wait": 120.0}`) {

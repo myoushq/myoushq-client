@@ -103,14 +103,10 @@ fn write_config(home: String, config: Value) -> Result<(), String> {
 
 #[tauri::command]
 fn send_command(home: String, name: String) -> Result<(), String> {
-    let safe: String = name
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
-        .collect();
-    if safe.is_empty() {
-        return Err("empty command".into());
+    if !files::valid_command(&name) {
+        return Err(format!("not a worker command: {name:?}"));
     }
-    paths::send_command(Path::new(&home), &safe).map_err(err)
+    paths::send_command(Path::new(&home), &name).map_err(err)
 }
 
 #[tauri::command]

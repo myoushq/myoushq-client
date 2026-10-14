@@ -25,7 +25,10 @@ Asking: the hook writes <home>/approvals/<id>.json (the request) and waits
 up to MYOUS_APPROVAL_WAIT seconds (default 120, inside an agent's default
 wait for a reply) for <home>/approvals/<id>.answer containing "allow" or
 "refuse"; the desktop app shows the question and writes the answer. No
-answer in time is a refusal that says so.
+answer in time is a refusal that says so. The id names those files, so it
+must be a plain name: 1 to 64 characters from A-Z, a-z, 0-9, - and _ (the
+rule the workers and the apps hold ids to); a request with any other id
+is refused rather than asked about.
 
 The worker itself logs every request and decision to worker.log.
 """
@@ -33,6 +36,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import sys
 import time
@@ -42,6 +46,8 @@ PAUSE_FILE = os.environ.get("MYOUS_PAUSE_FILE", os.path.join(HOME, "worker.pause
 REVIEW_FILE = os.path.join(HOME, "review.json")
 APPROVALS = os.path.join(HOME, "approvals")
 WAIT = float(os.environ.get("MYOUS_APPROVAL_WAIT", "120"))
+ID_RULE = re.compile(r"[A-Za-z0-9_-]{1,64}")
+BAD_ID = "bad request: the id must be 1 to 64 characters from A-Z, a-z, 0-9, - and _"
 
 # Commands that only read, for the "changes" level. A command line is
 # read-only when every segment (split on |, &&, ||, ;) starts with one of
@@ -100,8 +106,10 @@ def read_only(cmd: str, windows: bool = WINDOWS) -> bool:
 
 def ask(req: dict) -> tuple[bool, str]:
     """Write the question, wait for the owner's answer file."""
+    rid = req.get("id")
+    if not isinstance(rid, str) or not ID_RULE.fullmatch(rid):
+        return False, BAD_ID   # the owner's app could not answer it
     os.makedirs(APPROVALS, exist_ok=True)
-    rid = "".join(c for c in str(req.get("id", "")) if c.isalnum() or c in "-_")[:64] or str(int(time.time()))
     question = os.path.join(APPROVALS, rid + ".json")
     answer = os.path.join(APPROVALS, rid + ".answer")
     with open(question + ".tmp", "w") as f:

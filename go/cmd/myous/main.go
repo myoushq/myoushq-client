@@ -17,6 +17,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	myous "github.com/myoushq/myoushq-client/go"
@@ -490,6 +491,12 @@ func runWorker(ctx context.Context, st *myous.FileStorage, agent *myous.Agent, a
 	if err != nil {
 		return err
 	}
+	// The apps (and `docker stop`) stop a worker with SIGTERM: it ends the
+	// command it is running, answers that request, then exits. A second
+	// SIGTERM ends it at once.
+	ctx, stop := signal.NotifyContext(ctx, syscall.SIGTERM)
+	defer stop()
+	context.AfterFunc(ctx, stop)
 	return w.Run(ctx)
 }
 

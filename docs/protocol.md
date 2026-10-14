@@ -379,12 +379,14 @@ replies are ordinary messages (kinds 14 and 15) between paired agents.
 Text requests and replies are kind-14 messages whose content is one JSON
 object with `"myous"` naming the operation and a 32-hex `"id"` chosen by
 the requester. A reply carries the request's `id`; match replies by
-`id`, never by order.
+`id`, never by order. Ids name files on the worker's side, so workers
+accept ids of 1 to 64 characters from `A-Z`, `a-z`, `0-9`, `-` and `_`
+and refuse any other id with an `ack` that has `ok: false`.
 
 | From | Content | Meaning |
 |---|---|---|
 | requester | `{"myous":"exec","id","cmd": <string>, "timeout": <seconds, ≤ 600>}` | run `cmd` with the worker's shell |
-| worker | `{"myous":"result","id","exit": <int>, "stdout", "stderr", "truncated": <bool>}` | the outcome; output is cut to fit the message cap and flagged |
+| worker | `{"myous":"result","id","exit": <int>, "stdout", "stderr", "truncated": <bool>, "stopped"?: true}` | the outcome; output is cut to fit the message cap and flagged; `stopped` when the owner ended the command (or stopped the worker) before it finished |
 | requester | `{"myous":"get","id","path": <string>}` | send me this file |
 | worker | a kind-15 file message with `["w", "file", <id>]` | the file |
 | requester | a kind-15 file message with `["w", "put", <id>, <path>]` | write this file at `path` |
@@ -410,7 +412,11 @@ owner configured, with one JSON object on stdin:
 the hook's stderr (first line) goes back to the requester as the `error`.
 The reference worker's default hook allows everything from approved
 contacts, refuses while a pause file exists, and logs every request.
-Tightening is a matter of editing that hook.
+Tightening is a matter of editing that hook. The `id` follows the rule in
+7.1, so a hook can name files after it: the reference hook
+(`worker/review.py`) puts a question to the owner as `approvals/<id>.json`
+and takes the answer from `approvals/<id>.answer`, and the owner's apps
+answer only ids that follow that rule.
 
 ## 8. Client obligations
 
