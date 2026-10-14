@@ -3,8 +3,8 @@
 // preview of ui/dist, the screenshots, the tests), a stand-in that does
 // nothing and reports a fake state from the page's address.
 
-import { previewBrowserCheck, previewOptions } from "./fake.js";
-import type { Agent, BrowserCheck, Capability, RuntimeOptions, WorkerFiles } from "./model.js";
+import { previewBrowserCheck, previewMacBrowsers, previewOptions } from "./fake.js";
+import type { Agent, BrowserCheck, Capability, MacBrowsers, RuntimeOptions, WorkerFiles } from "./model.js";
 
 export interface AppInfo {
   version: string;
@@ -93,6 +93,16 @@ export interface Backend {
   browserCheck(): Promise<BrowserCheck>;
   browserInstall(home: string): Promise<void>;
   browserShow(home: string, name: string): Promise<string>;
+  /** A Mac: the browsers a worker in a container can have on the Mac, or why none. */
+  macBrowsers(): Promise<MacBrowsers>;
+  /** A Mac: that browser started unless it runs (while the worker starts and runs). */
+  macBrowserEnsure(home: string, name: string, browserApp: string, hidden: boolean): Promise<string>;
+  /** A Mac: Show browser for a worker in a container (out of hiding, or started). */
+  macBrowserShow(home: string, name: string, browserApp: string): Promise<string>;
+  /** A Mac: Settings' "Start this worker's browser hidden", at once. */
+  macBrowserHidden(home: string, hidden: boolean): Promise<void>;
+  /** Ends the worker's browser on this computer, if one runs. */
+  browserStop(home: string): Promise<void>;
   listen(event: string, handler: Handler): void;
 }
 
@@ -154,6 +164,11 @@ class TauriBackend implements Backend {
   browserCheck() { return this.invoke("browser_check"); }
   browserInstall(home: string) { return this.invoke("browser_install", { home }); }
   browserShow(home: string, name: string) { return this.invoke("browser_show", { home, name }); }
+  macBrowsers() { return this.invoke("mac_browsers"); }
+  macBrowserEnsure(home: string, name: string, browserApp: string, hidden: boolean) { return this.invoke("mac_browser_ensure", { home, name, browserApp, hidden }); }
+  macBrowserShow(home: string, name: string, browserApp: string) { return this.invoke("mac_browser_show", { home, name, browserApp }); }
+  macBrowserHidden(home: string, hidden: boolean) { return this.invoke("mac_browser_hidden", { home, hidden }); }
+  browserStop(home: string) { return this.invoke("browser_stop", { home }); }
   listen(event: string, handler: Handler) { void window.__TAURI__!.event.listen(event, (ev) => handler(ev.payload)); }
 }
 
@@ -235,6 +250,11 @@ export class PreviewBackend implements Backend {
   browserCheck() { return this.rec("browserCheck", [], this.browserResult); }
   browserInstall(...a: [string]) { return this.rec("browserInstall", a, undefined); }
   browserShow(...a: [string, string]) { return this.rec("browserShow", a, "brought to the front"); }
+  macBrowsers() { return this.rec("macBrowsers", [], previewMacBrowsers(this.info.os ?? "linux")); }
+  macBrowserEnsure(...a: [string, string, string, boolean]) { return this.rec("macBrowserEnsure", a, "running"); }
+  macBrowserShow(...a: [string, string, string]) { return this.rec("macBrowserShow", a, "brought to the front"); }
+  macBrowserHidden(...a: [string, boolean]) { return this.rec("macBrowserHidden", a, undefined); }
+  browserStop(...a: [string]) { return this.rec("browserStop", a, undefined); }
   private handlers = new Map<string, Handler[]>();
   listen(event: string, handler: Handler) { this.handlers.set(event, [...(this.handlers.get(event) ?? []), handler]); }
   /** What Rust would send (an install's end, a log line), for the browser tests. */

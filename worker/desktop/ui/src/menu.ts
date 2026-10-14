@@ -62,7 +62,7 @@ export function buildMenu(m: Model, windowShown: boolean, act: MenuActions, sys 
     }
     const sub: TrayItem[] = [];
     if (pairedWith) sub.push(item(`Paired with ${pairedWith}`));
-    sub.push(...workerActions(w, act, item));
+    sub.push(...workerActions(m, w, act, item));
     if (!w.isDefault) sub.push(sep, item("Remove…", () => act.removeWorker(w)));
     items.push({ ...item(label, () => act.show(w)), children: [item("Show…", () => act.show(w)), ...sub] });
   }
@@ -77,7 +77,7 @@ export function buildMenu(m: Model, windowShown: boolean, act: MenuActions, sys 
   }
   if (!several) {
     close();
-    items.push(...workerActions(m.current, act, item));
+    items.push(...workerActions(m, m.current, act, item));
   }
   close();
   items.push(item("Settings…", act.settings), item("Check for updates…", act.checkUpdates));
@@ -110,14 +110,14 @@ export function modeEntries(w: Worker, containersOff: boolean, act: MenuActions)
   return out;
 }
 
-function workerActions(w: Worker, act: MenuActions, item: (l: string, r?: () => void) => TrayItem): TrayItem[] {
+function workerActions(m: Model, w: Worker, act: MenuActions, item: (l: string, r?: () => void) => TrayItem): TrayItem[] {
   const sep: TrayItem = { separator: true };
   switch (w.screen) {
     case "running":
     case "pair":
     case "paired":
       return [
-        ...browserItems(w).map((label) => item(label, () => act.openBrowser(w))),
+        ...browserItems(w, m.macBrowser(w)).map((label) => item(label, () => act.openBrowser(w))),
         item(w.paused ? "Resume" : "Pause", () => act.togglePaused(w)),
         item("Show requests…", () => act.show(w)),
         sep,
@@ -135,9 +135,11 @@ function workerActions(w: Worker, act: MenuActions, item: (l: string, r?: () => 
 
 /** The browser's item for a running worker: the container's browser
  * view; without a container, its browser on this computer while it has
- * one ("Show browser", or "Open browser" once the owner closed it). */
-export function browserItems(w: Worker): string[] {
-  if (!w.config.isDirect) return ["Open browser"];
+ * one ("Show browser", or "Open browser" once the owner closed it). A
+ * Mac's worker in a container with its browser on the Mac (`onMac`):
+ * "Show browser", as myous for Mac says. */
+export function browserItems(w: Worker, onMac = false): string[] {
+  if (!w.config.isDirect) return [onMac ? "Show browser" : "Open browser"];
   if (!w.config.hostBrowser) return [];
   if (w.browserUp) return ["Show browser"];
   return w.browserLaunch === "starting" ? ["Open browser"] : [];
@@ -149,7 +151,7 @@ export type Entry = [string, () => void] | null;
 function browserEntries(m: Model, act: MenuActions): Entry[] {
   const w = m.current;
   const running = w.screen === "running" || w.screen === "pair" || w.screen === "paired";
-  return running ? browserItems(w).map((label) => [label, () => act.openBrowser(w)] as Entry) : [];
+  return running ? browserItems(w, m.macBrowser(w)).map((label) => [label, () => act.openBrowser(w)] as Entry) : [];
 }
 
 function toolEntries(m: Model, act: MenuActions): Entry[] {

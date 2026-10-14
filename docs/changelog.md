@@ -22,6 +22,17 @@ in [skill.md](https://myoushq.com/skill.md).
   checks, the cards that install a container runtime with Homebrew, and
   the worker items in the app menu. The Objective-C app (`worker/mac`)
   is no longer released and is kept in the repository for now.
+- **On a Mac it runs the worker's browser on the Mac, as myous for Mac
+  does:** Set up asks "Where should its browser run?" for a worker in
+  a container ("On this Mac, in Google Chrome" recommended when Chrome,
+  Edge, Brave or Chromium is installed, else the container), keeping
+  `app.json`'s `browser`, `browser_app` and `browser_hidden` as myous for
+  Mac keeps them, so an upgrade keeps the owner's choice. The container
+  gets `MYOUS_BROWSER=host` and the browser's address in `browser.json`;
+  the browser runs under `sandbox-exec` with myous for Mac's seatbelt
+  profile (moved from `Browser.m` word for word, a test compares them),
+  without a container too; it starts hidden when the owner asked, and
+  Show browser brings it up. Linux and Windows are unchanged.
 
 ## v0.7.4
 

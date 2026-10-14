@@ -82,13 +82,53 @@ parts are behind `cfg(target_os = "macos")` or the window's
   that needs a click in the window. The fake states
   (`MYOUS_FAKE_STATE`) never notify.
 - **Workers in a container** (Docker Desktop, OrbStack, Rancher
-  Desktop), found from the Finder's short PATH, with the container's
-  own browser and its browser view (`MYOUS_BROWSER: container`). The
-  owner's language comes from the Mac's preferred languages when the
-  app has no locale variables (an app opened from the Finder has none).
+  Desktop), found from the Finder's short PATH, with their browser on
+  the Mac or in the container (below). The owner's language comes from
+  the Mac's preferred languages when the app has no locale variables
+  (an app opened from the Finder has none).
+- **The worker's browser on the Mac**, for a worker in a container, as
+  myous for Mac runs it (`Browser.m`, ported into `browser.rs`'s `mac`):
+  Set up asks "Where should its browser run?" ("On this Mac, in Google
+  Chrome (recommended)", one line per installed browser, then "In the
+  container"; with none, a disabled line that says why and "Get a
+  browser…"), and Settings has the same choice with "Start this worker's
+  browser hidden" (a running worker offers a restart, as myous for Mac
+  does). `app.json` keeps `browser: "mac"`, `browser_app` and
+  `browser_hidden` with myous for Mac's meanings, so an upgrade keeps the
+  owner's choice. The container gets `MYOUS_BROWSER=host`; the app starts
+  the browser (found through Launch Services by bundle id, else in
+  `/Applications` or `~/Applications`) with its profile in
+  `<worker folder>/browser/<bundle id>` and downloads in
+  `<worker folder>/downloads`, on a port it chooses, and writes myous for
+  Mac's `browser.json` (`host: host.docker.internal`, `port`, `pid`,
+  `app`, `at`; no `kind`), which `forward.py` relays the container's
+  localhost:9222 to; the worker's help in the container is the same as
+  with the container's browser. The browser lives with the worker:
+  started while it starts and runs (one the owner quits comes back),
+  ended when it stops or the app quits, a browser left from a run before
+  taken over. Hidden after launch when `browser_hidden` says so (again
+  every half second for six seconds, as myous for Mac does); Show browser
+  unhides and activates it through AppKit. The Browser card, the start
+  rows and the menu item say what myous for Mac says; when it can't run,
+  the red line says why (no browser: "Get a browser…"; no sandbox: the
+  log).
+- **The sandbox**: that browser, and the one of a worker without a
+  container, runs under `/usr/bin/sandbox-exec -f <worker
+  folder>/browser.sb` with myous for Mac's seatbelt profile (word for
+  word; a test compares it, the probe and the start page with
+  `Browser.m`), `--no-sandbox` inside it and myous for Mac's start page
+  that explains Chrome's bar about it. The probe (`sandbox-exec` with a
+  small profile) decides: without a sandbox a container worker gets the
+  container's browser, with myous for Mac's message; a worker without a
+  container runs its browser unconfined, as on Linux and Windows, and the
+  log says so. `cargo test -- --ignored real_browser` runs it for real.
+  Not yet run end to end with a real container worker (no Docker on the
+  test Mac): the app side is tested (the browser, `browser.json`, the
+  port, hide and show, the sandbox), and `forward.py` is myous for Mac's,
+  unchanged.
 - **Workers without a container**: the Go worker inside the app, and the
-  worker's browser on the Mac: Chrome, Edge, Brave or Chromium from
-  `/Applications` or `~/Applications`, with a profile in
+  worker's browser on the Mac (Chrome, Edge, Brave or Chromium, as
+  above, under the sandbox), with a profile in
   `<worker folder>/browser/<bundle id>`, the folder myous for Mac uses,
   so its logins carry over. Python is never `/usr/bin/python3` (the
   Command Line Tools' 3.9, too old for Playwright, and on a Mac without
@@ -129,18 +169,15 @@ parts are behind `cfg(target_os = "macos")` or the window's
 
 ## Phase 2 (not built)
 
-- **The browser on the Mac for a worker in a container**
-  (`MYOUS_BROWSER=host`, the forwarder), with Set up's "Where should its
-  browser run?" (myous for Mac recommends "On this Mac, in Google
-  Chrome"): the one feature a Mac user would see missing, needed before
-  this app replaces myous for Mac; and **the sandbox**
-  (`sandbox-exec` with myous for Mac's seatbelt profile). Today a
-  container worker uses the container's browser, and a worker without a
-  container runs its browser unconfined, as on Linux and Windows,
-  where myous for Mac runs it under the seatbelt. Hide and show of
-  that browser too.
-- The Option-held Advanced menu (it is always there), separate Settings
-  and log windows, `--snapshot` and `--browser-test`.
+- **The Option-held Advanced menu**: not planned. Its items are always
+  in the app menu (the ⋯ menu on Linux and Windows), so there is nothing
+  to hold Option for.
+- **Separate Settings and log windows**: not planned. They open inside
+  the window, as on Linux and Windows.
+- **`--snapshot` and `--browser-test`**: later, if at all. `screens.py`
+  (`--os macos`) draws every screen and `cargo test -- --ignored
+  real_browser` runs the browser under the sandbox, which is what the
+  two did for myous for Mac.
 
 ## Build and try it
 
@@ -162,7 +199,8 @@ never stands in for the client's `myous`) with `myous-worker` next to it.
 To look without touching a real worker: `MYOUS_WORKER_HOME=/tmp/w
 MYOUS_FAKE_STATE=pair build/myous.app/Contents/MacOS/myous-desktop`.
 The previews: `python3 screens.py OUT --os macos` (each at the size the
-window takes on a Mac).
+window takes on a Mac; `setup` has the browser question, `macbrowser` is
+a container worker with its browser on the Mac).
 
 Screenshots from the draft's run (2026-10-14, in the session's
 scratchpad, `mac-tauri-*.png`): the window's states as the previews draw
@@ -220,8 +258,12 @@ notarization rejects the app, Apple's log is in the job's output.
   with the shared layout: the runtime rows, the approval banner, the
   ok / refused column. Settings and the logs open inside it, not in
   windows of their own.
-- A worker in a container uses the container's browser (through the
-  browser view), not Chrome on the Mac.
+- The browser choice is in Settings (and on Set up), not under the
+  Option-held Advanced › Browser; Brave is named "Brave", not its
+  bundle's "Brave Browser". A profile from before myous for Mac kept one
+  per browser (`browser/Default`) isn't moved into
+  `browser/<bundle id>`; myous for Mac has moved it already on any Mac
+  that ran a recent version.
 - New: the first-launch checks, the runtime install cards, the app
   menu's worker items (myous for Mac has them under the menu bar icon's
   Advanced).

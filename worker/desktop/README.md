@@ -260,13 +260,17 @@ on PATH, so it never stands in for the client's `myous`), with
   accent colour and Increase Contrast follow System Settings), fits its
   content and isn't resizable. What the ⋯ menu holds elsewhere is in the
   app menu (Settings… on ⌘,), and Running has Open log.
-- Open at login is a LaunchAgent (`~/Library/LaunchAgents/myous.plist`),
-  listed under "Allow in the Background" in System Settings.
+- A question's notification has Allow and Refuse (UserNotifications),
+  and open at login is a login item (SMAppService), as in the
+  Objective-C app.
 - The default worker name is the Computer Name.
-- A worker without a container uses Chrome, Edge, Brave or Chromium
-  from `/Applications` or `~/Applications`, with its profile in
-  `<worker folder>/browser/<bundle id>` (where the Objective-C app kept
-  it, so its logins carry over), and never the Mac's `/usr/bin/python3`.
+- The worker's browser runs on the Mac under the sandbox
+  (`sandbox-exec` with the Objective-C app's profile): Chrome, Edge,
+  Brave or Chromium, with its profile in `<worker folder>/browser/<bundle
+  id>` (where the Objective-C app kept it, so its logins carry over).
+  For a worker in a container Set up asks where its browser should run,
+  and Settings can change it. A worker without a container never uses
+  the Mac's `/usr/bin/python3`.
   The runtime cards install with Homebrew.
 
 ## Looking at the screens without a worker

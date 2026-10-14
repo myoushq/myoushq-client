@@ -40,6 +40,11 @@
         <label for="setup-desc">How should it describe this computer to your agent?</label>
         <textarea id="setup-desc" rows="4"></textarea>
         <p class="hint" id="setup-desc-hint">Sent to the agent when it pairs, and again when you change it. Say it in your own words; the default binds "the myous browser" to this worker's browser.</p>
+        <div id="setup-macbrowser" hidden>
+          <label for="setup-where">Where should its browser run?</label>
+          <div class="row"><select id="setup-where"></select><select id="setup-get" hidden><option value="">Get a browser…</option></select></div>
+          <p class="hint" id="setup-where-hint"></p>
+        </div>
         <p id="setup-browser">Its browser runs in the container, shown through a window in your own browser. Some sites take it for a bot, even when it's you.</p>
         <p class="hint" id="setup-hint"></p>
         <div class="row"><button id="setup-remove">Remove this worker</button><span class="grow"></span><button class="primary" id="setup-start">Start the worker</button></div>

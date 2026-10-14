@@ -251,6 +251,56 @@ def main() -> int:
         page.click("#dlg button:has-text('Save')")
         check(["setDock", [True]] in calls(), "a Mac: the Dock setting applies at once")
 
+        # A Mac's worker in a container: Set up asks where its browser runs, as myous for Mac does.
+        def env_of_start() -> dict:
+            return next(c[1][4] for c in reversed(calls()) if c[0] == "composeRun")
+
+        go("setup", "macos")
+        mac_home = "/Users/max/.myous-worker"
+        options = page.eval_on_selector_all("#setup-where option", "os => os.map(o => o.textContent)")
+        check(page.is_visible("#setup-macbrowser") and page.is_hidden("#setup-browser") and page.is_hidden("#setup-get")
+              and options == ["On this Mac, in Google Chrome (recommended)", "On this Mac, in Microsoft Edge", "In the container"]
+              and page.eval_on_selector("#setup-where", "s => s.selectedIndex") == 0
+              and "kept to the worker's folder by a sandbox" in text("#setup-where-hint"),
+              "a Mac's Set up: where its browser runs, Google Chrome recommended")
+        page.select_option("#setup-where", index=1)
+        page.click("#setup-start")
+        page.wait_for_function("window.myous.backend.calls.some(c => c[0] === 'composeRun')")
+        check(env_of_start().get("MYOUS_BROWSER") == "host"
+              and ["macBrowserEnsure", [mac_home, "Max's Mac", "com.microsoft.edgemac", True]] in calls(),
+              "On this Mac, in Microsoft Edge: MYOUS_BROWSER=host, Edge started (hidden, by default)")
+        go("setup", "macos")
+        page.select_option("#setup-where", index=2)
+        check("Some sites take it for a bot" in text("#setup-where-hint"), "In the container: its line")
+        page.click("#setup-start")
+        page.wait_for_function("window.myous.backend.calls.some(c => c[0] === 'composeRun')")
+        check(env_of_start().get("MYOUS_BROWSER") == "container" and ["browserStop", [mac_home]] in calls()
+              and "macBrowserEnsure" not in names(), "In the container: MYOUS_BROWSER=container, none on the Mac")
+        go("setup")
+        check(page.is_hidden("#setup-macbrowser") and page.is_visible("#setup-browser"), "Linux: no browser question")
+        page.click("#setup-start")
+        page.wait_for_function("window.myous.backend.calls.some(c => c[0] === 'composeRun')")
+        check(env_of_start().get("MYOUS_BROWSER") == "container"
+              and not {"macBrowserEnsure", "browserStop", "macBrowsers"} & set(names()),
+              "Linux: MYOUS_BROWSER=container, nothing of the Mac's")
+        # Running with its browser on the Mac: Show browser; Settings has the choice and "hidden".
+        go("macbrowser", "macos")
+        check(text("#browser-open") == "Show browser" and "uses Google Chrome on this Mac" in text("#browser-text"),
+              "a Mac: the Browser card names Google Chrome on this Mac")
+        page.click("#browser-open")
+        check(["macBrowserShow", [mac_home, "Max's Mac", "com.google.Chrome"]] in calls(), "Show browser brings it forward")
+        emit("tray", next(i["id"] for i in page.evaluate("window.myous.backend.appMenu") if i.get("label") == "Settings…"))
+        page.wait_for_selector("#dlg[open]")
+        selects = page.eval_on_selector_all("#dlg select", "ss => ss.map(s => s.options[s.selectedIndex].textContent)")
+        check("On this Mac, in Google Chrome (recommended)" in selects and page.is_visible("#dlg label:has-text('Start this worker')"),
+              "a Mac's Settings: its browser and \"Start this worker's browser hidden\"")
+        page.click("#dlg label:has-text('Start this worker') input")
+        page.click("#dlg button:has-text('Save')")
+        check(["macBrowserHidden", [mac_home, False]] in calls(), "not hidden: applied at once")
+        settings("linux")
+        check("Its browser" not in text("#dlg") and "hidden" not in text("#dlg"), "Linux: no browser choice in Settings")
+        page.click("#dlg button:has-text('Cancel')")
+
         check(not errors, f"no script errors {errors}")
         browser.close()
     server.shutdown()

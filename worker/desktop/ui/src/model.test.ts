@@ -5,9 +5,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { applyFake, fakeStates, previewBrowserCheck } from "./fake.js";
-import { appMenu, buildMenu, MenuActions, moreMenu } from "./menu.js";
+import { appMenu, browserItems, buildMenu, MenuActions, moreMenu } from "./menu.js";
 import { ADVANCE_SHOWS, Check, isAdvance, isUrgent, Model, Screen, UNKNOWN_AFTER, Worker, WorkerFiles } from "./model.js";
-import { advanceWords, attentionCard, browserAdvance, browserCard, browserRow, checkAdvance, checklist, hubHost, hubLine, installLine, runtimeCard } from "./setup.js";
+import { advanceWords, attentionCard, browserAdvance, browserCard, browserRow, checkAdvance, checklist, hubHost, hubLine, installLine, macBrowserHint, macBrowserQuestion, runtimeCard } from "./setup.js";
 import { byteCount, countdown, dayLabel, defaultDescription, isDefaultDescription, newer, pairingMessage, plural, setHostOs, timeAgo } from "./text.js";
 
 const T = 1_791_700_000;
@@ -22,7 +22,7 @@ const evaluate = (m: Model) => m.workers.forEach((w) => m.evaluate(w));
 
 test("every made-up state reaches its screen", () => {
   const want: Record<string, Screen> = { setup: "setup", noruntime: "noruntime", stoppedruntime: "noruntime", starting: "starting",
-    pair: "pair", pairlocal: "pair", paired: "paired", running: "running", paused: "running", stopping: "stopping", stopped: "stopped",
+    pair: "pair", pairlocal: "pair", paired: "paired", running: "running", macbrowser: "running", paused: "running", stopping: "stopping", stopped: "stopped",
     approval: "running", busy: "running", agents: "running", agent: "running", workers: "running", nowsl: "noruntime", novirt: "noruntime",
     direct: "setup", directstarting: "starting", directrunning: "running", checking: "setup", couldntcheck: "setup", hubdown: "setup",
     installing: "noruntime", stoppedengine: "noruntime", nopermission: "noruntime", nocompose: "noruntime", runtimeerror: "noruntime",
@@ -706,4 +706,76 @@ test("the found preview: the browser row with what was found", () => {
   const r = browserRow(m, m.current, "this computer");
   assert.equal(`${r.mark} ${r.text}`, "○ Worker browser: install Playwright");
   assert.deepEqual(browserAdvance(m, m.current, r), { at: T - 1, line: "Found Python 3.12. Next: Playwright." });
+});
+
+test("a Mac's Set up asks where a container worker's browser runs, as myous for Mac does", () => {
+  const m = model();
+  m.os = "macos";
+  applyFake(m, "setup");
+  const w = m.current;
+  const labels = () => macBrowserQuestion(m, w).options.map((o) => o.label);
+  assert.deepEqual(labels(), ["On this Mac, in Google Chrome (recommended)", "On this Mac, in Microsoft Edge", "In the container"]);
+  // Nothing chosen yet: the recommendation on Set up, where it runs (the container) in Settings.
+  assert.equal(macBrowserQuestion(m, w).selected, 0);
+  assert.equal(macBrowserQuestion(m, w, false).selected, 2);
+  assert.equal(macBrowserQuestion(m, w).get, false);
+  // myous for Mac's app.json keys.
+  w.config.data.browser = "mac";
+  w.config.browserApp = "com.microsoft.edgemac";
+  assert.equal(macBrowserQuestion(m, w).selected, 1);
+  assert.ok(w.config.macBrowser && m.macBrowser(w) && w.config.browserHidden);
+  w.config.data.browser_hidden = false;
+  assert.equal(w.config.browserHidden, false);
+  w.config.browserApp = "com.brave.Browser"; // not installed: the first
+  assert.equal(macBrowserQuestion(m, w).selected, 0);
+  w.config.data.browser = "container";
+  assert.equal(macBrowserQuestion(m, w).selected, 2);
+  assert.ok(!w.config.macBrowser);
+  assert.match(macBrowserHint(m, true), /^A real browser with its own profile, kept to the worker's folder by a sandbox/);
+  // No browser: one line that says why, the container chosen, "Get a browser…".
+  m.macBrowsers = { installed: [], why: "no browser it can run is installed" };
+  delete w.config.data.browser;
+  const q = macBrowserQuestion(m, w);
+  assert.deepEqual(q.options.map((o) => [o.label, o.disabled]), [["On this Mac (no browser it can run is installed)", true], ["In the container", false]]);
+  assert.equal(q.selected, 1);
+  assert.equal(q.get, true);
+  assert.match(macBrowserHint(m, false), /install any of Google Chrome, Microsoft Edge, Brave or Chromium/);
+  // No sandbox: the browsers aren't offered, and nothing to get.
+  m.macBrowsers = { installed: [{ id: "com.google.Chrome", name: "Google Chrome", path: "" }], why: "this macOS can't sandbox it" };
+  assert.deepEqual(labels(), ["On this Mac (this macOS can't sandbox it)", "In the container"]);
+  assert.equal(macBrowserQuestion(m, w).get, false);
+  assert.doesNotMatch(macBrowserHint(m, false), /install/);
+});
+
+test("a Mac's browser for a container worker: its card, menu item and attention line; none of it elsewhere", () => {
+  const m = model();
+  m.os = "macos";
+  applyFake(m, "macbrowser");
+  evaluate(m);
+  const w = m.current;
+  assert.ok(m.macBrowser(w) && w.macBrowserUp && !w.browserUp);
+  let c = browserCard(m, w);
+  assert.equal(c.label, "Show browser");
+  assert.match(c.text, /^Your agent uses Google Chrome on this Mac, with its own profile kept to the worker's folder\./);
+  w.browserFile = null;
+  c = browserCard(m, w);
+  assert.match(c.text, /^Starting Google Chrome on this Mac… \(browser\.log/);
+  assert.deepEqual(browserItems(w, m.macBrowser(w)), ["Show browser"]);
+  assert.equal(w.attention, "");
+  m.macBrowsers = { installed: [], why: "no browser it can run is installed" };
+  evaluate(m);
+  assert.match(w.attention, /^The worker's browser can't run on this Mac: none of Google Chrome/);
+  assert.equal(w.attentionButton, "Get a browser…");
+  m.macBrowsers = { installed: [], why: "this macOS can't sandbox it" };
+  evaluate(m);
+  assert.equal(w.attention, "The worker's browser can't run on this Mac: this macOS can't sandbox it. Choose the browser in the container (Settings).");
+  assert.equal(w.attentionButton, "Show log");
+  // Linux (and Windows): the same files are a container worker with the container's browser.
+  const l = model();
+  applyFake(l, "macbrowser");
+  evaluate(l);
+  assert.ok(!l.macBrowser(l.current) && l.macBrowsers === null);
+  assert.equal(browserCard(l, l.current).label, "Open browser");
+  assert.deepEqual(browserItems(l.current, l.macBrowser(l.current)), ["Open browser"]);
+  assert.equal(l.current.attention, "");
 });
