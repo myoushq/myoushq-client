@@ -493,7 +493,8 @@ func runWorker(ctx context.Context, st *myous.FileStorage, agent *myous.Agent, a
 	}
 	// The apps (and `docker stop`) stop a worker with SIGTERM: it ends the
 	// command it is running, answers that request, then exits. A second
-	// SIGTERM ends it at once.
+	// SIGTERM ends it at once. The apps also create <home>/commands/quit,
+	// which Run takes the same way (on Windows, the only graceful way).
 	ctx, stop := signal.NotifyContext(ctx, syscall.SIGTERM)
 	defer stop()
 	context.AfterFunc(ctx, stop)

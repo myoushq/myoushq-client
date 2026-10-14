@@ -112,6 +112,8 @@ pub fn start(
     if children().lock().unwrap().contains_key(home) {
         return Err("this worker is already running".into());
     }
+    // A quit file the last worker didn't take (killed first) would stop this one.
+    let _ = std::fs::remove_file(paths::quit_file(&dir));
     let log = OpenOptions::new()
         .create(true)
         .append(true)
@@ -154,39 +156,69 @@ pub fn start(
     Ok(pid)
 }
 
-/// How long a worker sent SIGTERM has to end its command, answer the
+/// How long a worker asked to stop has to end its command, answer the
 /// agent and exit before it is killed.
 const STOP_GRACE: Duration = Duration::from_secs(10);
 
-/// Ends a process and what it started. Elsewhere than Windows: SIGTERM,
-/// on which the worker ends the command it runs (its process group),
-/// answers that request and exits; SIGKILL if it is still there after
-/// STOP_GRACE. On Windows, where a worker without a console can't be
-/// asked: taskkill /T, which ends the worker and the command it runs.
-fn end(pid: u32) {
-    let id = pid.to_string();
-    let mut cmd = crate::engine::command(if cfg!(windows) { "taskkill" } else { "kill" });
-    if cfg!(windows) {
-        cmd.args(["/T", "/F", "/PID", &id]);
-    } else {
-        cmd.args(["-TERM", &id]);
+/// A worker being stopped: `pid`, this app's child for `home` if `ours`.
+struct Stopping {
+    home: String,
+    pid: u32,
+    ours: bool,
+}
+
+impl Stopping {
+    /// Asks the worker to stop: commands/quit, which it takes within a
+    /// quarter second on every system (on Windows, where a worker without
+    /// a console can't be sent a signal, the only way), and elsewhere
+    /// SIGTERM too. Either way it ends the command it runs (its process
+    /// group or tree), answers that request and exits.
+    fn ask(&self) {
+        let _ = paths::send_command(Path::new(&self.home), paths::QUIT_COMMAND);
+        if !cfg!(windows) {
+            signal(self.pid, "-TERM");
+        }
     }
-    let _ = run_capture(cmd, Duration::from_secs(15));
-    if !cfg!(windows) {
-        std::thread::spawn(move || {
-            let begun = std::time::Instant::now();
-            while begun.elapsed() < STOP_GRACE {
-                std::thread::sleep(Duration::from_millis(500));
-                if !signal(pid, "-0") {
-                    return; // gone (an exited child of ours is reaped by start's thread)
-                }
-            }
-            signal(pid, "-KILL");
-        });
+
+    fn gone(&self) -> bool {
+        if self.ours {
+            // start's thread reaps it and drops it from the map once it exits.
+            children().lock().unwrap().get(&self.home).map(|c| c.id()) != Some(self.pid)
+        } else {
+            !crate::browser::pid_alive(self.pid)
+        }
+    }
+
+    /// Ends it now, with what it started: SIGKILL, or taskkill /T /F.
+    fn kill(&self) {
+        if cfg!(windows) {
+            let mut cmd = crate::engine::command("taskkill");
+            cmd.args(["/T", "/F", "/PID", &self.pid.to_string()]);
+            let _ = run_capture(cmd, Duration::from_secs(15));
+        } else {
+            signal(self.pid, "-KILL");
+        }
     }
 }
 
-/// `kill <sig> <pid>`: true if it succeeded (for -0: the process exists).
+/// Asks the workers to stop, waits up to STOP_GRACE for them to exit,
+/// then kills the ones still there.
+fn end(workers: Vec<Stopping>) {
+    for w in &workers {
+        w.ask();
+    }
+    let begun = std::time::Instant::now();
+    let mut left = workers;
+    while !left.is_empty() && begun.elapsed() < STOP_GRACE {
+        std::thread::sleep(Duration::from_millis(250));
+        left.retain(|w| !w.gone());
+    }
+    for w in left {
+        w.kill();
+    }
+}
+
+/// `kill <sig> <pid>`: true if it succeeded.
 fn signal(pid: u32, sig: &str) -> bool {
     let mut cmd = crate::engine::command("kill");
     cmd.args([sig, &pid.to_string()]);
@@ -194,35 +226,37 @@ fn signal(pid: u32, sig: &str) -> bool {
 }
 
 /// Stops the worker this app started for `home`, else the process `pid`
-/// (from worker.json, a worker started before the app was). True if it
-/// was this app's: its exit is then reported by `start`'s callback.
+/// (from worker.json, a worker started before the app was), in the
+/// background. True if it was this app's: its exit is then reported by
+/// `start`'s callback.
 pub fn stop(home: &str, pid: u32) -> bool {
     let ours = children().lock().unwrap().get(home).map(|c| c.id());
-    match ours {
-        Some(p) => {
-            end(p);
-            true
-        }
-        None => {
-            if pid > 0 {
-                end(pid);
-            }
-            false
-        }
+    let w = Stopping {
+        home: home.to_string(),
+        pid: ours.unwrap_or(pid),
+        ours: ours.is_some(),
+    };
+    if w.pid == 0 {
+        return false;
     }
+    std::thread::spawn(move || end(vec![w]));
+    ours.is_some()
 }
 
-/// Stops every worker this app started (when it quits).
+/// Stops every worker this app started (when it quits), waiting for them
+/// (STOP_GRACE at most) so that none is left behind.
 pub fn stop_all() {
-    let pids: Vec<u32> = children()
+    let workers: Vec<Stopping> = children()
         .lock()
         .unwrap()
-        .values()
-        .map(|c| c.id())
+        .iter()
+        .map(|(home, c)| Stopping {
+            home: home.clone(),
+            pid: c.id(),
+            ours: true,
+        })
         .collect();
-    for p in pids {
-        end(p);
-    }
+    end(workers);
 }
 
 #[cfg(test)]
@@ -330,37 +364,92 @@ mod tests {
         );
     }
 
+    /// A stand-in worker: `sh` (PowerShell on Windows) running `posix`
+    /// (`windows`), from the worker's folder as start runs it.
+    fn script(posix: &str, windows: &str) -> Vec<String> {
+        if cfg!(windows) {
+            vec!["powershell.exe", "-NoProfile", "-Command", windows]
+        } else {
+            vec!["sh", "-c", posix]
+        }
+        .into_iter()
+        .map(String::from)
+        .collect()
+    }
+
+    fn wait_for_log(h: &str, line: &str) {
+        // PowerShell takes seconds on a cold runner.
+        let begun = std::time::Instant::now();
+        while !log_tail(h, 1000).contains(line) && begun.elapsed() < Duration::from_secs(60) {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        assert!(log_tail(h, 1000).contains(line), "{}", log_tail(h, 1000));
+    }
+
     #[test]
     fn start_and_stop() {
         let home = std::env::temp_dir().join(format!("myous-direct-run-{}", std::process::id()));
         let h = home.to_string_lossy().to_string();
+        let quit = crate::paths::quit_file(&home);
+        // One the last worker didn't take: gone before the next starts.
+        crate::paths::send_command(&home, crate::paths::QUIT_COMMAND).unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
-        let args: Vec<String> = if cfg!(windows) {
-            vec![
-                "powershell.exe",
-                "-NoProfile",
-                "-Command",
-                "Write-Output started; Start-Sleep 30",
-            ]
-        } else {
-            vec!["sh", "-c", "echo started; sleep 30"]
-        }
-        .into_iter()
-        .map(String::from)
-        .collect();
+        let args = script(
+            "echo started; sleep 30",
+            "Write-Output started; Start-Sleep 30",
+        );
         start(&h, &args, move |st| tx.send(st).unwrap()).unwrap();
+        assert!(!quit.exists());
         assert!(running(&h));
         assert!(start(&h, &args, |_| {}).is_err());
-        // Until the command has written its line (PowerShell takes seconds on a cold runner).
-        let begun = std::time::Instant::now();
-        while !log_tail(&h, 1000).contains("started") && begun.elapsed() < Duration::from_secs(60) {
-            std::thread::sleep(Duration::from_millis(100));
-        }
+        wait_for_log(&h, "started");
+        // SIGTERM ends it; on Windows, where only the quit file asks (and
+        // this one doesn't take it), it is killed after STOP_GRACE.
         assert!(stop(&h, 0));
-        assert_ne!(rx.recv_timeout(Duration::from_secs(10)).unwrap(), 0);
+        assert_ne!(rx.recv_timeout(Duration::from_secs(30)).unwrap(), 0);
         assert!(!running(&h));
-        assert!(log_tail(&h, 1000).contains("started"));
+        assert!(quit.exists(), "the quit file was not written");
         assert!(home.join("work").is_dir());
+        std::fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn a_worker_that_takes_the_quit_file_exits_on_its_own() {
+        // As the Go worker does: on Windows the only graceful way.
+        let home = std::env::temp_dir().join(format!("myous-direct-quit-{}", std::process::id()));
+        let h = home.to_string_lossy().to_string();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let args = script(
+            "trap '' TERM; echo started; while [ ! -e commands/quit ]; do sleep 0.1; done; rm commands/quit; exit 0",
+            "Write-Output started; while (-not (Test-Path commands/quit)) { Start-Sleep -Milliseconds 100 }; \
+             Remove-Item commands/quit; exit 0",
+        );
+        start(&h, &args, move |st| tx.send(st).unwrap()).unwrap();
+        wait_for_log(&h, "started");
+        let begun = std::time::Instant::now();
+        assert!(stop(&h, 0));
+        assert_eq!(rx.recv_timeout(Duration::from_secs(30)).unwrap(), 0);
+        assert!(begun.elapsed() < STOP_GRACE, "took {:?}", begun.elapsed());
+        assert!(!running(&h));
+        std::fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn a_worker_that_doesnt_stop_is_killed() {
+        let home = std::env::temp_dir().join(format!("myous-direct-kill-{}", std::process::id()));
+        let h = home.to_string_lossy().to_string();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let args = script(
+            "trap '' TERM; echo started; while :; do sleep 1; done",
+            "Write-Output started; while ($true) { Start-Sleep 1 }",
+        );
+        start(&h, &args, move |st| tx.send(st).unwrap()).unwrap();
+        wait_for_log(&h, "started");
+        let begun = std::time::Instant::now();
+        assert!(stop(&h, 0));
+        assert_ne!(rx.recv_timeout(Duration::from_secs(30)).unwrap(), 0);
+        assert!(begun.elapsed() >= STOP_GRACE, "took {:?}", begun.elapsed());
+        assert!(!running(&h));
         std::fs::remove_dir_all(&home).unwrap();
     }
 

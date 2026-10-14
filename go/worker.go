@@ -61,6 +61,10 @@ const (
 	// command it is running and answers that request, then Run returns.
 	stoppingWhy       = "stopped by the owner (the worker is shutting down)"
 	shutdownReplyWait = 10 * time.Second // how long an answer may take once the worker is stopping
+	// The owner's app can also stop the worker with commands/quit: the
+	// same as SIGTERM, and on Windows (no signals for a worker without a
+	// console) the only way short of killing it.
+	quitCommand = "quit"
 )
 
 // validID is whether a request id is a plain name: 1 to 64 characters
@@ -124,12 +128,14 @@ type Worker struct {
 	pauseFile     string
 	logFile       string
 	commandsDir   string
+	quitFile      string // commands/quit: stop, as on SIGTERM
 	requestsDir   string
 	allowAbsolute bool
 	notes         []string
 	out           io.Writer
 	windows       bool // PowerShell, and the help and hints that say so
 	started       int64
+	startedAt     time.Time
 
 	// The operations, replaceable in tests.
 	execFn func(context.Context, Entry, map[string]any, string) error
@@ -158,8 +164,9 @@ func NewWorker(agent *Agent, st Storage, opts WorkerOptions) (*Worker, error) {
 }
 
 func newWorker(agent workerAgent, st Storage, opts WorkerOptions) (*Worker, error) {
+	now := time.Now()
 	w := &Worker{agent: agent, st: st, allowAbsolute: opts.AllowAbsolute, notes: opts.Notes, out: opts.Out,
-		windows: isWindows, started: time.Now().Unix(), helpSent: map[string]time.Time{}}
+		windows: isWindows, started: now.Unix(), startedAt: now, helpSent: map[string]time.Time{}}
 	if w.out == nil {
 		w.out = os.Stdout
 	}
@@ -187,6 +194,7 @@ func newWorker(agent workerAgent, st Storage, opts WorkerOptions) (*Worker, erro
 		// The owner's side (the desktop app): commands it drops as files,
 		// and one record per request it can show, with the output.
 		w.commandsDir = filepath.Join(w.home, "commands")
+		w.quitFile = filepath.Join(w.commandsDir, quitCommand)
 		w.requestsDir = filepath.Join(w.home, "requests")
 	}
 	if w.reviewCmd == "" {
@@ -254,9 +262,17 @@ func checkReviewCmd(cmd, work string, windows bool) (string, error) {
 
 // --- running -------------------------------------------------------------
 
-// Run serves requests until ctx ends. It reconnects if the relay drops; it
+// Run serves requests until ctx ends, or until the owner's app creates
+// commands/quit, which does the same. It reconnects if the relay drops; it
 // returns an error only for what reconnecting can't fix.
 func (w *Worker) Run(ctx context.Context) error {
+	ctx, quit := context.WithCancel(ctx)
+	defer quit()
+	if w.quitFile != "" {
+		w.dropStaleQuit()
+		defer os.Remove(w.quitFile) // left by an app that also sent SIGTERM
+		go w.watchQuit(ctx, quit)
+	}
 	w.mu.Lock()
 	err := w.ensureInvite(ctx)
 	if err == nil {
@@ -388,10 +404,41 @@ func (w *Worker) tick(ctx context.Context) error {
 
 // --- the owner's commands ------------------------------------------------
 
+// watchQuit ends Run (quit) once commands/quit appears: the running
+// command is ended and its request answered, as on SIGTERM. Checked as
+// often as a command's stop file, and apart from the connection's tick,
+// so it works while reconnecting too.
+func (w *Worker) watchQuit(ctx context.Context, quit context.CancelFunc) {
+	t := time.NewTicker(stopEvery)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		if exists(w.quitFile) {
+			os.Remove(w.quitFile)
+			w.say("stopping: the owner's app asked (commands/quit)")
+			quit()
+			return
+		}
+	}
+}
+
+// dropStaleQuit removes a commands/quit from before this worker started
+// (its worker was killed before it could take it), so it doesn't stop
+// this one. Whole seconds: some file systems keep no finer times.
+func (w *Worker) dropStaleQuit() {
+	if info, err := os.Stat(w.quitFile); err == nil && info.ModTime().Before(w.startedAt.Truncate(time.Second)) {
+		os.Remove(w.quitFile)
+	}
+}
+
 // handleCommands runs the commands from the owner's app: a file per
 // command in <home>/commands, removed once done. `new-code` replaces the
 // open pairing code (while unpaired); `unpair` drops every contact and
-// offers a new code. Called with w.mu held.
+// offers a new code; `quit` is watchQuit's. Called with w.mu held.
 func (w *Worker) handleCommands(ctx context.Context) error {
 	if w.commandsDir == "" {
 		return nil
@@ -402,6 +449,9 @@ func (w *Worker) handleCommands(ctx context.Context) error {
 	}
 	for _, f := range files { // sorted by name
 		path := filepath.Join(w.commandsDir, f.Name())
+		if f.Name() == quitCommand {
+			continue
+		}
 		if strings.HasPrefix(f.Name(), "stop-") {
 			// For the command running now (runCommand watches and removes
 			// it); one left behind by a command that had finished expires.

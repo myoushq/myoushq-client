@@ -303,6 +303,12 @@ On Windows the worker's shell is PowerShell, not a Linux shell: its
 know comes back with a hint to send `help`, and the review's read-only
 list knows PowerShell's reading commands.
 
+Stop in an app ends the command the worker is running, with everything
+it started, and the agent that asked gets "stopped by the owner" as its
+result. The app asks the worker to stop (a `commands/quit` file, and
+SIGTERM outside Windows) and ends it if it is still there ten seconds
+later.
+
 ## 9. Building the apps from source
 
 `worker/mac/make-app.sh` builds `myous.app` (myous for Mac) with the
