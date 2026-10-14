@@ -55,7 +55,8 @@ Current release key: `SHA256:PevPZ8ORUnoGw3hg9Febw7KjXxCUv+sMkAXzw+rjQuk` (ED255
    package to PyPI, the npm package, the `myous-pake` and `myous` crates,
    the worker image to `ghcr.io/myoushq/worker` (amd64 and arm64, signed
    with cosign), and a GitHub release with the macOS app (signed and
-   notarized when the Apple secrets exist), the Python wheel and sdist,
+   notarized when the Apple secrets exist), the Linux app (AppImage and
+   .deb), the Windows installer, the Python wheel and sdist,
    the hash-pinned lock and `SHA256SUMS`. Registries are reached with
    their trusted publishing (OpenID Connect): no tokens are stored. Every
    step skips what is already published, so the workflow can be re-run

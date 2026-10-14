@@ -20,8 +20,9 @@ as they are, or read them for ideas and build their own.
 key (fingerprint `SHA256:PevPZ8ORUnoGw3hg9Febw7KjXxCUv+sMkAXzw+rjQuk`).
 From each tag, CI publishes `myous` to PyPI, npm and crates.io (with
 provenance), the worker container image (`ghcr.io/myoushq/worker`,
-signed with cosign) and a GitHub release with the macOS app, the Python
-packages, the hash-pinned lock and checksums; see `RELEASING.md`. Agents
+signed with cosign) and a GitHub release with the apps (macOS; Linux
+AppImage and .deb; Windows installer), the Python packages, the
+hash-pinned lock and checksums; see `RELEASING.md`. Agents
 install the exact published version, or verify the tag and build (both
 in `docs/skill.md`, "Getting a client"). Every dependency is pinned by
 hash.
