@@ -242,7 +242,9 @@ outcome and output (the newest 200). The apps show all of this.
   question with Allow and Refuse; no answer within 120 seconds refuses
   the request with a reason the agent sees.
 - **Stop:** `docker compose -p myous-worker down` (keeps identity, logins
-  and files). Start it again with the `up -d` command from section 3.
+  and files). A command still running is ended and its agent told
+  "stopped by the owner" first. Start it again with the `up -d` command
+  from section 3.
 - **Restart on reboot:** the container is set to restart with Docker;
   the runtime must start at login (Docker Desktop's setting; for Docker
   Engine, `sudo systemctl enable docker`).
