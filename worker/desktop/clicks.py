@@ -227,8 +227,25 @@ def main() -> int:
 
         settings("linux")
         check("Dock" not in text("#dlg") and "setCounts" not in names(), "Linux: no Dock setting, no counts")
+        check(not {"fitWindow", "setAppMenu"} & set(names()) and page.is_hidden("#requests-log-row"),
+              "Linux: the window keeps its size, no app menu, the log in ⋯")
         page.click("#dlg button:has-text('Cancel')")
-        settings("macos")
+        # A Mac: no ⋯; its entries are the app menu's (a click comes back as a "tray" event), Open log is on Running.
+        go("running", "macos")
+        app_menu = page.evaluate("window.myous.backend.appMenu")
+        labels = [i.get("label") for i in app_menu]
+        check(page.is_hidden("#more") and labels[:2] == ["Settings…", "Check for updates…"]
+              and app_menu[0].get("accelerator") == "CmdOrCtrl+," and "Show app log" in labels and "Quit myous" not in labels,
+              "a Mac: no ⋯, its entries in the app menu, Settings… with ⌘,")
+        fits = [c[1] for c in calls() if c[0] == "fitWindow"]
+        check(bool(fits) and fits[-1][0] == 560 and 320 <= fits[-1][1] <= 760, f"a Mac: the window fits its content {fits[-1:]}")
+        page.click("#requests-log")
+        page.wait_for_selector("#dlg[open]")
+        check("myous log" in text("#dlg"), "a Mac: Open log on Running opens the log")
+        page.keyboard.press("Escape")
+        settings_id = next(i["id"] for i in app_menu if i.get("label") == "Settings…")
+        emit("tray", settings_id)
+        page.wait_for_selector("#dlg[open]")
         page.click("#dlg label:has-text('Dock') input")
         page.click("#dlg button:has-text('Save')")
         check(["setDock", [True]] in calls(), "a Mac: the Dock setting applies at once")

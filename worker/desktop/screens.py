@@ -6,7 +6,9 @@ OUTDIR for a look. Needs Playwright for Python with Chromium.
 
     npm run build:ui && python3 screens.py OUTDIR [--os windows|macos] [--engine webkit]
 
---engine webkit draws them as a Mac's web view (WKWebView) does.
+--engine webkit draws them as a Mac's web view (WKWebView) does. On macOS
+each screen is drawn at the size the window takes there (the page's
+fitWindow: 560 wide, as high as its content).
 """
 
 import functools
@@ -40,10 +42,25 @@ def main() -> int:
     threading.Thread(target=server.serve_forever, daemon=True).start()
     port = server.server_address[1]
     failures = []
+    mac = os_name == "macos"
+    size = {"width": 560, "height": 420} if mac else {"width": 640, "height": 700}
+
+    def fit(page) -> None:
+        # The size the page asked for, until it stops changing (a wider window wraps less).
+        last = None
+        for _ in range(10):
+            page.wait_for_function("window.myous.backend.calls.some(c => c[0] === 'fitWindow')")
+            page.wait_for_timeout(150)
+            w, h = page.evaluate("window.myous.backend.calls.filter(c => c[0] === 'fitWindow').pop()[1]")
+            if (w, h) == last:
+                return
+            last = (w, h)
+            page.set_viewport_size({"width": w, "height": h})
+
     with sync_playwright() as p:
         browser = getattr(p, engine).launch()
         for scheme in ("light", "dark"):
-            page = browser.new_page(viewport={"width": 640, "height": 700}, color_scheme=scheme)
+            page = browser.new_page(viewport=size, color_scheme=scheme)
             errors: list[str] = []
             page.on("pageerror", lambda e: errors.append(str(e)))
             page.on("console", lambda msg: errors.append(msg.text) if msg.type == "error" else None)
@@ -51,7 +68,9 @@ def main() -> int:
                 errors.clear()
                 page.goto(f"http://127.0.0.1:{port}/index.html?state={state}&os={os_name}")
                 page.wait_for_function("window.myous && window.myous.model")
-                if state == "workers":
+                if mac:
+                    fit(page)
+                elif state == "workers":
                     page.set_viewport_size({"width": 840, "height": 700})
                 name = f"{os_name}-{state}" + ("" if scheme == "light" else "-dark")
                 page.screenshot(path=str(out / f"{name}.png"), full_page=True)
@@ -59,7 +78,7 @@ def main() -> int:
                 (out / f"{name}-tray.json").write_text(json.dumps(tray and tray["items"], indent=1))
                 if errors:
                     failures.append(f"{state}: {errors}")
-                page.set_viewport_size({"width": 640, "height": 700})
+                page.set_viewport_size(size)
             page.close()
         browser.close()
     server.shutdown()
