@@ -1033,10 +1033,11 @@ function fitWindow() {
     height = Math.max(height, Math.ceil((d.offsetHeight + extra) / 0.86) + 8);
   }
   height = Math.min(Math.max(Math.ceil(height), FIT_MIN), FIT_MAX);
-  const key = `${width}x${height}`;
+  // Asked again when the page's own height changed (the window took the size; its title bar shows now).
+  const key = `${width}x${height}@${innerHeight}`;
   if (key === lastFit) return;
   lastFit = key;
-  void be.fitWindow(width, height).catch((e) => appendLog(`window size: ${e}`));
+  void be.fitWindow(width, height, innerHeight).catch((e) => appendLog(`window size: ${e}`));
 }
 
 // --- actions ------------------------------------------------------------------------
@@ -1645,6 +1646,7 @@ async function main() {
     const watch = new ResizeObserver(() => fitWindow());
     watch.observe($("layout"));
     watch.observe($("dlg"));
+    window.addEventListener("resize", () => fitWindow());
   }
   if (m.current.screen !== "running" || be.preview) await showWindow();
   appendLog(`myous ${info.version} on ${info.os}${info.fake ? ` (made-up state: ${info.fake})` : ""}`);

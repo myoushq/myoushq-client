@@ -51,7 +51,7 @@ def main() -> int:
         for _ in range(10):
             page.wait_for_function("window.myous.backend.calls.some(c => c[0] === 'fitWindow')")
             page.wait_for_timeout(150)
-            w, h = page.evaluate("window.myous.backend.calls.filter(c => c[0] === 'fitWindow').pop()[1]")
+            w, h = page.evaluate("window.myous.backend.calls.filter(c => c[0] === 'fitWindow').pop()[1].slice(0, 2)")
             if (w, h) == last:
                 return
             last = (w, h)

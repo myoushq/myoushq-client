@@ -682,12 +682,20 @@ fn dock_policy(dock: bool) -> tauri::ActivationPolicy {
 
 /// A Mac: the window's size in points, as the window measured its
 /// content (myous for Mac fits its window the same way), kept on the
-/// screen, its top edge where it was. Nothing elsewhere: there the owner
-/// sizes the window.
+/// screen, its top edge where it was. `viewport` is the height the page
+/// has now: Tauri sizes a Mac's window by its frame, and the page gets
+/// that less the title bar, so the difference is added. Nothing
+/// elsewhere: there the owner sizes the window.
 #[tauri::command]
-fn fit_window<R: Runtime>(app: AppHandle<R>, width: f64, height: f64) -> Result<(), String> {
+fn fit_window<R: Runtime>(
+    app: AppHandle<R>,
+    width: f64,
+    height: f64,
+    viewport: f64,
+) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     if let Some(w) = app.get_webview_window("main") {
+        let scale = w.scale_factor().map_err(err)?;
         let screen = w
             .current_monitor()
             .ok()
@@ -695,7 +703,13 @@ fn fit_window<R: Runtime>(app: AppHandle<R>, width: f64, height: f64) -> Result<
             .or_else(|| w.primary_monitor().ok().flatten())
             .map(|m| f64::from(m.work_area().size.height) / m.scale_factor())
             .unwrap_or(800.0);
-        let (width, height) = fit_size(width, height, screen);
+        let now = w.inner_size().map_err(err)?.to_logical::<f64>(scale).height;
+        let bar = if viewport > 0.0 {
+            (now - viewport).clamp(0.0, 100.0)
+        } else {
+            0.0
+        };
+        let (width, height) = fit_size(width, height + bar, screen);
         let top_left = w.outer_position().ok();
         w.set_size(tauri::LogicalSize::new(width, height))
             .map_err(err)?;
@@ -705,7 +719,7 @@ fn fit_window<R: Runtime>(app: AppHandle<R>, width: f64, height: f64) -> Result<
         }
     }
     #[cfg(not(target_os = "macos"))]
-    let _ = (app, width, height);
+    let _ = (app, width, height, viewport);
     Ok(())
 }
 

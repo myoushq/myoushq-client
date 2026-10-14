@@ -60,8 +60,9 @@ export interface Backend {
   setCounts(fresh: number): Promise<void>;
   /** A Mac: the Dock icon on or off, at once. */
   setDock(on: boolean): Promise<void>;
-  /** A Mac: the window's size (points), as its content needs, as myous for Mac sizes its window. */
-  fitWindow(width: number, height: number): Promise<void>;
+  /** A Mac: the window's size (points), as its content needs, as myous for Mac sizes its window;
+   * `viewport` is the page's height now (Rust adds what the title bar takes). */
+  fitWindow(width: number, height: number, viewport: number): Promise<void>;
   /** A Mac: the app menu's own items (the ⋯ menu elsewhere); a click comes back as a "tray" event. */
   setAppMenu(items: TrayItem[]): Promise<void>;
   showWindow(): Promise<void>;
@@ -124,7 +125,7 @@ class TauriBackend implements Backend {
   setTray(icon: string | null, tooltip: string, items: TrayItem[]) { return this.invoke("set_tray", { icon, tooltip, items }); }
   setCounts(fresh: number) { return this.invoke("set_counts", { fresh }); }
   setDock(on: boolean) { return this.invoke("set_dock", { on }); }
-  fitWindow(width: number, height: number) { return this.invoke("fit_window", { width, height }); }
+  fitWindow(width: number, height: number, viewport: number) { return this.invoke("fit_window", { width, height, viewport }); }
   setAppMenu(items: TrayItem[]) { return this.invoke("set_app_menu", { items }); }
   showWindow() { return this.invoke("show_window"); }
   quit() { return this.invoke("quit"); }
@@ -199,7 +200,7 @@ export class PreviewBackend implements Backend {
   }
   setCounts(...a: [number]) { return this.rec("setCounts", a, undefined); }
   setDock(...a: [boolean]) { return this.rec("setDock", a, undefined); }
-  fitWindow(...a: [number, number]) { return this.rec("fitWindow", a, undefined); }
+  fitWindow(...a: [number, number, number]) { return this.rec("fitWindow", a, undefined); }
   appMenu: TrayItem[] = [];
   setAppMenu(items: TrayItem[]) {
     this.appMenu = items;

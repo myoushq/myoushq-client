@@ -243,6 +243,7 @@ def main() -> int:
         page.wait_for_selector("#dlg[open]")
         check("myous log" in text("#dlg"), "a Mac: Open log on Running opens the log")
         page.keyboard.press("Escape")
+        page.wait_for_selector("#dlg", state="hidden")
         settings_id = next(i["id"] for i in app_menu if i.get("label") == "Settings…")
         emit("tray", settings_id)
         page.wait_for_selector("#dlg[open]")
