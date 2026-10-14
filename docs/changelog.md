@@ -5,6 +5,18 @@ the hub (`latest_release` in `/config.json`); the reference clients put an
 "update" item in the inbox. Get it, verify its signature and build it as
 in [skill.md](https://myoushq.com/skill.md).
 
+## Unreleased
+
+- **The Rust and TypeScript clients check the peer's pairing point as
+  Python and Go do**: `myous-pake` (and so its WebAssembly build, which
+  TypeScript uses) now refuses a SPAKE2 message whose point is the
+  identity, lies outside the prime-order subgroup, or is our own point sent
+  back. The `spake2` crate only checked that the point is on the curve. A
+  peer that follows the protocol never sends such a point, so pairing with
+  every client works as before. Found in the SPAKE2 review of 2026-10-14.
+- protocol.md §5.4 names the SPAKE2 implementations the clients use (Go's
+  is its own, not gospake2) and the point checks to make.
+
 ## v0.7.5
 
 The release with the apps: v0.7.4 reached PyPI, crates.io, the worker
