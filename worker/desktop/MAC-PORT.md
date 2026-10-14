@@ -48,23 +48,39 @@ parts are behind `cfg(target_os = "macos")` or the window's
   stops waiting (answered elsewhere, or timed out: `read_workers` sees it
   gone). Permission is asked once, at the first start; if the owner
   refuses (or later turns notifications off; the app rechecks at each
-  notification, so the change counts from the next one), the app falls
-  back to the plugin's plain notification and brings up the window for a
-  question, as before. Every notification goes through UserNotifications
-  when it can, so a Mac has one kind and one click behaviour; the plugin
-  stays for the fallback and for Linux and Windows. UserNotifications
-  aborts a process that isn't an app bundle, so a program run from
-  `target/` and `cargo test` never touch it (`in_app_bundle`: a bundle
-  identifier and a path ending in `.app`) and keep the plugin's plain
-  notifications.
-- **Not yet compiled or tried (2026-10-14).** The two items above were
-  written when the Mac's disk was full, so `cargo build`, `cargo test`,
-  clippy and a run of the app are still to do; `rustfmt --check`, the
-  window's type check and its tests (`npm test`) pass. To try them:
-  `MYOUS_WORKER_HOME=/tmp/w build/myous.app/Contents/MacOS/myous-desktop`
-  with a worker folder holding `app.json` (a name) and
-  `approvals/r5.json` (`{"id":"r5","op":"exec","cmd":"ls","asked_at":<now>,"wait":120}`);
-  the fake states (`MYOUS_FAKE_STATE`) never notify.
+  notification, so the change counts from the next one), there is no
+  notification and the app brings up the window for a question, as
+  before; the app log says why ("notifications: not allowed (...)").
+  The plugin's plain notification can't stand in there: usernoted
+  refuses a process that mixes the old notifications (the plugin's,
+  NSUserNotification) with UserNotifications, and the permission is
+  the same one anyway. Every notification goes through
+  UserNotifications, so a Mac has one kind and one click behaviour; the
+  plugin stays for Linux and Windows. UserNotifications aborts a process
+  that isn't an app bundle, so a program run from `target/` and `cargo
+  test` never touch it (`in_app_bundle`: a bundle identifier and a path
+  ending in `.app`) and keep the plugin's plain notifications.
+- **Built and tried (2026-10-14), not yet pressed.** `cargo build`,
+  `cargo test`, clippy and rustfmt pass on a Mac, `npm test` and
+  `clicks.py` pass, and the Linux and Windows previews are pixel for
+  pixel those of `wip/mac-tauri`. The app (`make-mac.sh`, ad hoc) was
+  run with a worker folder holding `app.json` (a name), a fresh
+  `worker.json` (`{"phase":"running","contacts":1}`, so the window starts
+  hidden) and then `approvals/r5.json`
+  (`{"id":"r5","op":"exec","cmd":"ls","asked_at":<now>,"wait":120}`).
+  It set up the centre and the category and asked for permission; on
+  that Mac macOS already held a decision for `com.myoushq.desktop` (the
+  identifier myous for Mac's builds share), so no dialog came and the
+  answer was "Notifications are not allowed for this application"
+  (code 1). The question then brought up the window, as it should. Still
+  to see, with notifications allowed for myous in System Settings ›
+  Notifications: the permission dialog on a Mac that hasn't decided, the
+  notification with Allow and Refuse, a press answering it, a click
+  bringing up the window, and the notification going when the window
+  answers. Open at login: no `~/Library/LaunchAgents/myous.plist` was
+  made; Settings' checkbox (SMAppService's status) wasn't opened, as
+  that needs a click in the window. The fake states
+  (`MYOUS_FAKE_STATE`) never notify.
 - **Workers in a container** (Docker Desktop, OrbStack, Rancher
   Desktop), found from the Finder's short PATH, with the container's
   own browser and its browser view (`MYOUS_BROWSER: container`). The
