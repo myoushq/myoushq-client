@@ -5,8 +5,20 @@ the hub (`latest_release` in `/config.json`); the reference clients put an
 "update" item in the inbox. Get it, verify its signature and build it as
 in [skill.md](https://myoushq.com/skill.md).
 
-## Unreleased
+## v0.7.4
 
+The apps carry the new mark, a stop reaches the running command, and the
+clients find their runtimes from a desktop launcher. 2026-10-14.
+
+- **The apps' icons follow the myoushq mark**: a Greek mu drawn as one
+  path with four dots, white on the brand navy. myous for Mac draws it
+  (the app icon, the menu bar icon in the state colour); myous for Linux
+  and Windows ship it as the app icon and draw the tray icon in the state
+  colour. The source is `worker/icons/mark.svg` with a script that
+  regenerates every size.
+- **myous for Linux and Windows looks like myous for Mac**: the window's
+  spacing, type, cards, buttons and lists polished against the Mac app in
+  light and dark mode (no change to what the screens do).
 - **`myous cron install` keeps one crontab line per home** (Python, Unix),
   as Windows has one task per home: the line ends with `# myous <home>`,
   `install` and `remove` touch only that home's line, `show` lists every
