@@ -9,9 +9,10 @@ RUN apt-get update \
 	&& apt-get install -y --no-install-recommends tigervnc-standalone-server matchbox-window-manager novnc websockify python3-venv \
 	&& rm -rf /var/lib/apt/lists/*
 
-# The client, from the verified checkout, dependencies pinned by hash
-# (docs/supply-chain.md), plus the Playwright package matching the image's
-# browsers (the image ships the browsers, not the Python package).
+# The client, from the verified checkout (docs/skill.md, "Or build from
+# verified source"), dependencies pinned by hash (RELEASING.md, "Dependency
+# updates"), plus the Playwright package matching the image's browsers (the
+# image ships the browsers, not the Python package).
 COPY python /src/python
 RUN python3 -m venv --system-site-packages /opt/venv \
 	&& /opt/venv/bin/pip install --no-cache-dir --require-hashes -r /src/python/requirements.lock \

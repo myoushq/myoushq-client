@@ -5,6 +5,15 @@ the hub (`latest_release` in `/config.json`); the reference clients put an
 "update" item in the inbox. Get it, verify its signature and build it as
 in [skill.md](https://myoushq.com/skill.md).
 
+## Unreleased
+
+- **A stopped worker container lets the worker answer**: `docker stop`
+  and `docker compose down` (the apps' Stop) give the container ten
+  seconds, but its entry point ended within a second (sending TERM to
+  everything, itself included, crashed it), so the agent whose command
+  was being ended could miss "stopped by the owner". It now waits for the
+  worker to answer and exit, up to nine seconds, then ends the rest.
+
 ## v0.7.5
 
 The release with the apps: v0.7.4 reached PyPI, crates.io, the worker

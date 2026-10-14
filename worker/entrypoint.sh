@@ -9,9 +9,28 @@
 # scaled fixed screen. matchbox, a minimal window manager, keeps Chromium's
 # window maximized, so it follows those size changes.
 set -u
-# On stop: end the children (Chromium closes its profile cleanly on TERM),
-# give them a moment, then exit.
-trap 'kill 0 2>/dev/null; sleep 2; exit 0' TERM INT
+# On stop (`docker stop`, `docker compose down`: TERM, then KILL after 10 s):
+# TERM to every child at once. The worker ends the command it is running,
+# answers that agent ("stopped by the owner"), which takes a relay round
+# trip, and exits; Chromium closes its profile cleanly. Wait for the worker
+# (and at least 2 s, for Chromium), but no more than 9 s: then exit anyway,
+# and as PID 1 that takes every process left in the container with it.
+# TERM is ignored from here on: `kill 0` reaches this shell too, and
+# re-entering the trap over and over crashed it (dash) within a second.
+WORKER_LOOP=
+stop() {
+	trap '' TERM INT
+	kill 0 2>/dev/null
+	sleep 2 &
+	min=$!
+	if [ -n "$WORKER_LOOP" ]; then
+		(sleep 9; kill -KILL "$WORKER_LOOP" 2>/dev/null) &
+		wait "$WORKER_LOOP"
+	fi
+	wait "$min"
+	exit 0
+}
+trap stop TERM INT
 
 # Where the worker is, for the owner's app: a phase in the status file
 # until the worker itself takes over writing it (starting, browser,
@@ -182,7 +201,7 @@ until registered; do
 	myous init --alias "${MYOUS_ALIAS:-Desktop worker}" $HUB_OPT && continue
 	echo "worker: init failed (no network? hub down?); retrying in 10 s"
 	phase "error: can't reach the hub; retrying"
-	sleep 10
+	sleep 10 & wait $!   # waiting, so a stop is handled at once
 done
 # A new name from the owner (MYOUS_ALIAS changed): re-register with it.
 current=$(myous status --json 2>/dev/null | python3 -c 'import json, sys; print(json.load(sys.stdin).get("alias") or "")')
@@ -199,7 +218,11 @@ DESC_OPT=
 # background and the script waits: a trap only fires while the shell is
 # waiting, so with the loop in the foreground `docker stop` would time
 # out and kill everything, leaving Chromium's profile lock behind.
+# The loop itself, on TERM, waits for the worker (in the foreground here,
+# so the trap runs once it has exited) and ends instead of restarting it;
+# the stop above waits for the loop.
 (
+	trap 'exit 0' TERM
 	while true; do
 		# shellcheck disable=SC2086
 		myous worker --work /work --review /opt/worker/review.py ${ALIAS_OPT:+$ALIAS_OPT "$MYOUS_ALIAS"} ${DESC_OPT:+$DESC_OPT "$MYOUS_DESCRIPTION"}
@@ -209,4 +232,5 @@ DESC_OPT=
 		sleep 10
 	done
 ) &
+WORKER_LOOP=$!
 wait
