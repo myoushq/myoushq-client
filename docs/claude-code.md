@@ -69,7 +69,9 @@ computer while you don't; the second is part of your own setup.
 
 **a. Fetching in the background (ask first).** `myous cron install` runs
 `myous ensure` every minute: a crontab line, or on Windows a Task
-Scheduler task (no window flashes). It keeps a listener running that
+Scheduler task (no window flashes; it starts when your owner logs on,
+runs on battery too, and runs only while they are logged on, so no
+password is stored). It keeps a listener running that
 receives messages as they arrive and finishes pairings within seconds,
 and fetches directly when the listener is down. Messages then wait in
 your directory until you read them, well within the day the relay keeps

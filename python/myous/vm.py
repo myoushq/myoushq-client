@@ -12,12 +12,15 @@ library from whatever scheduler or event source it has.
 """
 from __future__ import annotations
 
+import datetime
+import getpass
 import html
 import os
 import re
 import subprocess
 import sys
 import time
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from myous import processes
@@ -209,8 +212,94 @@ def _pythonw() -> tuple[str, bool]:
 
 
 def task_command(st: FileStorage) -> str:
-    """The scheduled task's /TR: pythonw.exe running ensure.pyw."""
+    """What the scheduled task runs: pythonw.exe running ensure.pyw."""
     return f'"{_pythonw()[0]}" "{st.path("ensure.pyw")}"'
+
+
+TASK_NS = "http://schemas.microsoft.com/windows/2004/02/mit/task"
+TASK_INTERVAL = "PT1M"           # every minute, as the crontab line
+TASK_TIME_LIMIT = "PT10M"        # ensure takes seconds; ends a stuck run
+TASK_XML_FILE = "ensure-task.xml"
+
+
+def _windows_user() -> str:
+    """The account the task runs as: DOMAIN\\user of whoever installs it
+    (on a PC that isn't in a domain, the domain is the computer's name)."""
+    user = os.environ.get("USERNAME") or getpass.getuser()
+    domain = os.environ.get("USERDOMAIN")
+    return f"{domain}\\{user}" if domain else user
+
+
+def task_definition(st: FileStorage, user: str, now: datetime.datetime | None = None) -> str:
+    """The scheduled task as Task Scheduler XML (`schtasks /Create /XML`).
+
+    What schtasks' /SC MINUTE would not give: it runs on battery and keeps
+    running when the laptop goes on battery; it starts when the user logs
+    on as well as every minute from now; a run that is still going when the
+    next is due makes that one skip (IgnoreNew); a run missed while the PC
+    slept starts as soon as it can. It runs as the user who installed it,
+    only while they are logged on (InteractiveToken: no password is
+    stored), with their normal rights."""
+    def add(parent: ET.Element, tag: str, text: str | None = None, **attrs: str) -> ET.Element:
+        e = ET.SubElement(parent, f"{{{TASK_NS}}}{tag}", attrs)
+        e.text = text
+        return e
+
+    def repeat(trigger: ET.Element) -> None:
+        # No Duration: the pattern repeats indefinitely.
+        r = add(trigger, "Repetition")
+        add(r, "Interval", TASK_INTERVAL)
+        add(r, "StopAtDurationEnd", "false")
+
+    start = (now or datetime.datetime.now()).replace(microsecond=0).isoformat()
+    task = ET.Element(f"{{{TASK_NS}}}Task", version="1.2")
+    info = add(task, "RegistrationInfo")
+    add(info, "Description", f"Runs `myous ensure` for {st.home} every minute (myous cron install).")
+    triggers = add(task, "Triggers")
+    # Element order in a trigger follows the schema (a sequence).
+    timer = add(triggers, "TimeTrigger")
+    add(timer, "Enabled", "true")
+    add(timer, "StartBoundary", start)
+    repeat(timer)
+    logon = add(triggers, "LogonTrigger")
+    add(logon, "Enabled", "true")
+    repeat(logon)
+    add(logon, "UserId", user)
+    principal = add(add(task, "Principals"), "Principal", id="Author")
+    add(principal, "UserId", user)
+    add(principal, "LogonType", "InteractiveToken")
+    add(principal, "RunLevel", "LeastPrivilege")
+    settings = add(task, "Settings")
+    for tag, value in (("MultipleInstancesPolicy", "IgnoreNew"),
+                       ("DisallowStartIfOnBatteries", "false"),
+                       ("StopIfGoingOnBatteries", "false"),
+                       ("AllowHardTerminate", "true"),
+                       ("StartWhenAvailable", "true"),
+                       ("RunOnlyIfNetworkAvailable", "false"),
+                       ("AllowStartOnDemand", "true"),
+                       ("Enabled", "true"),
+                       ("Hidden", "false"),
+                       ("RunOnlyIfIdle", "false"),
+                       ("WakeToRun", "false"),
+                       ("ExecutionTimeLimit", TASK_TIME_LIMIT),
+                       ("Priority", "7")):
+        add(settings, tag, value)
+    idle = add(settings, "IdleSettings")
+    add(idle, "StopOnIdleEnd", "false")
+    add(idle, "RestartOnIdle", "false")
+    exe = add(add(task, "Actions", Context="Author"), "Exec")
+    add(exe, "Command", _pythonw()[0])
+    add(exe, "Arguments", f'"{st.path("ensure.pyw")}"')
+    ET.register_namespace("", TASK_NS)
+    ET.indent(task)
+    return '<?xml version="1.0" encoding="UTF-16"?>\n' + ET.tostring(task, encoding="unicode") + "\n"
+
+
+def write_task_definition(path: Path, xml: str) -> None:
+    """UTF-16 little-endian with a byte order mark, as Task Scheduler
+    exports tasks: the encoding `schtasks /Create /XML` reliably reads (a
+    UTF-8 file is refused by some Windows versions)."""
+    path.write_bytes(b"\xff\xfe" + xml.replace("\n", "\r\n").encode("utf-16-le"))
 
 
 def _schtasks(*args: str) -> subprocess.CompletedProcess | str:
@@ -260,6 +349,16 @@ def _same_command(a: str, b: str) -> bool:
     return norm(a) == norm(b)
 
 
+def _task_current(r: subprocess.CompletedProcess) -> bool:
+    """Whether the task from `schtasks /Query /XML` has the settings
+    `task_definition` gives (a task made by an earlier version with
+    /SC MINUTE doesn't: it is replaced)."""
+    xml = _text(r.stdout)
+    return (re.search(r"<DisallowStartIfOnBatteries>\s*false\s*<", xml) is not None
+            and re.search(r"<StopIfGoingOnBatteries>\s*false\s*<", xml) is not None
+            and "<LogonTrigger" in xml)
+
+
 def _query_task(name: str) -> subprocess.CompletedProcess | str:
     return _schtasks("/Query", "/TN", name, "/XML")
 
@@ -275,9 +374,11 @@ def _install_task(st: FileStorage) -> str:
                              " a console window may flash every minute)")
     wanted = task_command(st)
     existing = _task_line(query)
-    if existing is not None and _same_command(existing, wanted):
+    if existing is not None and _same_command(existing, wanted) and _task_current(query):
         return "scheduled task already present" + note
-    r = _schtasks("/Create", "/F", "/SC", "MINUTE", "/MO", "1", "/TN", name, "/TR", wanted)
+    definition = st.path(TASK_XML_FILE)
+    write_task_definition(definition, task_definition(st, _windows_user()))
+    r = _schtasks("/Create", "/F", "/XML", str(definition), "/TN", name)
     if isinstance(r, str) or r.returncode != 0:
         return _unavailable(r)
     return "scheduled task installed" + note

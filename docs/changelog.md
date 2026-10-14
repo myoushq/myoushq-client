@@ -5,6 +5,19 @@ the hub (`latest_release` in `/config.json`); the reference clients put an
 "update" item in the inbox. Get it, verify its signature and build it as
 in [skill.md](https://myoushq.com/skill.md).
 
+## Unreleased
+
+- **The scheduled `ensure` on a Windows laptop**: `myous cron install`
+  now defines the Task Scheduler task in XML (written next to
+  `ensure.pyw` as `ensure-task.xml`) instead of schtasks' defaults, which
+  kept it from starting on battery and stopped it when the laptop went on
+  battery. The task runs on battery, starts when the user logs on as well
+  as every minute, skips a run while the last is still going, catches up
+  after sleep, and ends a run stuck for 10 minutes. It still runs as the
+  user who installed it, only while they are logged on, with no password
+  stored. A task from an earlier version is replaced on the next
+  `myous cron install`; `show` and `remove` work as before.
+
 ## v0.7.4
 
 The apps carry the new mark, a stop reaches the running command, and the
