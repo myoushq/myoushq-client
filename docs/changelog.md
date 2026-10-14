@@ -8,31 +8,32 @@ in [skill.md](https://myoushq.com/skill.md).
 ## Unreleased
 
 - **myous for Mac is now the Tauri app** of myous for Linux and Windows
-  (`worker/desktop`): one codebase for the three systems, built
-  universal (Apple Silicon and Intel, macOS 13 or newer), signed and
-  notarized, at the same download (`/download/mac`,
-  `myous-<version>.dmg`). It reads the same worker folder, so an
-  existing worker carries on. What a Mac user notices: the window is
-  drawn by the system's web view and dressed as a Mac window (its colours, push buttons and striped table, dark mode and
-  the accent colour from System Settings), with Settings and the logs
-  inside it rather than in windows of their own; the menu bar icon, the
-  count of new requests and the Dock setting are as before; a question's
-  notification has Allow and Refuse (UserNotifications), and open at login
-  is a login item through SMAppService, as in myous for Mac; and new on the Mac: the first-launch
-  checks, the cards that install a container runtime with Homebrew, and
-  the worker items in the app menu. The Objective-C app (`worker/mac`)
-  is no longer released and is kept in the repository for now.
-- **On a Mac it runs the worker's browser on the Mac, as myous for Mac
-  does:** Set up asks "Where should its browser run?" for a worker in
-  a container ("On this Mac, in Google Chrome" recommended when Chrome,
-  Edge, Brave or Chromium is installed, else the container), keeping
-  `app.json`'s `browser`, `browser_app` and `browser_hidden` as myous for
-  Mac keeps them, so an upgrade keeps the owner's choice. The container
-  gets `MYOUS_BROWSER=host` and the browser's address in `browser.json`;
-  the browser runs under `sandbox-exec` with myous for Mac's seatbelt
-  profile (moved from `Browser.m` word for word, a test compares them),
-  without a container too; it starts hidden when the owner asked, and
-  Show browser brings it up. Linux and Windows are unchanged.
+  (`worker/desktop`): one codebase for the three systems, built universal
+  (Apple Silicon and Intel, macOS 13 or newer), signed and notarized, at
+  the same download (`/download/mac`, `myous-v<version>.dmg`). What a Mac
+  gains from the shared app: the first-launch checks, the cards that
+  install a container runtime (with Homebrew), the approval banner, the
+  ok / refused column in the requests, and direct mode with the Go worker
+  inside the app. What it keeps from the Objective-C app: a menu bar app
+  (the mark in the state's colour, the count of new requests) with the
+  Dock icon as a setting; a question's notification with Allow and
+  Refuse (UserNotifications), either of which answers it without the
+  window; open at login as a login item (SMAppService); and the worker's
+  browser on the Mac (Chrome, Edge, Brave or Chromium) under
+  `sandbox-exec` with the same seatbelt profile, for container workers
+  too (`MYOUS_BROWSER=host`), hidden or shown as before. It uses the same
+  worker folders, Chrome profiles (`<worker folder>/browser/<bundle id>`),
+  `app.json` settings and bundle identifier (`com.myoushq.desktop`), so an
+  existing worker, its logins, its browser choice and its login item
+  carry over. What differs: Settings and the logs open inside the window
+  rather than in windows of their own; what the ⋯ menu holds on Linux and
+  Windows is in the app menu (Settings… on ⌘,), not under the Option-held
+  Advanced menu; and the browser choice for a container worker is in Set
+  up and Settings. The window is dressed as a Mac window (its colours,
+  push buttons and striped table; dark mode and the accent colour follow
+  System Settings). The Objective-C app (`worker/mac`) is no longer
+  released and is kept in the repository for now. Linux and Windows are
+  unchanged.
 - **A stopped worker container lets the worker answer**: `docker stop`
   and `docker compose down` (the apps' Stop) give the container ten
   seconds, but its entry point ended within a second (sending TERM to
