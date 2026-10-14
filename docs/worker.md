@@ -244,7 +244,9 @@ outcome and output (the newest 200). The apps show all of this.
   question with Allow and Refuse; no answer within 120 seconds refuses
   the request with a reason the agent sees.
 - **Stop:** `docker compose -p myous-worker down` (keeps identity, logins
-  and files). Start it again with the `up -d` command from section 3.
+  and files). A command the worker is running is ended, and the agent
+  that sent it gets the answer "stopped by the owner (the worker is
+  shutting down)". Start it again with the `up -d` command from section 3.
 - **Restart on reboot:** the container is set to restart with Docker;
   the runtime must start at login (Docker Desktop's setting; for Docker
   Engine, `sudo systemctl enable docker`).
@@ -303,15 +305,23 @@ On Windows the worker's shell is PowerShell, not a Linux shell: its
 know comes back with a hint to send `help`, and the review's read-only
 list knows PowerShell's reading commands.
 
+Stop in an app ends the command the worker is running, with everything
+it started, and the agent that asked gets "stopped by the owner" as its
+result. The app asks the worker to stop (a `commands/quit` file, and
+SIGTERM outside Windows) and ends it if it is still there ten seconds
+later.
+
 ## 9. Building the apps from source
 
 `worker/desktop` is myous for Mac, Linux and Windows, one app over the
 same worker folder, built with Tauri (Rust, and the window in the
 system's web view), on the system you build for. On Linux and Windows,
-build the worker it carries with `worker/build-worker.sh`, then
-`npm ci && npx tauri build` there. On a Mac, `worker/desktop/make-mac.sh`
-builds `myous.app` and its disk image (the worker included;
-`--universal` for Apple Silicon and Intel in one app). Details in
+build the worker it carries with
+`worker/build-worker.sh host worker/desktop/src-tauri/binaries`, then
+`npm ci && npx tauri build` in `worker/desktop`. On a Mac,
+`worker/desktop/make-mac.sh` builds `myous.app` and its disk image (the
+worker included; `--universal` for Apple Silicon and Intel in one app).
+Details in
 [worker/desktop/README.md](https://github.com/myoushq/myoushq-client/blob/main/worker/desktop/README.md).
 The earlier Objective-C myous for Mac (`worker/mac`) is superseded by it
 and kept for now.

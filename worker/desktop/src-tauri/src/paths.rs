@@ -129,6 +129,12 @@ pub fn app_log(home: &Path) -> PathBuf {
 pub fn commands_dir(home: &Path) -> PathBuf {
     home.join("commands")
 }
+/// The command that stops the worker (as SIGTERM does), which the app
+/// sends on every system: on Windows it is the only graceful way.
+pub const QUIT_COMMAND: &str = "quit";
+pub fn quit_file(home: &Path) -> PathBuf {
+    commands_dir(home).join(QUIT_COMMAND)
+}
 pub fn requests_dir(home: &Path) -> PathBuf {
     home.join("requests")
 }
@@ -194,7 +200,7 @@ pub fn ensure(home: &Path) -> io::Result<()> {
 }
 
 /// Drops a command file for the worker (it removes the file once done):
-/// new-code, unpair, stop-<id>.
+/// new-code, unpair, stop-<id>, quit.
 pub fn send_command(home: &Path, name: &str) -> io::Result<()> {
     let dir = commands_dir(home);
     fs::create_dir_all(&dir)?;

@@ -1233,7 +1233,8 @@ pub fn start_with_how(
     })
 }
 
-fn pid_alive(pid: u32) -> bool {
+/// Whether the process `pid` exists.
+pub(crate) fn pid_alive(pid: u32) -> bool {
     if cfg!(windows) {
         let out = crate::engine::output(
             "tasklist",

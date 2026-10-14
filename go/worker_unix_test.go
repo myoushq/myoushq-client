@@ -138,8 +138,23 @@ func TestWorkerHelperStopped(t *testing.T) {
 }
 
 func TestWorkerSIGTERMEndsTheCommandAndExits(t *testing.T) {
-	for _, sig := range []syscall.Signal{syscall.SIGTERM, syscall.SIGINT} {
-		t.Run(sig.String(), func(t *testing.T) {
+	// SIGTERM, SIGINT, and the owner's app's commands/quit (how it stops
+	// a worker on Windows) all end the command, answer, and exit 0.
+	send := func(sig syscall.Signal) func(*exec.Cmd, string) {
+		return func(c *exec.Cmd, _ string) { c.Process.Signal(sig) }
+	}
+	for _, how := range []struct {
+		name string
+		stop func(*exec.Cmd, string)
+	}{
+		{"SIGTERM", send(syscall.SIGTERM)},
+		{"SIGINT", send(syscall.SIGINT)},
+		{"quit file", func(_ *exec.Cmd, dir string) {
+			os.MkdirAll(filepath.Join(dir, "home", "commands"), 0o700)
+			os.WriteFile(filepath.Join(dir, "home", "commands", "quit"), nil, 0o600)
+		}},
+	} {
+		t.Run(how.name, func(t *testing.T) {
 			dir := t.TempDir()
 			c := exec.Command(os.Args[0], "-test.run=^TestWorkerHelperStopped$")
 			c.Env = append(os.Environ(), "MYOUS_TEST_STOPPED="+dir)
@@ -155,7 +170,7 @@ func TestWorkerSIGTERMEndsTheCommandAndExits(t *testing.T) {
 				t.Fatal("the command isn't running")
 			}
 			started := time.Now()
-			c.Process.Signal(sig)
+			how.stop(c, dir)
 			select {
 			case err := <-done:
 				if err != nil {
@@ -183,6 +198,9 @@ func TestWorkerSIGTERMEndsTheCommandAndExits(t *testing.T) {
 			var r map[string]any
 			json.Unmarshal([]byte(sent[0][1]), &r)
 			checkStoppedResult(t, r)
+			if exists(filepath.Join(dir, "home", "commands", "quit")) {
+				t.Fatal("the quit file is still there")
+			}
 		})
 	}
 }

@@ -7,6 +7,8 @@
 #import <CoreImage/CoreImage.h>
 #import <UserNotifications/UserNotifications.h>
 #import <ServiceManagement/ServiceManagement.h>
+#import <libproc.h>
+#import <sys/proc.h>
 
 
 static const CGFloat kWidth = 560;
@@ -2305,6 +2307,46 @@ static NSString *checkMark(NSString *state, double unsure) {
     }
 }
 
+/// Whether `pid` is still the worker whose worker.json says it started at
+/// `started` (Unix seconds; nil from a worker that doesn't say): a myous
+/// worker program (myous-worker, myous, or Python for the Python worker)
+/// that began no later than that. A pid the system has since given to
+/// another program fails one or the other; one that has exited, both.
+static BOOL isWorkerProcess(pid_t pid, NSNumber *started) {
+    struct proc_bsdinfo info;
+    if (pid <= 0 || proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, sizeof info) != (int)sizeof info) return NO;
+    if (info.pbi_status == SZOMB) return NO;
+    if (started && (double)info.pbi_start_tvsec > started.doubleValue) return NO;
+    char path[PROC_PIDPATHINFO_MAXSIZE];
+    if (proc_pidpath(pid, path, sizeof path) <= 0) return NO;
+    NSString *name = [[NSString stringWithUTF8String:path] lastPathComponent].lowercaseString;
+    return [name hasPrefix:@"myous"] || [name hasPrefix:@"python"];
+}
+
+/// After SIGTERM to a worker this app didn't start: polls every half
+/// second; SIGKILL if it is still there after ten seconds. Once it is
+/// gone, the stop is done (the window leaves Stopping, as when this app's
+/// own worker exits).
+- (void)waitForOutsideWorker:(pid_t)pid started:(NSNumber *)started worker:(Worker *)w checks:(int)left {
+    if (!isWorkerProcess(pid, started)) {
+        [self append:[NSString stringWithFormat:@"myous worker (pid %d) exited", pid]];
+        if (w.stopping) w.stopDoneAt = [[NSDate date] timeIntervalSince1970];
+        [self refresh];
+        return;
+    }
+    if (left <= 0) {
+        kill(pid, SIGKILL);
+        [self append:[NSString stringWithFormat:@"myous worker (pid %d) didn't stop in 10 seconds; killed", pid]];
+        if (w.stopping) w.stopDoneAt = [[NSDate date] timeIntervalSince1970];
+        [self refresh];
+        return;
+    }
+    __weak typeof(self) weak = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(NSEC_PER_SEC / 2)), dispatch_get_main_queue(), ^{
+        [weak waitForOutsideWorker:pid started:started worker:w checks:left - 1];
+    });
+}
+
 - (void)stopDirect {
     if (self.direct) {
         // SIGTERM: the worker ends the command it runs, answers that request
@@ -2319,8 +2361,21 @@ static NSString *checkMark(NSString *state, double unsure) {
             [weak append:[NSString stringWithFormat:@"myous worker (pid %d) didn't stop in 10 seconds; killed", t.processIdentifier]];
         });
     } else {
-        NSNumber *pid = num([StatusFile readAt:self.paths].status[@"pid"]);   // started outside this app
-        if (pid) { kill((pid_t)pid.intValue, SIGTERM); [self append:[NSString stringWithFormat:@"sent SIGTERM to worker pid %@", pid]]; }
+        // Started outside this app: the pid in worker.json, if it is
+        // still that worker (not a program that got the number since).
+        NSDictionary *s = [StatusFile readAt:self.paths].status;
+        NSNumber *pid = num(s[@"pid"]), *started = num(s[@"started"]);
+        Worker *w = self.current;
+        if (!pid) return;
+        pid_t p = (pid_t)pid.intValue;
+        if (!isWorkerProcess(p, started)) {
+            [self append:[NSString stringWithFormat:@"pid %d in worker.json is no longer a myous worker; nothing to stop", p]];
+            w.stopDoneAt = [[NSDate date] timeIntervalSince1970];
+            return;
+        }
+        kill(p, SIGTERM);
+        [self append:[NSString stringWithFormat:@"stopping myous worker (pid %d, started outside this app)", p]];
+        [self waitForOutsideWorker:p started:started worker:w checks:20];
     }
 }
 

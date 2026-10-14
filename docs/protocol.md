@@ -265,12 +265,16 @@ bytes of the normalized code (`<nameplate>-<SECRET>`). A uses side A, B
 uses side B. The 32-byte result is `K`. Messages are one side byte (`A`
 or `B`) followed by the 32-byte compressed Ed25519 point; group elements
 are always encoded as exactly 32 bytes, also inside the transcript hash.
-(gospake2 drops leading zero bytes for about 1 point in 256; the Go client
-pads them back.) Compatible implementations:
-python-spake2 (Python), the `spake2` crate (Rust), gospake2 (Go). For other
-languages, use the WebAssembly build of the Rust client's PAKE
-(`rust/wasm` in the myoushq-client repository) rather than porting the curve arithmetic: a subtle
-porting mistake can let whoever watches the mailbox guess the code offline.
+Reject a peer message whose point isn't on the curve, is the identity, is
+outside the prime-order subgroup (`[L]P` isn't the identity), or is your own
+point sent back. The reference clients use: `spake2` on PyPI
+(python-spake2, Python); the `spake2` crate (Rust), wrapped by `myous-pake`
+(`rust/pake`), which adds the point checks the crate lacks; the WebAssembly
+build of `myous-pake` (`rust/wasm`, TypeScript); and the Go client's own
+`go/internal/spake2` (paths in the myoushq-client repository). For other
+languages, use that WebAssembly build rather than porting the curve
+arithmetic: a subtle porting mistake can let whoever watches the mailbox
+guess the code offline.
 
 **Key derivation.** HKDF-SHA256, no salt, input `K`:
 

@@ -14,19 +14,20 @@
 > so they move rather than go when this folder is deleted.
 
 `myous.app` is the human's side of a worker on a Mac. It lives in the menu
-bar (a coloured dot shows the state), and its window walks through the
-steps: find a container runtime, name the worker, start it (with the
-phases shown while it downloads, starts the browser and registers), hand
-the pairing message to an agent, confirm the verification code, then the
-everyday view: every request the agent made with its outcome (double-click
-for the command and its output), Pause, and "Open browser". Settings cover
-the worker's name, a Dock icon, launch at login, notifications and the
-daily release check. It reads `~/.myous-worker/worker.json` and
-`requests/` (the worker writes them), drops command files in `commands/`
-(`new-code`, `unpair`), runs `docker compose` (or, in direct mode, the
-worker it carries, `Contents/MacOS/myous-worker`) as a child process, and
-only talks to the network to check that it reaches the hub (while
-setting up) and to ask it for the latest release.
+bar (the mark on a square in the state's colour), and its window walks
+through the steps: find a container runtime, name the worker, start it
+(with the phases shown while it downloads, starts the browser and
+registers), hand the pairing message to an agent, confirm the
+verification code, then the everyday view: every request the agent made
+with its outcome (double-click for the command and its output), Pause,
+and "Open browser". Settings cover the worker's name, a Dock icon, launch
+at login, notifications and the daily release check. It reads
+`~/.myous-worker/worker.json` and `requests/` (the worker writes them),
+drops command files in `commands/` (`new-code`, `unpair`, `stop-<id>`),
+runs `docker compose` (or, in direct mode, the worker it carries,
+`Contents/MacOS/myous-worker`) as a child process, and only talks to the
+network to check that it reaches the hub (while setting up) and to ask it
+for the latest release.
 
 The app is a universal binary (Apple Silicon and Intel) for macOS 13 or
 newer (12 until 2026-10-12; the Go worker inside, built with Go 1.27,
@@ -35,7 +36,7 @@ here is).
 
 ## Download
 
-Each release has `myous-<version>.dmg` on the GitHub release page (and at
+Each release has `myous-v<version>.dmg` on the GitHub release page (and at
 https://myoushq.com/download/mac; its SHA-256 is in `SHA256SUMS`), signed
 with a Developer ID and notarized by Apple, so it opens like any other
 app. Open the image, drag myous to Applications, launch it. You need a
@@ -91,9 +92,11 @@ always there once a checkout or direct mode is configured):
   --description … --work ~/.myous-worker/work`, the Go client with the
   review rules built in; nothing to install) as a child process on this
   Mac, started through a login shell so the agent's commands see your
-  PATH, output in `~/.myous-worker/worker.log`. The window warns what
-  this means. `MYOUS_WORKER_BIN=<path>` runs another worker program
-  instead (a local Go build, for testing); the app's log says so.
+  PATH, output in `~/.myous-worker/worker.log`. Stop sends it SIGTERM:
+  it ends the command it runs, answers that request and exits; after ten
+  seconds the app kills it. The window warns what this means.
+  `MYOUS_WORKER_BIN=<path>` runs another worker program instead (a local
+  Go build, for testing); the app's log says so.
 
 The project name is `myous-worker` in every mode, so Stop finds the
 containers after a mode switch or an app update; "Remove stale containers"
@@ -229,17 +232,19 @@ runs this folder's `notarize.sh` and `make-dmg.sh` on it. For this app it
 ran, in this order:
 
 ```sh
-worker/mac/make-app.sh --no-config --version 0.7.4 --sign "Developer ID Application: <name> (<team>)"
+worker/mac/make-app.sh --no-config --version 0.7.5 --sign "Developer ID Application: <name> (<team>)"
 worker/mac/notarize.sh worker/mac/build/myous.app --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" --key AuthKey.p8
-worker/mac/make-dmg.sh worker/mac/build/myous.app worker/mac/build/myous-v0.7.4.dmg --sign "Developer ID Application: <name> (<team>)"
+worker/mac/make-dmg.sh worker/mac/build/myous.app worker/mac/build/myous-v0.7.5.dmg --sign "Developer ID Application: <name> (<team>)"
 ```
 
 `--sign` uses the hardened runtime and a timestamp (what notarization
 requires; the app needs no entitlements), for the worker inside the app
-first and then the app. `notarize.sh` zips the app,
-submits it with an App Store Connect API key, waits, prints Apple's log on
-rejection, and staples the ticket. `make-dmg.sh` makes the image with an
-Applications shortcut and appends the checksum to `SHA256SUMS` next to it.
+first and then the app. `notarize.sh` zips the app, submits it with an
+App Store Connect API key, waits, prints Apple's log on rejection, and
+staples the ticket (retrying for up to ten minutes, as the ticket can
+take a while to reach Apple's servers). `make-dmg.sh` makes the image
+with an Applications shortcut and appends the checksum to `SHA256SUMS`
+next to it.
 
 Inputs the workflow needs, as repository secrets:
 

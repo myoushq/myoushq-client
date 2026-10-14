@@ -19,22 +19,22 @@ says what differs.
 Each release has, on the GitHub release page and at the links below (their
 SHA-256 sums are in `SHA256SUMS`):
 
-- **Mac:** `myous-<version>.dmg` (https://myoushq.com/download/mac),
+- **Mac:** `myous-v<version>.dmg` (https://myoushq.com/download/mac),
   one app for Apple Silicon and Intel, macOS 13 or newer, signed with a
   Developer ID and notarized by Apple. Open the image, drag myous to
   Applications, open it. For containers you need Docker Desktop,
   OrbStack or Rancher Desktop (the app installs Docker Desktop or
   OrbStack with Homebrew where Homebrew is there).
-- **Windows:** `myous-<version>-windows-x64-setup.exe`
+- **Windows:** `myous-v<version>-windows-x64-setup.exe`
   (https://myoushq.com/download/windows). An installer for your user
   only, no administrator rights; it fetches Microsoft's WebView2 if the PC
   lacks it (Windows 11 has it). It is not code-signed yet, so SmartScreen
   asks once: More info, then Run anyway. For containers you need Docker
   Desktop or Rancher Desktop, running; both need WSL 2. Without it, see
   "Without containers" below.
-- **Linux:** `myous-<version>-linux-x86_64.AppImage`
+- **Linux:** `myous-v<version>-linux-x86_64.AppImage`
   (https://myoushq.com/download/linux): make it executable and run it.
-  Or `myous-<version>-linux-amd64.deb` for Debian and Ubuntu. You need
+  Or `myous-v<version>-linux-amd64.deb` for Debian and Ubuntu. You need
   Docker Engine (add yourself to the `docker` group), Podman, or Docker
   Desktop. On GNOME the tray icon needs the AppIndicator extension
   (Ubuntu has it on).
@@ -48,10 +48,11 @@ worker keeps lives in `~/.myous-worker` on a Mac and on Linux, and
 directory are container volumes. The app writes its own log to `app.log`
 there.
 
-With a container the worker's browser runs only in the container (shown
-through the browser view in your own browser); without one it runs on the
-computer (below). Notifications have no buttons: a question brings up the
-window, which has Allow and Refuse.
+With a container the worker's browser runs in the container (shown
+through the browser view in your own browser), or on a Mac on the Mac if
+you choose (see "On a Mac"); without one it runs on the computer (below).
+On Linux and Windows notifications have no buttons: a question brings up
+the window, which has Allow and Refuse.
 
 ## The first launch
 
@@ -73,9 +74,11 @@ next for 8 s), and the rest of the card is the one thing still needed:
   winget on Windows; on Linux apt, dnf or pacman through `pkexec`, which
   asks for the password, and for Docker Engine also starts the service and
   adds you to the `docker` group), with the output in the app log;
-  otherwise the button opens its download page. The card leaves by itself
-  when the runtime answers. Folded underneath: "Run without a container
-  (not recommended)".
+  otherwise the button opens its download page. Until the app knows
+  which ones this system can have (it asks the package manager, which can
+  take a while on a cold start), the card says "Looking for ways to
+  install one…". The card leaves by itself when the runtime answers.
+  Folded underneath: "Run without a container (not recommended)".
 - **Start the container runtime** when it is installed but not running:
   "Open Docker Desktop" (or Rancher Desktop); for Docker Engine on Linux
   "Start Docker Engine" (`pkexec systemctl enable --now docker`) where
@@ -98,6 +101,15 @@ it can reach the hub). When a start fails, **Needs attention** under the
 red line shows the last lines it wrote, with Show log and **Try again**
 (the same start, no Stop needed).
 
+An app opened from a desktop launcher gets a short PATH, so the app
+looks for programs (the runtime and its compose, Python, the browser,
+the package tools) on the PATH it inherited and then in the folders
+where they install: on Linux `/usr/local/bin`, `~/.local/bin`,
+`/snap/bin`, Flatpak's and Rancher Desktop's; on Windows Docker
+Desktop's, Podman's, Rancher Desktop's, the per-user Pythons and
+winget's. The commands it starts get the same PATH, so `docker compose`
+finds its credential helper (`search_path` in `engine.rs`).
+
 ## Without containers
 
 On Windows the runtimes need WSL 2, and WSL 2 needs virtualization. When
@@ -118,9 +130,10 @@ computer are found and paired the same way.
 **The worker's browser without a container** (`browser.rs`) runs on the
 computer. The app looks for Edge then Chrome on Windows (where their
 installers put them, else the registry's App Paths), `google-chrome`,
-`chromium` or `microsoft-edge` on PATH on Linux (not a snap's Chromium,
-which can't use a profile in a hidden folder), and for Playwright in an
-environment of its own (`%LOCALAPPDATA%\myous\browser-python`, or
+`chromium` or `microsoft-edge` on the search path (above) on Linux (not
+a snap's Chromium, which can't use a profile in a hidden folder), and
+for Playwright in an environment of its own
+(`%LOCALAPPDATA%\myous\browser-python`, or
 `~/.local/share/myous/browser-python`). The owner provides Python 3.10
 or newer (`py -3`, `python`, `python3` on Windows; `python3`, `python`,
 `python3.1x` elsewhere); the Set up card says what is missing, one thing
@@ -165,7 +178,12 @@ and nothing needs installing: no Python, no pip. The app starts it as
 with `MYOUS_HOME` set to the worker folder; the review rules are built
 into it (the level in `review.json`, `worker.paused`, the questions in
 `approvals/`), the same as `worker/review.py`'s. The worker's own output
-is in `worker.log` (Show worker log, in the ⋯ menu).
+is in `worker.log` (Show worker log, in the ⋯ menu). Stop writes a
+`commands/quit` file in the worker folder (and sends SIGTERM outside
+Windows): the worker ends the command it runs with everything it
+started, answers that request "stopped by the owner" and exits; after
+ten seconds the app kills it. When the app quits it waits for its
+workers the same way.
 
 ## How it is built
 
@@ -188,7 +206,7 @@ machines; a web view has no such need.
 | `src-tauri/src/lib.rs` | The commands the window calls; the tray; notifications, dialogs, clipboard, open at login. |
 | `src-tauri/src/files.rs`, `paths.rs` | The worker folders and the files in them (`worker.json`, `requests/`, `approvals/`, `app.json`, `review.json`, command files). |
 | `ui/src/setup.ts` | The first launch's words: the checklist, the runtime cards, the hub's red line, Needs attention. |
-| `src-tauri/src/engine.rs` | Docker or Podman: the runtime check (ok, missing, not running, no permission, no compose, its own error), `compose up` and `down` with the output streamed to the log, the browser view's port, stale containers. |
+| `src-tauri/src/engine.rs` | Finding programs (`which`, `search_path`) and starting them with that PATH (`command`). Docker or Podman: the runtime check (ok, missing, not running, no permission, no compose, its own error), `compose up` and `down` with the output streamed to the log, the browser view's port, stale containers. |
 | `src-tauri/src/install.rs` | Which runtimes this system can have and whether the app can install each (winget, Homebrew, apt/dnf/pacman through pkexec), starting Docker Engine, compose's package. |
 | `src-tauri/src/hub.rs` | Whether the hub answers (`/config.json`), and the newest release. |
 | `src-tauri/src/agents.rs` | The agents on this computer, read with their own client's `myous status --json`; accepting a pairing code as one of them. |
@@ -218,6 +236,10 @@ npm test                      # the state machine, the menu, the words
 npx tauri build               # Linux: AppImage and deb; Windows: the NSIS installer
 npx tauri dev                 # run it from source
 ```
+
+`smoke/run.sh` starts the built AppImage and `.deb` under Xvfb in Docker
+(on a Mac too) and checks that the window opens and renders; CI runs the
+same `smoke/smoke.sh` after the Linux build (`smoke/README.md`).
 
 On a Mac, `./make-mac.sh` builds the app (next section).
 
@@ -286,10 +308,12 @@ python3 clicks.py                        # clicks the first-launch buttons and c
 
 `state` is one of checking, couldntcheck, setup, hubdown, noruntime,
 installing, stoppedruntime, stoppedengine, nopermission, nocompose,
-runtimeerror, nowsl, novirt, direct, directstarting, directrunning,
+runtimeerror, nowsl, novirt, direct, directnobrowser, directnopython,
+directnovenv, directnoplaywright, found, directinstalling, directoff,
+directstarting, directrunning, directbrowserclosed, directbrowserlater,
 starting, failed, pair, paired, running, paused, stopping, stopped,
 approval, busy, agents, agent, pairlocal, workers (`screens.py` renders
-all 30, and two of them dark too). The app itself takes the same names in
+all 39, and two of them dark too). The app itself takes the same names in
 `MYOUS_FAKE_STATE`. In a plain browser the page's backend only records
 what the buttons ask for (`window.myous.backend.calls`), and
 `window.myous.backend.emit(event, payload)` plays what Rust would send (an

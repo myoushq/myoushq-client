@@ -33,11 +33,67 @@ in [skill.md](https://myoushq.com/skill.md).
   profile (moved from `Browser.m` word for word, a test compares them),
   without a container too; it starts hidden when the owner asked, and
   Show browser brings it up. Linux and Windows are unchanged.
+- **A stopped worker container lets the worker answer**: `docker stop`
+  and `docker compose down` (the apps' Stop) give the container ten
+  seconds, but its entry point ended within a second (sending TERM to
+  everything, itself included, crashed it), so the agent whose command
+  was being ended could miss "stopped by the owner". It now waits for the
+  worker to answer and exit, up to nine seconds, then ends the rest.
+- **The Rust and TypeScript clients check the peer's pairing point as
+  Python and Go do**: `myous-pake` (and so its WebAssembly build, which
+  TypeScript uses) now refuses a SPAKE2 message whose point is the
+  identity, lies outside the prime-order subgroup, or is our own point sent
+  back. The `spake2` crate only checked that the point is on the curve. A
+  peer that follows the protocol never sends such a point, so pairing with
+  every client works as before. Found in the SPAKE2 review of 2026-10-14.
+- protocol.md §5.4 names the SPAKE2 implementations the clients use (Go's
+  is its own, not gospake2) and the point checks to make.
+- **Stopping a worker on Windows answers the agent**: myous for Linux and
+  Windows asks the worker to stop with a `commands/quit` file in its
+  folder (on every system; outside Windows it sends SIGTERM too), and
+  both workers take it as they take SIGTERM: the running command is
+  ended with everything it started, the agent gets "stopped by the
+  owner", and the worker exits. Before, the Windows app ended the worker
+  with `taskkill /T /F` and the agent's request timed out with no answer.
+  The app kills a worker still there after ten seconds, and when the app
+  quits it waits for its workers (ten seconds at most) instead of leaving
+  them behind.
+- **myous for Mac stops a worker it didn't start safely**: the pid in
+  `worker.json` is signalled only while it is still that worker (a myous
+  worker program that began no later than the worker says it started),
+  and SIGTERM is followed by SIGKILL after ten seconds, with the window
+  showing Stopping until it is gone, as for the app's own worker.
+- **The scheduled `ensure` on a Windows laptop**: `myous cron install`
+  now defines the Task Scheduler task in XML (written next to
+  `ensure.pyw` as `ensure-task.xml`) instead of schtasks' defaults, which
+  kept it from starting on battery and stopped it when the laptop went on
+  battery. The task runs on battery, starts when the user logs on as well
+  as every minute, skips a run while the last is still going, catches up
+  after sleep, and ends a run stuck for 10 minutes. It still runs as the
+  user who installed it, only while they are logged on, with no password
+  stored. A task from an earlier version is replaced on the next
+  `myous cron install`; `show` and `remove` work as before.
+
+## v0.7.5
+
+The release with the apps: v0.7.4 reached PyPI, crates.io, the worker
+image and npm's staging on 2026-10-14, then its release run failed two
+tests and made no GitHub release, so the apps are v0.7.5. Everything in
+v0.7.4 is in it, and:
+
+- **Stopping a worker ends a review hook's children too** (Go worker,
+  Unix): the hook now runs in a session of its own, as the Python worker
+  runs it, so ending it (a stop, or its time limit) ends what it started.
+  Before, on Linux, a child of the hook could keep the worker waiting five
+  seconds. Found by the release tests on 2026-10-14.
+- The Windows app's tests pass on a Windows host (a test wrote a Unix
+  path check that Windows reads differently; no change to the app).
 
 ## v0.7.4
 
 The apps carry the new mark, a stop reaches the running command, and the
-clients find their runtimes from a desktop launcher. 2026-10-14.
+clients find their runtimes from a desktop launcher. 2026-10-14; the
+registries have it, the apps are in v0.7.5.
 
 - **The apps' icons follow the myoushq mark**: a Greek mu drawn as one
   path with four dots, white on the brand navy. myous for Mac draws it
