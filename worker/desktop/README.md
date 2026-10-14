@@ -211,6 +211,10 @@ npx tauri build               # Linux: AppImage and deb; Windows: the NSIS insta
 npx tauri dev                 # run it from source
 ```
 
+On a Mac the same app builds too, as a draft port of myous for Mac
+(`worker/mac`): `./make-mac.sh` makes `build/myous.app` and a dmg. What
+works there and what doesn't yet is in `MAC-PORT.md`.
+
 ## Looking at the screens without a worker
 
 The window runs in any browser with made-up data:
