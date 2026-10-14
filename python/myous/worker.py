@@ -117,19 +117,37 @@ class Worker:
 
     async def run(self) -> None:
         """Serve requests until stopped. Reconnects if the relay drops. A
-        SIGTERM or SIGINT (CTRL_BREAK on Windows) stops it: the command
-        running is ended with its process group, the agent that asked gets
-        its answer ("stopped by the owner"), and run returns."""
+        SIGTERM or SIGINT (CTRL_BREAK on Windows) stops it, and so does
+        <home>/commands/quit from the owner's app: the command running is
+        ended with its process group, the agent that asked gets its answer
+        ("stopped by the owner"), and run returns."""
         self.ensure_invite()
         self.write_status()
         main = asyncio.current_task()
         loop = asyncio.get_running_loop()
 
-        def on_signal(signum, frame):
+        def on_signal(signum, frame, why=None):
             if self.stopping.is_set():
                 return
             self.stopping.set()   # run_command and review see it within a quarter second
-            loop.call_soon_threadsafe(lambda: loop.create_task(self._shut_down(main, signum)))
+            loop.call_soon_threadsafe(lambda: loop.create_task(self._shut_down(main, why or f"signal {signum}")))
+
+        quit_file = self.commands_dir / "quit" if self.commands_dir else None
+        watcher = None
+        if quit_file:
+            try:
+                if quit_file.stat().st_mtime < self.started:
+                    quit_file.unlink()   # from before this worker started: not for it
+            except OSError:
+                pass
+
+            async def watch_quit():
+                while not self.stopping.is_set():
+                    await asyncio.sleep(0.25)
+                    if quit_file.exists():
+                        quit_file.unlink(missing_ok=True)
+                        on_signal(None, None, "the owner's app asked (commands/quit)")
+            watcher = loop.create_task(watch_quit())
 
         installed = {}
         for name in ("SIGTERM", "SIGINT", "SIGBREAK"):
@@ -151,16 +169,19 @@ class Worker:
             if not self.stopping.is_set():
                 raise
         finally:
+            if watcher:
+                watcher.cancel()
+                quit_file.unlink(missing_ok=True)   # left by an app that also sent SIGTERM
             for sig, old in installed.items():
                 try:
                     signal.signal(sig, old)
                 except (ValueError, OSError):
                     pass
 
-    async def _shut_down(self, main: asyncio.Task, signum: int) -> None:
+    async def _shut_down(self, main: asyncio.Task, why: str) -> None:
         """After a stop signal: let the request being handled be answered
         (its command is being ended), then end run()."""
-        self.say(f"stopping (signal {signum})")
+        self.say(f"stopping ({why})")
         if self._busy is not None:
             try:
                 await asyncio.wait_for(self._busy.acquire(), SHUTDOWN_WAIT)
@@ -180,10 +201,12 @@ class Worker:
         """Commands from the owner's app: a file per command in
         <home>/commands, removed once done. `new-code` replaces the open
         pairing code (while unpaired); `unpair` drops every contact and
-        offers a new code."""
+        offers a new code; `quit` is run()'s."""
         if not self.commands_dir or not self.commands_dir.is_dir():
             return
         for f in sorted(self.commands_dir.iterdir()):
+            if f.name == "quit":
+                continue
             if f.name.startswith("stop-"):
                 # For the command running now (run_command watches and removes
                 # it); one left behind by a command that had finished expires.

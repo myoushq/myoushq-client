@@ -417,6 +417,10 @@ class WorkerTest(unittest.TestCase):
         self.assertIsNone(self.w.paired)
         log = [json.loads(line) for line in (self.home / "worker.log").read_text().splitlines()]
         self.assertEqual(log[-1]["op"], "unpair")
+        # quit is run()'s (StopSignalTest): the tick leaves it alone.
+        (self.home / "commands" / "quit").touch()
+        self.w.tick()
+        self.assertTrue((self.home / "commands" / "quit").exists())
 
 
 # A worker in a process of its own, as `myous worker` runs: its fake agent
@@ -458,10 +462,10 @@ print("worker: exited", flush=True)
 @unittest.skipIf(processes.WINDOWS, "POSIX signals and process groups")
 class StopSignalTest(unittest.TestCase):
     """Stopping the worker (SIGTERM, as the apps and `docker stop` do; or
-    SIGINT) ends the command it is running with its process group, answers
-    the agent and exits."""
+    SIGINT; or commands/quit, which the apps write too) ends the command it
+    is running with its process group, answers the agent and exits."""
 
-    def stop_with(self, sig):
+    def stop_with(self, sig=None):
         with tempfile.TemporaryDirectory() as tmp:
             home, work = Path(tmp) / "home", Path(tmp) / "work"
             pid_file = Path(tmp) / "sleep.pid"
@@ -477,7 +481,11 @@ class StopSignalTest(unittest.TestCase):
                 pgid = int(pid_file.read_text())
                 os.killpg(pgid, 0)   # running
                 started = time.time()
-                proc.send_signal(sig)
+                if sig is None:   # the owner's app's commands/quit
+                    (home / "commands").mkdir(exist_ok=True)
+                    (home / "commands" / "quit").touch()
+                else:
+                    proc.send_signal(sig)
                 out, _ = proc.communicate(timeout=10)
                 self.assertLess(time.time() - started, 5)
             finally:
@@ -496,12 +504,16 @@ class StopSignalTest(unittest.TestCase):
             self.assertIn("begun", r["stdout"])
             rec = json.loads((home / "requests" / ("ab" * 16 + ".json")).read_text())
             self.assertTrue(rec["stopped"])
+            self.assertFalse((home / "commands" / "quit").exists())
 
     def test_sigterm(self):
         self.stop_with(signal.SIGTERM)
 
     def test_sigint(self):
         self.stop_with(signal.SIGINT)
+
+    def test_quit_file(self):
+        self.stop_with()
 
 
 if __name__ == "__main__":
