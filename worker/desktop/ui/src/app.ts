@@ -553,6 +553,9 @@ function fillRuntime(w: Worker) {
   const list = $("runtime-list");
   const runtimes = step === "get" ? m.options?.runtimes ?? [] : [];
   show(list, runtimes.length > 0 && !installing);
+  // Until the backend says which runtimes this system can have (it asks the
+  // package manager, which can take a while on a cold start).
+  show($("runtime-loading"), step === "get" && !m.options && !installing);
   const listKey = JSON.stringify(runtimes);
   if (list.dataset.key !== listKey) {
     list.dataset.key = listKey;

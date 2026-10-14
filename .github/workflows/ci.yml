@@ -112,6 +112,24 @@ jobs:
       - name: the first-launch buttons do what they say
         run: cd worker/desktop && python clicks.py
       - run: cd worker/desktop && npx tauri build --bundles appimage,deb
+      # The built bundles start and show their window on a virtual display
+      # (worker/desktop/smoke: the same script run.sh runs in Docker).
+      - name: the AppImage opens its window (Xvfb)
+        run: |
+          sudo apt-get install -y -qq --no-install-recommends xvfb x11-utils imagemagick xdotool dbus-x11
+          mkdir -p /tmp/smoke && cd /tmp/smoke
+          "$(ls "$GITHUB_WORKSPACE"/worker/desktop/src-tauri/target/release/bundle/appimage/*.AppImage)" --appimage-extract >/dev/null
+          APP=/tmp/smoke/squashfs-root/AppRun OUT=/tmp/smoke/out TAG=appimage SHOTS="3 10" CLICK="533 349" \
+            bash "$GITHUB_WORKSPACE/worker/desktop/smoke/smoke.sh"
+      - name: the .deb installs and starts
+        run: |
+          sudo apt-get install -y -qq ./worker/desktop/src-tauri/target/release/bundle/deb/*.deb
+          dpkg -L myous | grep -qx /usr/bin/myous-desktop
+          APP=/usr/bin/myous-desktop OUT=/tmp/smoke/out TAG=deb SHOTS=10 XDISPLAY=98 \
+            bash worker/desktop/smoke/smoke.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with: { name: linux-smoke, path: /tmp/smoke/out/, if-no-files-found: ignore }
   desktop-app-windows:
     # myous for Windows: the same app, built on Windows (WebView2), with
     # the NSIS installer that fetches WebView2 if the PC lacks it.
