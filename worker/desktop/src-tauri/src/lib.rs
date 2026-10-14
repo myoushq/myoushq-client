@@ -640,6 +640,26 @@ fn set_counts<R: Runtime>(app: AppHandle<R>, fresh: u32) -> Result<(), String> {
     Ok(())
 }
 
+/// The Dock setting changed (Settings): a Mac shows or hides the app's
+/// Dock icon at once, as myous for Mac does. Nothing elsewhere.
+#[tauri::command]
+fn set_dock<R: Runtime>(app: AppHandle<R>, on: bool) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        app.set_activation_policy(dock_policy(on)).map_err(err)?;
+        // Leaving the Dock deactivates the app; the owner was just in its
+        // window, so keep it in front.
+        if let Some(w) = app.get_webview_window("main") {
+            if w.is_visible().unwrap_or(false) {
+                let _ = w.set_focus();
+            }
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = (app, on);
+    Ok(())
+}
+
 /// The Dock setting, `dock` in the first worker's app.json where myous
 /// for Mac keeps it: off unless the owner turned it on.
 #[cfg(target_os = "macos")]
@@ -807,6 +827,9 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        // On a Mac a LaunchAgent (~/Library/LaunchAgents/myous.plist, run
+        // at login), not SMAppService as myous for Mac uses: the plugin
+        // offers only this and AppleScript.
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
@@ -837,6 +860,7 @@ pub fn run() {
             qr_png,
             set_tray,
             set_counts,
+            set_dock,
             show_window,
             window_visible,
             quit,

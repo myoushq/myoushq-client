@@ -156,6 +156,9 @@ export class Config {
   set notifications(v: boolean) { this.data.notifications = v; }
   get autoUpdate() { return this.data.auto_update !== false; }
   set autoUpdate(v: boolean) { this.data.auto_update = v; }
+  /** A Mac: a Dock icon as well as the menu bar one (myous for Mac's `dock`; off by default). */
+  get dock() { return this.data.dock === true; }
+  set dock(v: boolean) { this.data.dock = v; }
   get showAgents() { return this.data.show_agents !== false; }
   set showAgents(v: boolean) { this.data.show_agents = v; }
   get seenPairedAt() { return num(this.data.seen_paired_at); }

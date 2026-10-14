@@ -56,6 +56,8 @@ export interface Backend {
   setTray(icon: string | null, tooltip: string, items: TrayItem[]): Promise<void>;
   /** A Mac: the count next to the menu bar icon and on the Dock icon (0 clears them). */
   setCounts(fresh: number): Promise<void>;
+  /** A Mac: the Dock icon on or off, at once. */
+  setDock(on: boolean): Promise<void>;
   showWindow(): Promise<void>;
   quit(): Promise<void>;
   logLine(line: string): Promise<void>;
@@ -115,6 +117,7 @@ class TauriBackend implements Backend {
   qrPng(text: string) { return this.invoke("qr_png", { text }); }
   setTray(icon: string | null, tooltip: string, items: TrayItem[]) { return this.invoke("set_tray", { icon, tooltip, items }); }
   setCounts(fresh: number) { return this.invoke("set_counts", { fresh }); }
+  setDock(on: boolean) { return this.invoke("set_dock", { on }); }
   showWindow() { return this.invoke("show_window"); }
   quit() { return this.invoke("quit"); }
   logLine(line: string) { return this.invoke("log_line", { line }); }
@@ -187,6 +190,7 @@ export class PreviewBackend implements Backend {
     return this.rec("setTray", [icon ? "<png>" : null, tooltip], undefined);
   }
   setCounts(...a: [number]) { return this.rec("setCounts", a, undefined); }
+  setDock(...a: [boolean]) { return this.rec("setDock", a, undefined); }
   showWindow() { return this.rec("showWindow", [], undefined); }
   quit() { return this.rec("quit", [], undefined); }
   logLine(...a: [string]) { return this.rec("logLine", a, undefined); }

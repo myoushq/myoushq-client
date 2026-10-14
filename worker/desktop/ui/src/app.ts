@@ -1276,6 +1276,8 @@ async function openSettings() {
     const box = el<HTMLInputElement>("input", { type: "checkbox", checked: on });
     return [el("label", { className: `check ${cls}` }, box, label), box] as const;
   };
+  const mac = info.os === "macos";
+  const [dockRow, dock] = check("Show an icon in the Dock as well as the menu bar", app.dock);
   const [loginRow, login] = check("Open myous at login", m.fake ? false : await be.autostartGet());
   const [notifyRow, notify] = check("Notify me", app.notifications);
   const kinds = notifyKinds.map(([k, label]) => check(label, app.notifies(k), "indent"));
@@ -1295,7 +1297,7 @@ async function openSettings() {
     el("label", { textContent: "Review" }), review,
     ...(w.config.isDirect ? [browserRowEl] : []),
     el("p", { className: "hint", textContent: "Questions arrive as notifications and at the top of the Requests list; an agent waits up to two minutes for your answer." }),
-    loginRow, notifyRow, ...kinds.map(([row]) => row), updateRow, agentsRow,
+    ...(mac ? [dockRow] : []), loginRow, notifyRow, ...kinds.map(([row]) => row), updateRow, agentsRow,
   );
   const r = await dialog({ title: "myous settings", body, buttons: [{ label: "Cancel", value: "no" }, { label: "Save", value: "yes", primary: true }] });
   if (r?.value !== "yes") return;
@@ -1310,8 +1312,11 @@ async function openSettings() {
   app.notifications = notify.checked;
   notifyKinds.forEach(([k], i) => app.setNotifies(k, kinds[i][1].checked));
   app.autoUpdate = update.checked;
+  const dockChanged = mac && dock.checked !== app.dock;
+  if (mac) app.dock = dock.checked;
   if (agents.checked !== app.showAgents) m.agents = null;
   app.showAgents = agents.checked;
+  if (dockChanged) void be.setDock(app.dock).catch((e) => appendLog(`Dock icon: ${e}`));
   if (m.fake) return render();
   await saveConfig(w);
   if (app !== w.config) await saveConfig(m.workers[0]);

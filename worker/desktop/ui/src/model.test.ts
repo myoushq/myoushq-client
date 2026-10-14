@@ -175,6 +175,12 @@ test("app.json keeps keys this app doesn't know", () => {
   c.description = "";
   assert.ok(!("description" in c.data));
   assert.equal(c.effectiveDescription, defaultDescription("y"));
+  // The Mac app's Dock setting, read and written as it keeps it.
+  assert.equal(c.dock, true);
+  c.dock = false;
+  assert.equal(c.data.dock, false);
+  c.data = {};
+  assert.equal(c.dock, false);
 });
 
 const noop = new Proxy({}, { get: () => () => {} }) as MenuActions;
