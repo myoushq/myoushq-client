@@ -1543,6 +1543,16 @@ function wire() {
     if (visible) markSeen();
     render();
   });
+  // A Mac: Allow or Refuse on a question's notification (Rust wrote the answer, as answer_approval does for the window's buttons).
+  be.listen("approval-answered", (p: { home: string; id: string; verdict: string; error: string }) => {
+    const w = m.workers.find((x) => x.home === p.home);
+    const q = w?.approvals.find((a) => str(a.id) === p.id);
+    appendLog(`${p.verdict} (from the notification): ${p.error || (q ? `${str(q.op)} ${what(q)}` : p.id)}`);
+    if (w && q) {
+      w.approvals = w.approvals.filter((a) => a !== q);
+      render();
+    }
+  });
   be.listen("app-log", (p: { home: string; line: string }) => {
     appendLog(p.line);
     if (m.install?.running) m.install.lastLine = p.line;
@@ -1616,8 +1626,22 @@ async function main() {
   sep = info.os === "windows" ? "\\" : "/";
   m = new Model(info.version, info.product_name);
   m.os = info.os;
-  m.notify = (kind, title, body) => {
-    void be.notify(title, body, isUrgent(kind)).catch((e) => appendLog(`notification: ${e}`));
+  m.notify = (kind, title, body, ask) => {
+    const sent = be.notify(title, body, isUrgent(kind), ask ?? null);
+    if (isUrgent(kind) && info.os === "macos") {
+      // A Mac answers a question from its notification (Allow, Refuse); the window comes up only when that can't.
+      sent.then(
+        (buttons) => {
+          if (!buttons) void showWindow();
+        },
+        (e) => {
+          appendLog(`notification: ${e}`);
+          void showWindow();
+        },
+      );
+      return;
+    }
+    void sent.catch((e) => appendLog(`notification: ${e}`));
     if (isUrgent(kind)) void showWindow();
   };
   m.start = (w) => void start(w);

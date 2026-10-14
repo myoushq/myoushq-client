@@ -36,6 +36,16 @@ winreg = "0.56"
 # Tauri builds it with this feature already; listed so the app doesn't rely on that.
 windows = { version = "0.62", features = ["Win32_UI_Shell"] }
 
+# A Mac: notifications with Allow and Refuse (UserNotifications), as
+# myous for Mac has them. All are in the lock already, at these versions,
+# and the features are ones the tree turns on anyway, so nothing else
+# builds again (objc2-user-notifications builds once for a Mac).
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.5"
+block2 = "0.6.2"
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSBundle", "NSError", "NSSet", "NSString"] }
+objc2-user-notifications = { version = "0.3.2", default-features = false, features = ["std", "block2", "bitflags", "UNNotification", "UNNotificationAction", "UNNotificationCategory", "UNNotificationContent", "UNNotificationRequest", "UNNotificationResponse", "UNNotificationSettings", "UNNotificationSound", "UNNotificationTrigger", "UNUserNotificationCenter"] }
+
 [profile.release]
 strip = true
 lto = true

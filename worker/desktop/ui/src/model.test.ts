@@ -118,6 +118,20 @@ test("only a request waiting for an answer is urgent", () => {
   assert.deepEqual(sent, [["approval", true], ["refused", false], ["paired", false], ["update", false], ["stopped", false]]);
 });
 
+test("a question's notification names its worker and request (a Mac answers it from there)", () => {
+  const m = model();
+  const sent: [string, string, unknown][] = [];
+  m.notify = (kind, title, _body, ask) => sent.push([kind, title, ask]);
+  m.load([{ home: "/h/.myous-worker", folder: ".myous-worker", is_default: true, project: "myous-worker", config: { name: "Max's PC" },
+    status: null, status_modified: 0, requests: [], approvals: [{ id: "r5", op: "exec", alias: "Max's Muse", cmd: "ls", asked_at: 1, wait: 120 }],
+    paused: false, review: "all" }]);
+  evaluate(m);
+  evaluate(m);
+  assert.deepEqual(sent, [["approval", "Max's Muse wants to run on Max's PC", { home: "/h/.myous-worker", id: "r5" }]]);
+  m.notifyOnce(m.current, "update-v0.7.0", "title", "body");
+  assert.deepEqual(sent[1], ["update", "title", undefined]);
+});
+
 test("without containers: no runtime needed, every worker runs directly", () => {
   const m = model();
   const written: string[] = [];
