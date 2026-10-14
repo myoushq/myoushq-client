@@ -36,8 +36,15 @@ pub fn download_path() -> &'static str {
     }
 }
 
-/// This computer's short host name, the default worker name.
+/// This computer's name, the default worker name: on a Mac its Computer
+/// Name ("Max's MacBook Air", System Settings › General › Sharing), the
+/// one myous for Mac uses; elsewhere, or if that can't be read, the short
+/// host name.
 pub fn hostname() -> String {
+    #[cfg(target_os = "macos")]
+    if let Some(name) = computer_name() {
+        return name;
+    }
     let h = hostname::get()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_default();
@@ -47,6 +54,16 @@ pub fn hostname() -> String {
     } else {
         h
     }
+}
+
+#[cfg(target_os = "macos")]
+fn computer_name() -> Option<String> {
+    let out = std::process::Command::new("/usr/sbin/scutil")
+        .args(["--get", "ComputerName"])
+        .output()
+        .ok()?;
+    let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (out.status.success() && !name.is_empty() && !name.contains('\n')).then_some(name)
 }
 
 /// The owner's timezone name for the container (MYOUS_TZ).

@@ -680,6 +680,56 @@ fn dock_policy(dock: bool) -> tauri::ActivationPolicy {
     }
 }
 
+/// A Mac: the window's size in points, as the window measured its
+/// content (myous for Mac fits its window the same way), kept on the
+/// screen, its top edge where it was. Nothing elsewhere: there the owner
+/// sizes the window.
+#[tauri::command]
+fn fit_window<R: Runtime>(app: AppHandle<R>, width: f64, height: f64) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    if let Some(w) = app.get_webview_window("main") {
+        let screen = w
+            .current_monitor()
+            .ok()
+            .flatten()
+            .or_else(|| w.primary_monitor().ok().flatten())
+            .map(|m| f64::from(m.work_area().size.height) / m.scale_factor())
+            .unwrap_or(800.0);
+        let (width, height) = fit_size(width, height, screen);
+        let top_left = w.outer_position().ok();
+        w.set_size(tauri::LogicalSize::new(width, height))
+            .map_err(err)?;
+        // AppKit keeps the bottom edge; keep the top, as a Mac window grows downwards.
+        if let Some(p) = top_left {
+            w.set_position(p).map_err(err)?;
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = (app, width, height);
+    Ok(())
+}
+
+/// The size a Mac's window takes: what the content asks, within 400 to
+/// 1000 points wide, and at least 240 high but no more than the screen
+/// shows below the menu bar (less a margin for the title bar).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn fit_size(width: f64, height: f64, screen: f64) -> (f64, f64) {
+    let most = (screen - 60.0).max(240.0);
+    (width.clamp(400.0, 1000.0), height.clamp(240.0, most))
+}
+
+/// A Mac: the app menu's items (the window's ⋯ menu elsewhere), as the
+/// window decided them.
+#[tauri::command]
+fn set_app_menu<R: Runtime>(app: AppHandle<R>, items: Vec<tray::Item>) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    app.set_menu(tray::app_menu(&app, &items).map_err(err)?)
+        .map_err(err)?;
+    #[cfg(not(target_os = "macos"))]
+    let _ = (app, items);
+    Ok(())
+}
+
 #[tauri::command]
 fn show_window<R: Runtime>(app: AppHandle<R>) {
     if let Some(w) = app.get_webview_window("main") {
@@ -863,6 +913,8 @@ pub fn run() {
             set_tray,
             set_counts,
             set_dock,
+            fit_window,
+            set_app_menu,
             show_window,
             window_visible,
             quit,
@@ -888,7 +940,19 @@ pub fn run() {
             // A menu bar app on a Mac (Info.plist's LSUIElement), with a
             // Dock icon only when the owner asked for one, as myous for Mac.
             #[cfg(target_os = "macos")]
-            app.set_activation_policy(dock_policy(dock_setting()));
+            {
+                app.set_activation_policy(dock_policy(dock_setting()));
+                // The menu bar until the window sends its items; and a
+                // window that takes its content's size (fit_window), not
+                // one the owner drags, as myous for Mac.
+                app.set_menu(tray::app_menu(app.handle(), &[])?)?;
+                if let Some(w) = app.get_webview_window("main") {
+                    w.set_min_size(Some(tauri::LogicalSize::new(400.0, 240.0)))?;
+                    w.set_resizable(false)?;
+                    w.set_size(tauri::LogicalSize::new(560.0, 420.0))?;
+                    w.center()?;
+                }
+            }
             // Windows drops the toasts of an app it doesn't know.
             toast::register();
             let icon = app.default_window_icon().cloned().ok_or("no icon")?;
@@ -899,6 +963,7 @@ pub fn run() {
                     label: "Open myous…".into(),
                     enabled: true,
                     separator: false,
+                    accelerator: String::new(),
                     children: vec![],
                 }],
             )?;
@@ -991,6 +1056,23 @@ mod tests {
         };
         assert_eq!(strip(COMPOSE_TEMPLATE), strip(&mac));
         assert!(COMPOSE_TEMPLATE.contains("@VERSION@"));
+    }
+
+    /// A Mac's window: what the content asks, kept on the screen.
+    #[test]
+    fn fit_size_keeps_the_window_on_the_screen() {
+        assert_eq!(fit_size(560.0, 511.0, 900.0), (560.0, 511.0));
+        assert_eq!(fit_size(560.0, 1400.0, 900.0), (560.0, 840.0));
+        assert_eq!(fit_size(560.0, 100.0, 900.0), (560.0, 240.0));
+        assert_eq!(fit_size(5000.0, 300.0, 100.0), (1000.0, 240.0));
+    }
+
+    /// The default worker name: one line, never empty (a Mac's Computer
+    /// Name, else the short host name).
+    #[test]
+    fn host_name_is_one_line() {
+        let h = platform::hostname();
+        assert!(!h.is_empty() && !h.contains('\n'), "{h:?}");
     }
 
     #[test]
