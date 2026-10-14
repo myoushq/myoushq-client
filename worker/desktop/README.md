@@ -187,6 +187,7 @@ machines; a web view has no such need.
 | `src-tauri/src/containers.rs` | Whether containers can run here at all (WSL 2 and virtualization on Windows); turning WSL on. |
 | `src-tauri/src/direct.rs` | Workers without a container: finding the bundled worker, starting and stopping it. |
 | `../build-worker.sh` | Builds that worker (the Go client) into `src-tauri/binaries/myous-worker-<target>`, where Tauri takes it from. |
+| `src-tauri/icons/` | The app icons, made from the mark by `../icons/make-icons.sh` (don't edit them by hand); the tray icon is drawn by `trayIcon` in `ui/src/app.ts`, the same mark on a square in the state's colour. |
 
 ## Building
 

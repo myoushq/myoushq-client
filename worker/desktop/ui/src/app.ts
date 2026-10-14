@@ -852,21 +852,30 @@ function fillSidebar() {
 
 const KIND_COLORS: Record<Kind, string> = { grey: "#8e8e93", blue: "#0a84ff", green: "#2fa84f", orange: "#e8890c", red: "#e5484d" };
 
-/** The tray icon: a coloured circle with an "m", a white dot while a request runs. */
+/** The mark (worker/icons/mark.svg) in its 32 by 32 box: a rounded square, and a mu drawn as one stroke with a dot on each free end. */
+const MARK_SQUARE = "M7 0H25A7 7 0 0 1 32 7V25A7 7 0 0 1 25 32H7A7 7 0 0 1 0 25V7A7 7 0 0 1 7 0Z";
+const MARK_MU = "M7.5 6.5V25.5M7.5 13.5a5.25 5.25 0 0 0 10.5 0M18 6.5V15C18 21.5 22 24 26.25 24";
+const MARK_DOTS: [number, number][] = [[7.5, 6.5], [7.5, 25.5], [18, 6.5], [26.25, 24]];
+
+/** The tray icon: the mark on a square in the state's colour, a white dot in its corner while a request runs. */
 function trayIcon(kind: Kind, dot: boolean): string {
   const c = document.createElement("canvas");
   c.width = c.height = 64;
   const g = c.getContext("2d");
   if (!g) return "";
+  g.setTransform(60 / 32, 0, 0, 60 / 32, 2, 2);
   g.fillStyle = KIND_COLORS[kind];
-  g.beginPath();
-  g.arc(32, 32, 30, 0, Math.PI * 2);
-  g.fill();
-  g.fillStyle = "#ffffff";
-  g.font = "bold 38px system-ui, sans-serif";
-  g.textAlign = "center";
-  g.textBaseline = "middle";
-  g.fillText("m", 32, 30);
+  g.fill(new Path2D(MARK_SQUARE));
+  g.strokeStyle = g.fillStyle = "#ffffff";
+  g.lineWidth = 2.75;
+  g.lineJoin = "round";
+  g.stroke(new Path2D(MARK_MU));
+  for (const [x, y] of MARK_DOTS) {
+    g.beginPath();
+    g.arc(x, y, 3.1, 0, Math.PI * 2);
+    g.fill();
+  }
+  g.setTransform(1, 0, 0, 1, 0, 0);
   if (dot) {
     g.strokeStyle = KIND_COLORS[kind];
     g.lineWidth = 3;
