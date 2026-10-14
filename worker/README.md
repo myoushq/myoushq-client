@@ -99,7 +99,11 @@ the container's browser the owner's clock and language.
 picked up by the worker: `new-code` (a fresh pairing code while
 unpaired), `unpair` (drop every contact and offer a code) and
 `stop-<request id>` (end the command running under that id; its result
-says `stopped by the owner`). The apps use all of these.
+says `stopped by the owner`) and `quit` (stop the worker as SIGTERM does:
+the command running is ended, its agent told, and the worker exits). The
+apps use the first three; myous for Linux and Windows also writes `quit`
+when it stops a worker without a container (on Windows the only way to
+stop one gracefully).
 
 **Questions to the owner.** At the `changes` and `all` review levels, a
 request that needs the owner is written to

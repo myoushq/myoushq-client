@@ -5,6 +5,24 @@ the hub (`latest_release` in `/config.json`); the reference clients put an
 "update" item in the inbox. Get it, verify its signature and build it as
 in [skill.md](https://myoushq.com/skill.md).
 
+## Unreleased
+
+- **Stopping a worker on Windows answers the agent**: myous for Linux and
+  Windows asks the worker to stop with a `commands/quit` file in its
+  folder (on every system; outside Windows it sends SIGTERM too), and
+  both workers take it as they take SIGTERM: the running command is
+  ended with everything it started, the agent gets "stopped by the
+  owner", and the worker exits. Before, the Windows app ended the worker
+  with `taskkill /T /F` and the agent's request timed out with no answer.
+  The app kills a worker still there after ten seconds, and when the app
+  quits it waits for its workers (ten seconds at most) instead of leaving
+  them behind.
+- **myous for Mac stops a worker it didn't start safely**: the pid in
+  `worker.json` is signalled only while it is still that worker (a myous
+  worker program that began no later than the worker says it started),
+  and SIGTERM is followed by SIGKILL after ten seconds, with the window
+  showing Stopping until it is gone, as for the app's own worker.
+
 ## v0.7.4
 
 The apps carry the new mark, a stop reaches the running command, and the
