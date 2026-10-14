@@ -5,10 +5,26 @@ the hub (`latest_release` in `/config.json`); the reference clients put an
 "update" item in the inbox. Get it, verify its signature and build it as
 in [skill.md](https://myoushq.com/skill.md).
 
+## v0.7.5
+
+The release with the apps: v0.7.4 reached PyPI, crates.io, the worker
+image and npm's staging on 2026-10-14, then its release run failed two
+tests and made no GitHub release, so the apps are v0.7.5. Everything in
+v0.7.4 is in it, and:
+
+- **Stopping a worker ends a review hook's children too** (Go worker,
+  Unix): the hook now runs in a session of its own, as the Python worker
+  runs it, so ending it (a stop, or its time limit) ends what it started.
+  Before, on Linux, a child of the hook could keep the worker waiting five
+  seconds. Found by the release tests on 2026-10-14.
+- The Windows app's tests pass on a Windows host (a test wrote a Unix
+  path check that Windows reads differently; no change to the app).
+
 ## v0.7.4
 
 The apps carry the new mark, a stop reaches the running command, and the
-clients find their runtimes from a desktop launcher. 2026-10-14.
+clients find their runtimes from a desktop launcher. 2026-10-14; the
+registries have it, the apps are in v0.7.5.
 
 - **The apps' icons follow the myoushq mark**: a Greek mu drawn as one
   path with four dots, white on the brand navy. myous for Mac draws it
