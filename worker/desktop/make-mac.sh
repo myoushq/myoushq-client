@@ -1,7 +1,6 @@
 #!/bin/sh
-# Build "myous.app" for macOS from this Tauri app (a draft: the port of
-# myous for Mac, see MAC-PORT.md), then pack it with myous for Mac's own
-# scripts, which take any .app.
+# Build "myous.app" (myous for Mac) from this Tauri app (see MAC-PORT.md),
+# then notarize and pack it with worker/mac's scripts, which take any .app.
 #   worker/desktop/make-mac.sh [--universal] [--sign "Developer ID Application: ..."]
 #                              [--key-id ID --issuer UUID --key AuthKey.p8] [--no-dmg]
 # Result: worker/desktop/build/myous.app and build/myous-<version>.dmg
@@ -51,11 +50,22 @@ export PATH
 # the app: Tauri takes binaries/myous-worker-<target>.
 if [ "$UNIVERSAL" = 1 ]; then
 	TARGET=universal-apple-darwin
+	command -v rustup >/dev/null 2>&1 \
+		|| { echo "--universal needs rustup (for the targets aarch64-apple-darwin and x86_64-apple-darwin)" >&2; exit 1; }
+	INSTALLED=$(rustup target list --installed)
 	for t in aarch64-apple-darwin x86_64-apple-darwin; do
-		rustup target list --installed 2>/dev/null | grep -qx "$t" \
+		printf '%s\n' "$INSTALLED" | grep -qx "$t" \
 			|| { echo "--universal needs the Rust target $t (rustup target add $t)" >&2; exit 1; }
 	done
-	sh ../build-worker.sh universal-apple-darwin src-tauri/binaries "$VERSION"
+	# tauri build compiles each architecture on its own, and each
+	# compile's build script copies binaries/myous-worker-<that target>;
+	# the bundle then takes the -universal-apple-darwin one. So all
+	# three, the universal one joined from the other two.
+	for t in aarch64-apple-darwin x86_64-apple-darwin; do
+		sh ../build-worker.sh "$t" src-tauri/binaries "$VERSION"
+	done
+	lipo -create -output src-tauri/binaries/myous-worker-universal-apple-darwin \
+		src-tauri/binaries/myous-worker-aarch64-apple-darwin src-tauri/binaries/myous-worker-x86_64-apple-darwin
 	TARGET_ARGS="--target universal-apple-darwin"
 else
 	TARGET=$(rustc -vV | sed -n 's/^host: //p')
@@ -80,6 +90,18 @@ rm -rf "$APP"
 ditto "$BUILT" "$APP"
 
 WORKER=$APP/Contents/MacOS/myous-worker
+if [ "$UNIVERSAL" = 1 ]; then
+	# Both programs must run on Apple Silicon and Intel.
+	for f in "$APP/Contents/MacOS/myous-desktop" "$WORKER"; do
+		archs=" $(lipo -archs "$f") "
+		for a in arm64 x86_64; do
+			case "$archs" in
+			*" $a "*) ;;
+			*) echo "$f is not universal (it has$archs, no $a)" >&2; exit 1 ;;
+			esac
+		done
+	done
+fi
 if [ -n "$SIGN" ]; then
 	# What notarization wants: hardened runtime and a timestamp, the
 	# worker first (the app's signature seals it). The app spawns only

@@ -95,7 +95,6 @@ parts are behind `cfg(target_os = "macos")` or the window's
   the plugin doesn't offer; using it directly would be a few lines.
   An upgrade from myous for Mac would also need to remove the old
   login item, or the owner sees two.
-- **Signing and notarizing in CI** (a `release.yml` job; see below).
 - The Option-held Advanced menu (it is always there), separate Settings
   and log windows, `--snapshot` and `--browser-test`.
 
@@ -133,11 +132,42 @@ wide, 50 with a count) were checked through the window list instead.
 Playwright's WebKit hung at launch on that Intel Mac, so
 `screens.py --engine webkit` is untested there.
 
-A CI job would need: a macOS runner; Node 22, Rust with both Mac
-targets, Go; `./make-mac.sh --universal --sign "$IDENTITY" --key-id …
---issuer … --key …` with the certificate imported into a temporary
-keychain as the Mac job does now; then the dmg uploaded as
-`myous-<version>.dmg`.
+`--universal` builds the worker for each architecture and joins them
+with `lipo` into `binaries/myous-worker-universal-apple-darwin`: `tauri
+build --target universal-apple-darwin` compiles each architecture on its
+own, and each compile's build script copies the worker for its own
+target (`-aarch64-apple-darwin`, `-x86_64-apple-darwin`), while the
+bundle takes the universal one. It stops with the `rustup target add`
+line when a target is missing, and fails unless both programs in the
+app hold arm64 and x86_64.
+
+## Release
+
+The release builds myous for Mac from this app (`release.yml`, job
+`mac-app`, "macOS app (signed and notarized when the secrets exist)",
+macOS 15 runner, 90 minutes): Node 22, Rust stable with
+`aarch64-apple-darwin` and `x86_64-apple-darwin`, Go from `go/go.mod`;
+the version in `package.json` checked against the tag; `npm ci && npm
+test && npm run build:ui` and `cargo test` on the runner; the Developer
+ID certificate imported into a throwaway keychain as before; then
+
+```sh
+./make-mac.sh --universal --no-dmg --sign "$identity"   # ad hoc, without --sign, when the secrets are missing
+worker/mac/notarize.sh worker/desktop/build/myous.app --key-id … --issuer … --key …
+worker/mac/make-dmg.sh worker/desktop/build/myous.app out/myous-$TAG.dmg --sign "$identity"
+```
+
+and `out/` (the dmg and `SHA256SUMS`) uploaded as the artifact
+`mac-app`, which the `github-release` job attaches as before. The asset
+keeps its name, `myous-<tag>.dmg`, which is what the hub's
+`/download/mac` serves. `worker/mac` is no longer built by the release
+or by `ci.yml`, whose macOS job now runs `npm test`, `cargo test` and an
+ad-hoc `make-mac.sh` (the runner's architecture only, with its dmg).
+
+Not checked before a tag: the universal build itself (the draft's Mac
+lacked the disk for it), signing with the Developer ID and
+notarization of this app. The first release run is the test; if
+notarization rejects the app, Apple's log is in the job's output.
 
 ## Differences a Mac user would notice
 

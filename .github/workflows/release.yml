@@ -286,6 +286,10 @@ jobs:
           echo "signed $IMAGE@$digest"
 
   mac-app:
+    # myous for Mac: the Tauri app of worker/desktop (the same code as
+    # myous for Linux and Windows), one universal app for Apple Silicon
+    # and Intel. Packed and notarized with worker/mac's scripts; the
+    # asset name is what the hub's /download/mac serves.
     name: macOS app (signed and notarized when the secrets exist)
     needs: [verify, test-python]
     runs-on: macos-15
@@ -295,8 +299,22 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with: { ref: "refs/tags/${{ env.TAG }}" }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with: { node-version: "22" }
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        with: { targets: "aarch64-apple-darwin,x86_64-apple-darwin" }
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with: { go-version-file: go/go.mod }
+      - name: test on this Mac
+        run: |
+          set -eu
+          # The Go worker the app carries, of the tag's version (the script
+          # checks): any Rust build needs it in place, cargo test too.
+          sh worker/build-worker.sh host worker/desktop/src-tauri/binaries "${TAG#v}"
+          cd worker/desktop
+          test "$(node -p 'require("./package.json").version')" = "${TAG#v}"
+          npm ci && npm test && npm run build:ui   # cargo test needs the built UI, as tauri build does
+          (cd src-tauri && cargo test)
       - name: import the Developer ID certificate into a throwaway keychain
         if: env.HAVE_CERT == 'true'
         env:
@@ -315,12 +333,14 @@ jobs:
           security list-keychains -d user -s build.keychain $(security list-keychains -d user | tr -d '"')
           rm /tmp/cert.p12
           security find-identity -v -p codesigning build.keychain
-      - name: build and sign
+      - name: build (universal) and sign
         env:
           MAC_SIGN_IDENTITY: ${{ secrets.MAC_SIGN_IDENTITY }}
         run: |
           set -eu
-          cd worker/mac
+          cd worker/desktop
+          # make-mac.sh builds the worker for both architectures itself and
+          # signs the worker, then the app; the disk image is made below.
           if [ "$HAVE_CERT" = true ]; then
             # The identity as the keychain names it; the secret is a fallback.
             identity=$(security find-identity -v -p codesigning build.keychain | grep -o '"Developer ID Application: [^"]*"' | head -1 | tr -d '"')
@@ -328,9 +348,9 @@ jobs:
             [ -n "$identity" ] || { echo "no Developer ID Application identity in the keychain" >&2; exit 1; }
             echo "signing as $identity"
             echo "SIGN_IDENTITY=$identity" >> "$GITHUB_ENV"
-            ./make-app.sh --no-config --version "${{ needs.verify.outputs.version }}" --sign "$identity"
+            ./make-mac.sh --universal --no-dmg --sign "$identity"
           else
-            ./make-app.sh --no-config --version "${{ needs.verify.outputs.version }}"
+            ./make-mac.sh --universal --no-dmg
           fi
       - name: notarize and staple
         if: env.HAVE_CERT == 'true'
@@ -341,16 +361,16 @@ jobs:
         run: |
           set -eu
           echo "$NOTARY_KEY" | base64 --decode > /tmp/notary.p8
-          worker/mac/notarize.sh worker/mac/build/myous.app --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" --key /tmp/notary.p8
+          worker/mac/notarize.sh worker/desktop/build/myous.app --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" --key /tmp/notary.p8
           rm /tmp/notary.p8
       - name: disk image and checksum
         run: |
           set -eu
           mkdir -p out
           if [ "$HAVE_CERT" = true ]; then
-            worker/mac/make-dmg.sh worker/mac/build/myous.app "out/myous-$TAG.dmg" --sign "$SIGN_IDENTITY"
+            worker/mac/make-dmg.sh worker/desktop/build/myous.app "out/myous-$TAG.dmg" --sign "$SIGN_IDENTITY"
           else
-            worker/mac/make-dmg.sh worker/mac/build/myous.app "out/myous-$TAG.dmg"
+            worker/mac/make-dmg.sh worker/desktop/build/myous.app "out/myous-$TAG.dmg"
           fi
           (cd out && shasum -a 256 *.dmg > SHA256SUMS)
           cat out/SHA256SUMS

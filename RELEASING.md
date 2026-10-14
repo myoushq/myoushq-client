@@ -36,9 +36,10 @@ Current release key: `SHA256:PevPZ8ORUnoGw3hg9Febw7KjXxCUv+sMkAXzw+rjQuk` (ED255
 2. Bump versions (`python/pyproject.toml`, `python/myous/__init__.py`,
    `typescript/package.json` and `npm-shrinkwrap.json`, `rust/Cargo.toml`,
    `go/notices.go`, `worker/desktop/package.json` and
-   `worker/desktop/src-tauri/Cargo.toml` with its `Cargo.lock`; the Mac
-   app takes the Python version), and add the release to `docs/changelog.md`: agents read
-   it when their client tells them about the new release.
+   `worker/desktop/src-tauri/Cargo.toml` with its `Cargo.lock`; the apps
+   for Mac, Linux and Windows all take `worker/desktop/package.json`'s),
+   and add the release to `docs/changelog.md`: agents read it when
+   their client tells them about the new release.
 3. Tag and sign:
 
    ```sh
@@ -54,9 +55,12 @@ Current release key: `SHA256:PevPZ8ORUnoGw3hg9Febw7KjXxCUv+sMkAXzw+rjQuk` (ED255
    an attacker), runs the tests and the audit, and publishes: the Python
    package to PyPI, the npm package, the `myous-pake` and `myous` crates,
    the worker image to `ghcr.io/myoushq/worker` (amd64 and arm64, signed
-   with cosign), and a GitHub release with the macOS app (signed and
-   notarized when the Apple secrets exist), the Python wheel and sdist,
-   the hash-pinned lock and `SHA256SUMS`. Registries are reached with
+   with cosign), and a GitHub release with myous for Mac
+   (`myous-<tag>.dmg`: `worker/desktop/make-mac.sh --universal` on a
+   macOS runner, then `worker/mac/notarize.sh` and `make-dmg.sh`; signed
+   and notarized when the Apple secrets exist), myous for Linux and
+   Windows, the Python wheel and sdist, the hash-pinned lock and
+   `SHA256SUMS`. Registries are reached with
    their trusted publishing (OpenID Connect): no tokens are stored. Every
    step skips what is already published, so the workflow can be re-run
    for a tag from the Actions tab ("Run workflow", give the tag) after a

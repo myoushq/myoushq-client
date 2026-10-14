@@ -5,6 +5,24 @@ the hub (`latest_release` in `/config.json`); the reference clients put an
 "update" item in the inbox. Get it, verify its signature and build it as
 in [skill.md](https://myoushq.com/skill.md).
 
+## Unreleased
+
+- **myous for Mac is now the Tauri app** of myous for Linux and Windows
+  (`worker/desktop`): one codebase for the three systems, built
+  universal (Apple Silicon and Intel, macOS 13 or newer), signed and
+  notarized, at the same download (`/download/mac`,
+  `myous-<version>.dmg`). It reads the same worker folder, so an
+  existing worker carries on. What a Mac user notices: the window is
+  drawn by the system's web view and dressed as a Mac window (its colours, push buttons and striped table, dark mode and
+  the accent colour from System Settings), with Settings and the logs
+  inside it rather than in windows of their own; the menu bar icon, the
+  count of new requests and the Dock setting are as before; open at login
+  is a LaunchAgent, listed under "Allow in the Background" in System
+  Settings, not a login item; and new on the Mac: the first-launch
+  checks, the cards that install a container runtime with Homebrew, and
+  the worker items in the app menu. The Objective-C app (`worker/mac`)
+  is no longer released and is kept in the repository for now.
+
 ## v0.7.4
 
 The apps carry the new mark, a stop reaches the running command, and the

@@ -148,12 +148,22 @@ jobs:
       - run: cd worker/desktop/src-tauri && cargo test -- --nocapture
       - run: cd worker/desktop && npx tauri build --bundles nsis
   mac-app:
+    # myous for Mac: the same app (worker/desktop) built on macOS, for
+    # this runner's architecture only (the release builds it universal),
+    # signed ad hoc, and packed into a disk image with worker/mac's script.
     runs-on: macos-15
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with: { node-version: "22" }
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with: { go-version-file: go/go.mod }
-      - run: cd worker/mac && ./make-app.sh --no-config && ./make-dmg.sh build/myous.app build/test.dmg
+      - run: sh worker/build-worker.sh host worker/desktop/src-tauri/binaries "$(node -p 'require("./worker/desktop/package.json").version')"
+      - run: cd worker/desktop && npm ci && npm test && npm run build:ui
+      - run: cd worker/desktop/src-tauri && cargo test -- --nocapture
+      - run: cd worker/desktop && ./make-mac.sh
   audit:
     runs-on: ubuntu-24.04
     steps:
