@@ -6,7 +6,6 @@
 //! (accepting a pairing code), with --added-by owner so the agent can tell.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::Duration;
 
 use serde::Serialize;
@@ -92,7 +91,7 @@ pub fn binary_for(home: &Path) -> String {
 /// Runs the client as this agent (MYOUS_HOME set, in its folder) and
 /// returns the exit status and the combined output.
 pub fn run_sync(home: &str, binary: &str, args: &[String], timeout: Duration) -> (i32, String) {
-    let mut cmd = Command::new(binary);
+    let mut cmd = crate::engine::command(binary);
     cmd.args(args).current_dir(home).env("MYOUS_HOME", home);
     run_capture(cmd, timeout)
 }

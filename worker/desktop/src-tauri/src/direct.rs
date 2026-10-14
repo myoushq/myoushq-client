@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -117,7 +117,7 @@ pub fn start(
         .append(true)
         .open(paths::worker_log(&dir))
         .map_err(|e| e.to_string())?;
-    let mut cmd = Command::new(&args[0]);
+    let mut cmd = crate::engine::command(&args[0]);
     cmd.args(&args[1..])
         .current_dir(&dir)
         .env("MYOUS_HOME", &dir)
@@ -157,7 +157,7 @@ pub fn start(
 /// Ends a process and what it started (taskkill /T on Windows, SIGTERM elsewhere).
 fn end(pid: u32) {
     let pid = pid.to_string();
-    let mut cmd = Command::new(if cfg!(windows) { "taskkill" } else { "kill" });
+    let mut cmd = crate::engine::command(if cfg!(windows) { "taskkill" } else { "kill" });
     if cfg!(windows) {
         cmd.args(["/T", "/F", "/PID", &pid]);
     } else {
@@ -214,6 +214,7 @@ pub fn log_tail(home: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
 
     fn temp(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("myous-{name}-{}", std::process::id()));

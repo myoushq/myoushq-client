@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -192,7 +192,7 @@ fn app_path(exe: &str) -> Option<String> {
         return None;
     }
     for root in ["HKCU", "HKLM"] {
-        let mut cmd = Command::new("reg");
+        let mut cmd = crate::engine::command("reg");
         cmd.args([
             "query",
             &format!(r"{root}\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\{exe}"),
@@ -306,7 +306,7 @@ pub fn find_python_with(
 }
 
 fn probe_python(p: &Path, args: &[String]) -> Option<String> {
-    let mut cmd = Command::new(p);
+    let mut cmd = crate::engine::command(p);
     cmd.args(args);
     let (status, out) = run_capture(cmd, Duration::from_secs(15));
     (status == 0).then_some(out)
@@ -339,7 +339,7 @@ pub fn playwright_version(python: &Path) -> String {
     if !python.is_file() {
         return String::new();
     }
-    let mut cmd = Command::new(python);
+    let mut cmd = crate::engine::command(python);
     cmd.args([
         "-c",
         "import importlib.metadata as m, playwright.sync_api; print(m.version('playwright'))",
@@ -486,7 +486,7 @@ pub fn env_works(python: &Path) -> bool {
     if !python.is_file() {
         return false;
     }
-    let mut cmd = Command::new(python);
+    let mut cmd = crate::engine::command(python);
     cmd.args(["-c", "import sys"]);
     run_capture(cmd, Duration::from_secs(15)).0 == 0
 }
@@ -735,7 +735,7 @@ pub fn launch(home: &Path, spec: Spec, log: Log) -> Result<u32, String> {
     let key = home.to_string_lossy().to_string();
     fs::create_dir_all(&spec.profile).map_err(|e| e.to_string())?;
     let out = fs::File::create(paths::browser_log(home)).map_err(|e| e.to_string())?;
-    let mut cmd = Command::new(&spec.exe);
+    let mut cmd = crate::engine::command(&spec.exe);
     cmd.args(args(&spec, crate::platform::os()))
         .stdin(Stdio::null())
         .stdout(out.try_clone().map_err(|e| e.to_string())?)
@@ -914,7 +914,7 @@ fn pid_alive(pid: u32) -> bool {
         );
         out.split_whitespace().any(|w| w == pid.to_string())
     } else {
-        let mut cmd = Command::new("kill");
+        let mut cmd = crate::engine::command("kill");
         cmd.args(["-0", &pid.to_string()]);
         run_capture(cmd, Duration::from_secs(5)).0 == 0
     }
@@ -929,7 +929,7 @@ fn end_gracefully(pid: u32, mut child: Option<&mut Child>) {
     };
     let p = pid.to_string();
     let signal = |force: bool| {
-        let mut cmd = Command::new(if cfg!(windows) { "taskkill" } else { "kill" });
+        let mut cmd = crate::engine::command(if cfg!(windows) { "taskkill" } else { "kill" });
         if cfg!(windows) {
             cmd.args(["/T"]);
             if force {
@@ -1069,7 +1069,7 @@ pub fn show(home: &Path, worker: &str, log: Log) -> Result<String, String> {
             Ok(true) => return Ok("brought to the front".into()),
             Ok(false) => {
                 if let Some((spec, _)) = &known {
-                    let mut cmd = Command::new(&spec.exe);
+                    let mut cmd = crate::engine::command(&spec.exe);
                     cmd.arg(format!("--user-data-dir={}", spec.profile.display()))
                         .arg(&spec.start_url)
                         .stdin(Stdio::null())

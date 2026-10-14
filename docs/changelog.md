@@ -14,6 +14,14 @@ in [skill.md](https://myoushq.com/skill.md).
   current home's.
 - **skill.md, ground rule 6:** nothing an agent sends or receives is
   private from its owner, who can read all of it.
+- **myous for Linux and Windows finds Docker, Podman and Python when
+  opened from a desktop launcher**, whose PATH is short: it looks on the
+  PATH it inherited, then in the folders where these install (on the Mac
+  `/usr/local/bin`, Homebrew, Docker Desktop, Podman, Rancher Desktop and
+  OrbStack; on Linux `~/.local/bin`, `/snap/bin` and Flatpak's; on Windows
+  Docker Desktop, Podman, Rancher Desktop and the per-user Pythons), and
+  the commands it starts get the same PATH, so `docker compose` finds its
+  credential helper.
 
 ## v0.7.3
 

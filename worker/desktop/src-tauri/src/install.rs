@@ -63,7 +63,7 @@ pub fn detect() -> Tools {
     // Known, and for Debian's docker-compose only version 2 (version 1,
     // in Debian 12, is a separate program, not `docker compose`).
     let apt_knows = |pkg: &str| {
-        let mut cmd = std::process::Command::new("apt-cache");
+        let mut cmd = crate::engine::command("apt-cache");
         cmd.args(["show", "--no-all-versions", pkg]);
         let (status, out) = crate::engine::run_capture(cmd, Duration::from_secs(15));
         status == 0 && (pkg != "docker-compose" || out.lines().any(|l| l.starts_with("Version: 2")))
