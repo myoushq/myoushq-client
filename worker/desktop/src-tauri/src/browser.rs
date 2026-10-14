@@ -1421,14 +1421,17 @@ pub fn show_with(
         // A Mac: out of hiding and to the front, as myous for Mac's Show
         // browser does; and no more hiding while it starts.
         #[cfg(target_os = "macos")]
-        if pid != 0 {
+        let shown = pid != 0 && {
             if let Some(p) = procs().lock().unwrap().get_mut(&key) {
                 p.shown = true;
             }
-            mac::show(pid);
-        }
+            mac::show(pid)
+        };
         #[cfg(not(target_os = "macos"))]
-        let _ = pid;
+        let shown = {
+            let _ = pid;
+            false
+        };
         allow_foreground();
         match activate(port) {
             Ok(true) => return Ok("brought to the front".into()),
@@ -1451,6 +1454,8 @@ pub fn show_with(
                     return Ok("opened a window".into());
                 }
             }
+            // A Mac's browser came forward through AppKit; its page can wait.
+            Err(_) if shown => return Ok("brought to the front".into()),
             Err(e) => log(format!("browser: couldn't bring it forward: {e}")),
         }
     }
@@ -1593,13 +1598,16 @@ pub mod mac {
         }
     }
 
-    /// Out of hiding, every window to the front.
+    /// Out of hiding, every window to the front; false when no app has
+    /// that pid.
     #[allow(deprecated)]
-    pub fn show(pid: u32) {
-        if let Some(app) = running_app(pid) {
-            app.unhide();
-            app.activateWithOptions(NSApplicationActivationOptions::ActivateAllWindows);
-        }
+    pub fn show(pid: u32) -> bool {
+        let Some(app) = running_app(pid) else {
+            return false;
+        };
+        app.unhide();
+        app.activateWithOptions(NSApplicationActivationOptions::ActivateAllWindows);
+        true
     }
 
     /// The DevTools port opens before the window exists, and the window
@@ -1729,6 +1737,111 @@ pub mod mac {
                 "com.google.Chrome"
             );
             assert_eq!(pick(Vec::new(), ""), None);
+        }
+
+        /// The real thing on this Mac, by hand: `cargo test -- --ignored
+        /// real_browser --nocapture`. A container worker's browser for a
+        /// temporary worker folder, under the sandbox: browser.json and its
+        /// DevTools port, hidden after launch, shown and hidden again,
+        /// Show browser, the sandbox keeping it to its own folder,
+        /// then stopped.
+        #[test]
+        #[ignore]
+        fn real_browser() {
+            // In the owner's home, as a worker folder is (~/.myous-worker).
+            let home = paths::user_home()
+                .join("Library/Caches")
+                .join(format!("myous-real-browser-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&home);
+            fs::create_dir_all(&home).unwrap();
+            let log: Log = Arc::new(|l| println!("{l}"));
+            // Stopped however the test ends.
+            struct Stop(PathBuf);
+            impl Drop for Stop {
+                fn drop(&mut self) {
+                    crate::browser::stop(&self.0);
+                }
+            }
+            let _stop = Stop(home.clone());
+            let started = ensure(&home, "Real Test", "", true, log.clone()).unwrap();
+            println!("ensure: {started}");
+            let json = paths::browser_json(&home);
+            let t = Instant::now();
+            while !json.exists() && t.elapsed() < Duration::from_secs(30) {
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            let j: Value = serde_json::from_slice(&fs::read(&json).expect("browser.json")).unwrap();
+            println!("browser.json: {j}");
+            assert_eq!(j["host"], "host.docker.internal");
+            assert!(j.get("kind").is_none());
+            let port = j["port"].as_u64().unwrap() as u16;
+            let pid = j["pid"].as_u64().unwrap() as u32;
+            println!(
+                "/json/version: {}",
+                get_text(&format!("http://127.0.0.1:{port}/json/version")).unwrap()
+            );
+            assert!(fs::read_to_string(home.join("browser.sb"))
+                .unwrap()
+                .contains("(deny process-exec*)"));
+            let hidden = || running_app(pid).map(|a| a.isHidden()).unwrap_or(false);
+            std::thread::sleep(Duration::from_secs(5));
+            assert!(running_app(pid).is_some(), "an app for pid {pid}");
+            assert!(hidden(), "hidden after launch");
+            set_hidden(&home, false);
+            std::thread::sleep(Duration::from_secs(1));
+            assert!(!hidden(), "shown");
+            set_hidden(&home, true);
+            std::thread::sleep(Duration::from_secs(1));
+            assert!(hidden(), "hidden again");
+            let t = Instant::now();
+            assert_eq!(
+                show_container(&home, "Real Test", "", log.clone()).unwrap(),
+                "brought to the front"
+            );
+            println!("Show browser took {:?}", t.elapsed());
+            std::thread::sleep(Duration::from_secs(1));
+            assert!(!hidden(), "Show browser shows it");
+            assert_eq!(
+                ensure(&home, "Real Test", "", true, log.clone()).unwrap(),
+                "running"
+            );
+            // The sandbox: its start page loads; the worker folder's other
+            // files, in the owner's home, don't (a page that can't load is
+            // titled with its address).
+            let open = |url: &str| -> String {
+                let r = local_agent(Duration::from_secs(5))
+                    .put(&format!("http://127.0.0.1:{port}/json/new?{url}"))
+                    .send_empty()
+                    .unwrap()
+                    .body_mut()
+                    .read_to_string()
+                    .unwrap();
+                let id = serde_json::from_str::<Value>(&r).unwrap()["id"]
+                    .as_str()
+                    .unwrap()
+                    .to_string();
+                std::thread::sleep(Duration::from_secs(2));
+                let list: Value = serde_json::from_str(
+                    &get_text(&format!("http://127.0.0.1:{port}/json/list")).unwrap(),
+                )
+                .unwrap();
+                let title = list
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|t| t["id"] == id.as_str())
+                    .map(|t| t["title"].as_str().unwrap_or("").to_string())
+                    .unwrap_or_default();
+                println!("{url}: {title:?}");
+                title
+            };
+            let own = open(&file_url(&paths::browser_dir(&home).join("start.html")));
+            let sb = file_url(&home.join("browser.sb"));
+            assert_eq!(own, "myous · Real Test");
+            assert_eq!(open(&sb), sb);
+            crate::browser::stop(&home);
+            assert!(!json.exists() && !port_answers(port) && !pid_alive(pid));
+            fs::remove_dir_all(&home).unwrap();
         }
 
         /// What this Mac has, printed; the probe answers either way.
