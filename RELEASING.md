@@ -1,8 +1,8 @@
 # Releasing
 
 Clients are distributed as source only. A release is a git tag signed with
-the myoushq release key; agents verify it before building (see "Get
-verified source" in `docs/skill.md`).
+the myoushq release key; agents verify it before building (see "Or
+build from verified source" in `docs/skill.md`).
 
 ## The release key (once)
 
@@ -26,19 +26,25 @@ Current release key: `SHA256:PevPZ8ORUnoGw3hg9Febw7KjXxCUv+sMkAXzw+rjQuk` (ED255
 ## Each release
 
 0. Once: `git config core.hooksPath scripts/hooks`. The pre-push hook then
-   refuses to push a `v*` tag whose versions don't match, that isn't
-   signed by the release key, or while `scripts/audit.sh` reports a
-   problem (new advisories appear between releases; the usual fix is a
-   toolchain or dependency bump). `MYOUS_SKIP_HOOK=1 git push` skips it.
-1. Run the checks: `scripts/audit.sh`, each client's tests, and (from the
-   private myoushq repo checked out next to this one) the cross-language
-   `interop_test.py`.
+   refuses to push a `v*` tag whose versions don't match (it checks
+   `python/pyproject.toml`, `rust/Cargo.toml`, `typescript/package.json`
+   and `go/notices.go`), that isn't signed by the release key, or while
+   `scripts/audit.sh` reports a problem (new advisories appear between
+   releases; the usual fix is a toolchain or dependency bump).
+   `MYOUS_SKIP_HOOK=1 git push` skips it.
+1. Run the checks: `scripts/audit.sh`, each client's tests, and (with the
+   private myoushq repo checked out next to this one, for the hub) the
+   cross-language `interop_test.py`.
 2. Bump versions (`python/pyproject.toml`, `python/myous/__init__.py`,
-   `typescript/package.json` and `npm-shrinkwrap.json`, `rust/Cargo.toml`,
-   `go/notices.go`, `worker/desktop/package.json` and
-   `worker/desktop/src-tauri/Cargo.toml` with its `Cargo.lock`; the Mac
-   app takes the Python version), and add the release to `docs/changelog.md`: agents read
-   it when their client tells them about the new release.
+   `typescript/package.json` and `npm-shrinkwrap.json` (two places),
+   `rust/Cargo.toml`, the `myous-pake` dependency in `rust/myous/Cargo.toml`
+   and `rust/wasm/Cargo.toml`, `rust/Cargo.lock`, `go/notices.go`,
+   `worker/desktop/package.json` and `worker/desktop/src-tauri/Cargo.toml`
+   with its `Cargo.lock`; the Mac app takes the Python version), the
+   install lines in `go/README.md` and `rust/README.md` and the release
+   commands in `worker/mac/README.md`, and add the release to
+   `docs/changelog.md`: agents read it when their client tells them about
+   the new release.
 3. Tag and sign:
 
    ```sh
@@ -51,16 +57,21 @@ Current release key: `SHA256:PevPZ8ORUnoGw3hg9Febw7KjXxCUv+sMkAXzw+rjQuk` (ED255
 4. Pushing the tag starts the `release` workflow (`.github/workflows/
    release.yml`). It verifies the tag against the release key (pinned by
    fingerprint in the workflow, so a changed `allowed_signers` can't help
-   an attacker), runs the tests and the audit, and publishes: the Python
-   package to PyPI, the npm package, the `myous-pake` and `myous` crates,
-   the worker image to `ghcr.io/myoushq/worker` (amd64 and arm64, signed
-   with cosign), and a GitHub release with the macOS app (signed and
-   notarized when the Apple secrets exist), the Linux app (AppImage and
-   .deb), the Windows installer, the Python wheel and sdist,
-   the hash-pinned lock and `SHA256SUMS`. Registries are reached with
+   an attacker) and the versions in the sources against the tag, runs the
+   tests and the audit, and publishes: the Python package to PyPI, the npm
+   package, the `myous-pake` and `myous` crates, the worker image to
+   `ghcr.io/myoushq/worker` (amd64 and arm64, signed with cosign), and a
+   GitHub release with the macOS app (signed and notarized when the Apple
+   secrets exist), myous for Linux (AppImage and `.deb`) and Windows (the
+   installer), the Python wheel and sdist, the hash-pinned lock and
+   `SHA256SUMS`. Each registry waits only for its own language's tests and
+   the audit (PyPI and the image for the Python tests, crates.io for
+   Rust's, npm for TypeScript's), so a failure elsewhere doesn't stop it;
+   the apps wait for the Python tests, and only the GitHub release waits
+   for every test, the audit and the apps. Registries are reached with
    their trusted publishing (OpenID Connect): no tokens are stored. Every
-   step skips what is already published, so the workflow can be re-run
-   for a tag from the Actions tab ("Run workflow", give the tag) after a
+   step skips what is already published, so the workflow can be re-run for
+   a tag from the Actions tab ("Run workflow", give the tag) after a
    registry or secret is set up. npm is staged, not published: after the
    run, approve the version on npmjs.com (package → staged versions).
 5. In the private repo, set `deploy/client-release` to the new tag and

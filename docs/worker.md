@@ -242,9 +242,9 @@ outcome and output (the newest 200). The apps show all of this.
   question with Allow and Refuse; no answer within 120 seconds refuses
   the request with a reason the agent sees.
 - **Stop:** `docker compose -p myous-worker down` (keeps identity, logins
-  and files). A command still running is ended and its agent told
-  "stopped by the owner" first. Start it again with the `up -d` command
-  from section 3.
+  and files). A command the worker is running is ended, and the agent
+  that sent it gets the answer "stopped by the owner (the worker is
+  shutting down)". Start it again with the `up -d` command from section 3.
 - **Restart on reboot:** the container is set to restart with Docker;
   the runtime must start at login (Docker Desktop's setting; for Docker
   Engine, `sudo systemctl enable docker`).
@@ -319,8 +319,9 @@ no Swift toolchain), and Go for the worker it carries. Details in
 `worker/desktop` is myous for Linux and Windows, the same screens over
 the same worker folder, built with Tauri (Rust, and the window in the
 system's web view): build the worker it carries with
-`worker/build-worker.sh`, then `npm ci && npx tauri build` there, on the
-system you build for. Details in
+`worker/build-worker.sh host worker/desktop/src-tauri/binaries`, then
+`npm ci && npx tauri build` in `worker/desktop`, on the system you build
+for. Details in
 [worker/desktop/README.md](https://github.com/myoushq/myoushq-client/blob/main/worker/desktop/README.md).
 
 ## When something's wrong

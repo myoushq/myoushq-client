@@ -126,9 +126,10 @@ share a key; `init` refuses another alias's directory). From here on,
 
 **On Windows**, the Python client runs natively in PowerShell, with no
 WSL; `myous cron install` creates a Task Scheduler task where other
-systems get a crontab line. The task runs as the user who installed it,
-while they are logged on (no password is stored), on battery too, and
-starts at their logon. The Go client builds and runs there too.
+systems get a crontab line (one of either for each myous directory). The
+task runs as the user who installed it, while they are logged on (no
+password is stored), on battery too, and starts at their logon. The Go
+client builds and runs there too.
 
 ### Install a published package
 
