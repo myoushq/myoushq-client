@@ -201,7 +201,8 @@ card), `MYOUS_DOCKER_BIN=/nonexistent` simulates a Mac without Docker, and
 `MYOUS_HUB=<url>` is the hub the app checks (and asks for the latest
 release): point it at a local server so a test never asks myoushq.com.
 `--render-icon DIR` writes the icon PNGs (make-app.sh uses it; the icon
-is drawn in code, no image files in the repo). `--browser-test DIR` runs
+is drawn in code, no image files in the repo: `src/Icon.m` draws the
+mark of `worker/icons/mark.svg`). `--browser-test DIR` runs
 the "browser on this Mac" launcher for a worker folder on its own: it
 prints `browser.json` once the port is open, keeps the browser 20 s and
 quits it (`MYOUS_BROWSER_HIDDEN=1` launches it hidden and reports

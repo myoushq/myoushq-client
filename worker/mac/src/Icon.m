@@ -1,24 +1,54 @@
 #import "Icon.h"
 
+// The mark (worker/icons/mark.svg): a Greek mu drawn as one stroke with a
+// dot on each of its four free ends, white on a rounded square. The
+// geometry is the SVG's, in its 32 by 32 box with y down; drawMark maps it
+// onto `square` (y up, as AppKit draws).
+static void drawMark(NSRect square, NSColor *background, NSColor *foreground) {
+    CGFloat k = square.size.width / 32;
+    NSPoint (^at)(CGFloat, CGFloat) = ^NSPoint(CGFloat x, CGFloat y) {
+        return NSMakePoint(NSMinX(square) + x * k, NSMaxY(square) - y * k);
+    };
+    [background setFill];
+    [[NSBezierPath bezierPathWithRoundedRect:square xRadius:7 * k yRadius:7 * k] fill];
+    NSBezierPath *mu = [NSBezierPath bezierPath];
+    // M7.5 6.5V25.5: the stem
+    [mu moveToPoint:at(7.5, 6.5)];
+    [mu lineToPoint:at(7.5, 25.5)];
+    // M7.5 13.5a5.25 5.25 0 0 0 10.5 0: the bowl, a half circle below its ends
+    [mu moveToPoint:at(7.5, 13.5)];
+    [mu appendBezierPathWithArcWithCenter:at(12.75, 13.5) radius:5.25 * k startAngle:180 endAngle:0 clockwise:NO];
+    // M18 6.5V15C18 21.5 22 24 26.25 24: the right arm and its tail
+    [mu moveToPoint:at(18, 6.5)];
+    [mu lineToPoint:at(18, 15)];
+    [mu curveToPoint:at(26.25, 24) controlPoint1:at(18, 21.5) controlPoint2:at(22, 24)];
+    mu.lineWidth = 2.75 * k;
+    mu.lineJoinStyle = NSLineJoinStyleRound;
+    [foreground set];
+    [mu stroke];
+    CGFloat r = 3.1 * k;
+    for (NSValue *v in @[[NSValue valueWithPoint:at(7.5, 6.5)], [NSValue valueWithPoint:at(7.5, 25.5)],
+                         [NSValue valueWithPoint:at(18, 6.5)], [NSValue valueWithPoint:at(26.25, 24)]]) {
+        NSPoint c = v.pointValue;
+        [[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(c.x - r, c.y - r, 2 * r, 2 * r)] fill];
+    }
+}
+
 NSImage *renderIcon(int px) {
     // Draw into a bitmap of exactly px by px pixels: iconutil needs exact
     // pixel sizes per file name, and NSImage drawing alone works in points.
+    // Tagged sRGB, so the navy is the site's #1f3a5f exactly.
     NSBitmapImageRep *rep = [[NSBitmapImageRep alloc] initWithBitmapDataPlanes:NULL pixelsWide:px pixelsHigh:px
         bitsPerSample:8 samplesPerPixel:4 hasAlpha:YES isPlanar:NO colorSpaceName:NSCalibratedRGBColorSpace
         bytesPerRow:0 bitsPerPixel:0];
+    rep = [rep bitmapImageRepByRetaggingWithColorSpace:[NSColorSpace sRGBColorSpace]];
     rep.size = NSMakeSize(px, px);
     [NSGraphicsContext saveGraphicsState];
     [NSGraphicsContext setCurrentContext:[NSGraphicsContext graphicsContextWithBitmapImageRep:rep]];
+    // A margin round the square, as macOS app icons have.
     CGFloat s = px, inset = s * 0.06;
-    NSRect rect = NSMakeRect(inset, inset, s - 2 * inset, s - 2 * inset);
-    NSBezierPath *path = [NSBezierPath bezierPathWithRoundedRect:rect xRadius:s * 0.2 yRadius:s * 0.2];
-    [[NSColor colorWithCalibratedRed:0.13 green:0.17 blue:0.24 alpha:1] setFill];
-    [path fill];
-    NSFont *font = [NSFont systemFontOfSize:s * 0.62 weight:NSFontWeightBold];
-    NSAttributedString *text = [[NSAttributedString alloc] initWithString:@"m"
-        attributes:@{NSFontAttributeName: font, NSForegroundColorAttributeName: [NSColor whiteColor]}];
-    NSSize ts = [text size];
-    [text drawAtPoint:NSMakePoint((s - ts.width) / 2, (s - ts.height) / 2 - s * 0.03)];
+    drawMark(NSMakeRect(inset, inset, s - 2 * inset, s - 2 * inset),
+             [NSColor colorWithSRGBRed:0x1f / 255.0 green:0x3a / 255.0 blue:0x5f / 255.0 alpha:1], [NSColor whiteColor]);
     [NSGraphicsContext restoreGraphicsState];
     NSImage *image = [[NSImage alloc] initWithSize:NSMakeSize(px, px)];
     [image addRepresentation:rep];
@@ -45,17 +75,16 @@ BOOL writeIconSet(NSString *dir, NSError **error) {
 NSImage *statusIcon(NSColor *color, BOOL dot) {
     CGFloat s = 18;
     NSImage *image = [NSImage imageWithSize:NSMakeSize(s, s) flipped:NO drawingHandler:^BOOL(NSRect r) {
-        NSBezierPath *circle = [NSBezierPath bezierPathWithOvalInRect:NSInsetRect(r, 1, 1)];
-        [color setFill];
-        [circle fill];
-        NSFont *font = [NSFont systemFontOfSize:s * 0.62 weight:NSFontWeightBold];
-        NSAttributedString *text = [[NSAttributedString alloc] initWithString:@"m"
-            attributes:@{NSFontAttributeName: font, NSForegroundColorAttributeName: [NSColor whiteColor]}];
-        NSSize ts = [text size];
-        [text drawAtPoint:NSMakePoint((s - ts.width) / 2, (s - ts.height) / 2 - s * 0.02)];
+        drawMark(NSInsetRect(r, 1, 1), color, [NSColor whiteColor]);
         if (dot) {
+            // A white badge in the free top right corner, ringed in the
+            // state colour so it stands apart from the mu's own dots.
+            NSBezierPath *badge = [NSBezierPath bezierPathWithOvalInRect:NSMakeRect(s - 6.6, s - 6.6, 5.2, 5.2)];
+            badge.lineWidth = 1.2;
             [[NSColor whiteColor] setFill];
-            [[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(s - 6.5, s - 6.5, 5, 5)] fill];
+            [color setStroke];
+            [badge fill];
+            [badge stroke];
         }
         return YES;
     }];
