@@ -169,11 +169,12 @@ and nothing needs installing: no Python, no pip. The app starts it as
 with `MYOUS_HOME` set to the worker folder; the review rules are built
 into it (the level in `review.json`, `worker.paused`, the questions in
 `approvals/`), the same as `worker/review.py`'s. The worker's own output
-is in `worker.log` (Show worker log, in the ⋯ menu). Stop sends it
-SIGTERM: it ends the command it runs, answers that request and exits;
-after ten seconds the app kills it. On Windows, where a worker without a
-console can't be asked, the app ends the worker and its command at once
-(`taskkill /T`).
+is in `worker.log` (Show worker log, in the ⋯ menu). Stop writes a
+`commands/quit` file in the worker folder (and sends SIGTERM outside
+Windows): the worker ends the command it runs with everything it
+started, answers that request "stopped by the owner" and exits; after
+ten seconds the app kills it. When the app quits it waits for its
+workers the same way.
 
 ## How it is built
 
