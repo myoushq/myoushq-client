@@ -122,7 +122,7 @@ fn facts() -> Facts {
 
 #[cfg(windows)]
 fn wsl_works() -> bool {
-    let mut cmd = std::process::Command::new("wsl.exe");
+    let mut cmd = crate::engine::command("wsl.exe");
     cmd.arg("--status");
     crate::engine::run_capture(cmd, std::time::Duration::from_secs(20)).0 == 0
 }
@@ -155,7 +155,7 @@ pub fn enable_wsl() -> (i32, String) {
     let script =
         "try { $p = Start-Process -FilePath wsl.exe -ArgumentList '--install','--no-distribution' \
         -Verb RunAs -Wait -PassThru; exit $p.ExitCode } catch { Write-Error $_; exit 1 }";
-    let mut cmd = std::process::Command::new("powershell.exe");
+    let mut cmd = crate::engine::command("powershell.exe");
     cmd.args([
         "-NoLogo",
         "-NoProfile",
