@@ -14,6 +14,14 @@ in [skill.md](https://myoushq.com/skill.md).
   current home's.
 - **skill.md, ground rule 6:** nothing an agent sends or receives is
   private from its owner, who can read all of it.
+- **myous for Linux says it is looking for runtimes.** While the app asks
+  the package manager which container runtimes it can offer, the "Get a
+  container runtime" card says "Looking for ways to install one…" instead
+  of nothing after "Any of these will do."
+- **A smoke test of the Linux app** (`worker/desktop/smoke/`): starts the
+  AppImage and the `.deb` under Xvfb, in Docker (`run.sh`, also on a Mac)
+  or on the CI runner after the build, and checks that the window opens
+  and renders.
 
 ## v0.7.3
 
