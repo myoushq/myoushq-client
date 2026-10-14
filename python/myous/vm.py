@@ -91,7 +91,31 @@ def start_listener(st: FileStorage) -> None:
 
 def cron_line(st: FileStorage) -> str:
     return (f"* * * * * MYOUS_HOME={st.home} {sys.executable} -m myous ensure --quiet "
-            f">> {st.path('cron.log')} 2>&1 {CRON_MARK}")
+            f">> {st.path('cron.log')} 2>&1 {CRON_MARK} {st.home}")
+
+
+# A line of ours ends with the mark and the home it is for. Earlier
+# versions wrote the mark alone (one line for the whole crontab).
+_CRON_OURS = re.compile(r"(?:^|\s)" + re.escape(CRON_MARK) + r"(?: (.*))?$")
+
+
+def _cron_home(line: str) -> str | None:
+    """The home a crontab line of ours is for: "" for a line from before
+    homes were marked, None for a line that isn't ours."""
+    m = _CRON_OURS.search(line.rstrip())
+    return None if m is None else (m.group(1) or "").strip()
+
+
+def _same_home(a: str, b: Path) -> bool:
+    return os.path.abspath(os.path.expanduser(a)) == os.path.abspath(b)
+
+
+def _cron_mine(line: str, st: FileStorage | None) -> bool:
+    """Whether a crontab line is this home's: marked with it, or an old
+    unmarked line (which becomes this home's on the first install or
+    remove after the upgrade)."""
+    home = _cron_home(line)
+    return home is not None and (home == "" or _same_home(home, _task_home(st)))
 
 
 def _crontab() -> list[str] | None:
@@ -103,26 +127,29 @@ def _crontab() -> list[str] | None:
 
 
 def install_cron(st: FileStorage) -> str:
+    """One crontab line per home: a second agent on the machine with
+    another MYOUS_HOME gets a line of its own."""
     if WINDOWS:
         return _install_task(st)
     lines = _crontab()
     if lines is None:
         return "crontab is not available here"
     wanted = cron_line(st)
-    if wanted in lines:
+    if [line for line in lines if _cron_mine(line, st)] == [wanted]:
         return "cron entry already present"
-    lines = [line for line in lines if CRON_MARK not in line] + [wanted]
+    lines = [line for line in lines if not _cron_mine(line, st)] + [wanted]
     subprocess.run(["crontab", "-"], input="\n".join(lines) + "\n", text=True, check=True)
     return "cron entry installed"
 
 
 def remove_cron(st: FileStorage | None = None) -> str:
+    """Removes this home's line only."""
     if WINDOWS:
         return _remove_task(st)
     lines = _crontab()
     if lines is None:
         return "crontab is not available here"
-    kept = [line for line in lines if CRON_MARK not in line]
+    kept = [line for line in lines if not _cron_mine(line, st)]
     if kept == lines:
         return "no cron entry to remove"
     subprocess.run(["crontab", "-"], input="\n".join(kept) + "\n", text=True, check=True)
@@ -130,12 +157,13 @@ def remove_cron(st: FileStorage | None = None) -> str:
 
 
 def show_cron(st: FileStorage | None = None) -> str:
+    """Every home's line, so an agent sees what else runs here."""
     if WINDOWS:
         return _show_task(st)
     lines = _crontab()
     if lines is None:
         return "crontab is not available here"
-    ours = [line for line in lines if CRON_MARK in line]
+    ours = [line for line in lines if _cron_home(line) is not None]
     return "\n".join(ours) or "no cron entry"
 
 

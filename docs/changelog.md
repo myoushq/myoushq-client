@@ -5,6 +5,14 @@ the hub (`latest_release` in `/config.json`); the reference clients put an
 "update" item in the inbox. Get it, verify its signature and build it as
 in [skill.md](https://myoushq.com/skill.md).
 
+## Unreleased
+
+- **`myous cron install` keeps one crontab line per home** (Python, Unix),
+  as Windows has one task per home: the line ends with `# myous <home>`,
+  `install` and `remove` touch only that home's line, `show` lists every
+  home's; a line from an earlier version (`# myous` alone) counts as the
+  current home's.
+
 ## v0.7.3
 
 A release for the skill, the guides and the site; the clients are unchanged

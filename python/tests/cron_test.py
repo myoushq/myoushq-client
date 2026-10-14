@@ -177,6 +177,90 @@ class CrontabTest(unittest.TestCase):
             self.assertFalse(st.path("ensure.pyw").exists())
 
 
+
+class Crontab:
+    """A stand-in for subprocess.run that keeps a crontab."""
+
+    def __init__(self, lines=()):
+        self.lines = list(lines)
+
+    def __call__(self, argv, **kwargs):
+        if argv == ["crontab", "-l"]:
+            return subprocess.CompletedProcess(argv, 0, "".join(line + "\n" for line in self.lines), "")
+        assert argv == ["crontab", "-"], argv
+        self.lines = kwargs["input"].splitlines()
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+
+class CrontabPerHomeTest(unittest.TestCase):
+    """One crontab line per home, as Windows has one task per home."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.a = FileStorage(Path(self.tmp.name) / "a")
+        self.b = FileStorage(Path(self.tmp.name) / "b")
+        for patch in (mock.patch.object(vm, "WINDOWS", False),
+                      mock.patch.object(vm, "DEFAULT_HOME", str(Path(self.tmp.name) / "a"))):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def run_with(self, fake, fn, *args):
+        with mock.patch.object(vm.subprocess, "run", fake):
+            return fn(*args)
+
+    def test_line_names_its_home(self):
+        self.assertTrue(vm.cron_line(self.a).endswith(f" # myous {self.a.home}"))
+
+    def test_two_homes_get_a_line_each(self):
+        own = "0 3 * * * backup.sh # myoushq is not us"
+        fake = Crontab(["MAILTO=x", own])
+        self.assertEqual(self.run_with(fake, vm.install_cron, self.a), "cron entry installed")
+        self.assertEqual(self.run_with(fake, vm.install_cron, self.b), "cron entry installed")
+        self.assertEqual(fake.lines, ["MAILTO=x", own, vm.cron_line(self.a), vm.cron_line(self.b)])
+        self.assertEqual(self.run_with(fake, vm.install_cron, self.a), "cron entry already present")
+        self.assertEqual(self.run_with(fake, vm.show_cron, self.b),
+                         f"{vm.cron_line(self.a)}\n{vm.cron_line(self.b)}")
+        self.assertEqual(self.run_with(fake, vm.remove_cron, self.a), "cron entry removed")
+        self.assertEqual(fake.lines, ["MAILTO=x", own, vm.cron_line(self.b)])
+        self.assertEqual(self.run_with(fake, vm.remove_cron, self.a), "no cron entry to remove")
+        self.assertEqual(self.run_with(fake, vm.remove_cron, self.b), "cron entry removed")
+        self.assertEqual(fake.lines, ["MAILTO=x", own])
+        self.assertEqual(self.run_with(fake, vm.show_cron, self.a), "no cron entry")
+
+    def test_reinstall_replaces_this_homes_line(self):
+        old = f"* * * * * MYOUS_HOME={self.a.home} /old/python -m myous ensure --quiet # myous {self.a.home}"
+        fake = Crontab([old, vm.cron_line(self.b)])
+        self.assertEqual(self.run_with(fake, vm.install_cron, self.a), "cron entry installed")
+        self.assertEqual(fake.lines, [vm.cron_line(self.b), vm.cron_line(self.a)])
+
+    def test_unmarked_line_from_before_is_this_homes(self):
+        legacy = f"* * * * * MYOUS_HOME={self.b.home} /usr/bin/python3 -m myous ensure --quiet >> x 2>&1 # myous"
+        fake = Crontab(["MAILTO=x", legacy])
+        self.assertEqual(self.run_with(fake, vm.show_cron, self.a), legacy)
+        self.assertEqual(self.run_with(fake, vm.install_cron, self.a), "cron entry installed")
+        self.assertEqual(fake.lines, ["MAILTO=x", vm.cron_line(self.a)])
+        fake = Crontab([legacy, vm.cron_line(self.b)])
+        self.assertEqual(self.run_with(fake, vm.remove_cron, self.a), "cron entry removed")
+        self.assertEqual(fake.lines, [vm.cron_line(self.b)])
+
+    def test_without_a_home_means_the_default(self):
+        fake = Crontab([vm.cron_line(self.a), vm.cron_line(self.b)])
+        with mock.patch.dict(os.environ, {"MYOUS_HOME": ""}):
+            self.assertEqual(self.run_with(fake, vm.remove_cron, None), "cron entry removed")
+        self.assertEqual(fake.lines, [vm.cron_line(self.b)])
+
+    def test_cli_passes_the_home(self):
+        fake = Crontab([vm.cron_line(self.a)])
+        out = io.StringIO()
+        with mock.patch.object(vm.subprocess, "run", fake), redirect_stdout(out):
+            cli.cmd_cron(None, self.b, argparse.Namespace(action="install"))
+            cli.cmd_cron(None, self.b, argparse.Namespace(action="remove"))
+        self.assertEqual(out.getvalue(), "cron entry installed\ncron entry removed\n")
+        self.assertEqual(fake.lines, [vm.cron_line(self.a)])
+
 class ListenerRestartTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
