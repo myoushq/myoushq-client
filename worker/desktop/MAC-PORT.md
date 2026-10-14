@@ -39,6 +39,34 @@ parts are behind `cfg(target_os = "macos")` or the window's
   Command Line Tools' 3.9, too old for Playwright, and on a Mac without
   those tools running it puts up the dialog to install them); "Get
   Python" opens python.org's macOS page.
+- **The Mac's look** (html.os-macos, set from the system at start; the
+  Linux and Windows window is pixel for pixel what it was): 13 point
+  text with 11 point captions and table; the window colour (#ececec,
+  #323232 in dark mode) with grey group boxes, the title above each box;
+  WebKit's own push buttons and pop-up menus, the primary button, links
+  and the progress bar in the accent colour; the system's colours
+  (`-apple-system-label`, `-apple-system-control-accent`, the alternating
+  row colours, ...), so dark mode, the accent colour and Increase
+  Contrast follow System Settings; no resize grips, and the pairing
+  message as grey read-only text in a sunken box, as tall as it is; the
+  requests in AppKit's striped table, ten rows high, the selected row in
+  the accent colour. WKWebView has no name for the window colour, so it
+  is written out per mode; the previews in Chromium use the same colours
+  written out.
+- **A window that fits its content**, as myous for Mac's: 560 points
+  wide (and the list of workers when there are several), as high as the
+  screen in front needs, its top edge staying put, not resizable; a
+  dialog (Settings, a log) gets the room it needs. The page measures
+  itself and asks Rust (`fit_window`).
+- **The app menu** holds what the ⋯ menu holds on Linux and Windows
+  (Settings… on ⌘,, Check for updates…, the browser, the logs and the
+  worker folder, adding workers and agents' folders, the modes), with
+  About, Hide and Quit, and Edit and Window menus; the window has no ⋯,
+  and Running has **Open log** (the app log) under the requests.
+- **The default worker name is the Computer Name** ("Max's MacBook
+  Air", `scutil --get ComputerName`, as myous for Mac takes it), the
+  host name only if that can't be read. The previews for macOS say
+  "Max's Mac".
 - Everything else is the shared app: Set up and the first-launch
   checks, runtime install with Homebrew, pairing, requests, review,
   several workers, the agents on the Mac, the update check against
@@ -53,7 +81,10 @@ parts are behind `cfg(target_os = "macos")` or the window's
   UserNotifications itself (`objc2-user-notifications`), which is what
   myous for Mac does.
 - **The browser on the Mac for a worker in a container**
-  (`MYOUS_BROWSER=host`, the forwarder), and **the sandbox**
+  (`MYOUS_BROWSER=host`, the forwarder), with Set up's "Where should its
+  browser run?" (myous for Mac recommends "On this Mac, in Google
+  Chrome"): the one feature a Mac user would see missing, needed before
+  this app replaces myous for Mac; and **the sandbox**
   (`sandbox-exec` with myous for Mac's seatbelt profile). Today a
   container worker uses the container's browser, and a worker without a
   container runs its browser unconfined, as on Linux and Windows,
@@ -87,7 +118,8 @@ never stands in for the client's `myous`) with `myous-worker` next to it.
 
 To look without touching a real worker: `MYOUS_WORKER_HOME=/tmp/w
 MYOUS_FAKE_STATE=pair build/myous.app/Contents/MacOS/myous-desktop`.
-The previews: `python3 screens.py OUT --os macos`.
+The previews: `python3 screens.py OUT --os macos` (each at the size the
+window takes on a Mac).
 
 Screenshots from the draft's run (2026-10-14, in the session's
 scratchpad, `mac-tauri-*.png`): the window's states as the previews draw
@@ -109,13 +141,17 @@ keychain as the Mac job does now; then the dmg uploaded as
 
 ## Differences a Mac user would notice
 
-- The window is a web page in the system's web view: the same
-  layout as on Linux and Windows, close to but not AppKit's controls;
-  Settings and the logs open inside it.
+- The window is a web page in the system's web view, dressed as the
+  Mac app (its colours, group boxes, push buttons and table; see above),
+  with the shared layout: the runtime rows, the approval banner, the
+  ok / refused column. Settings and the logs open inside it, not in
+  windows of their own.
 - A question's notification has no buttons; it brings up the window.
 - A worker in a container uses the container's browser (through the
   browser view), not Chrome on the Mac.
 - Open at login is listed under "Allow in the Background" in System
   Settings (a LaunchAgent), not as a login item, and it points at
   where the app was when it was turned on.
-- New: the first-launch checks, the runtime install cards, the ⋯ menu.
+- New: the first-launch checks, the runtime install cards, the app
+  menu's worker items (myous for Mac has them under the menu bar icon's
+  Advanced).
