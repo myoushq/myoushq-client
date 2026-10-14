@@ -23,6 +23,23 @@ function el<T extends HTMLElement = HTMLElement>(tag: string, props: Record<stri
   return e;
 }
 
+/** A line that starts with a mark (✓ ✗ ○ ⟳ –): the mark in a span of its own,
+ * so it lines up in a column and takes its colour; the text stays the same. */
+const MARKS: Record<string, string> = { "✓": "ok", "✗": "bad", "○": "todo", "–": "todo", "⟳": "busy" };
+function marked(mark: string, text: string): (Node | string)[] {
+  const cls = MARKS[mark];
+  return cls ? [el("span", { className: `mk ${cls}`, textContent: `${mark} ` }), text] : [`${mark} ${text}`];
+}
+function setMarked(e: HTMLElement, line: string) {
+  if (e.textContent === line) return;
+  const mark = line.charAt(0), cls = MARKS[mark];
+  if (!cls || line.charAt(1) !== " ") { e.textContent = line; return; }
+  // The same mark with new words (a clock ticking): keep the mark, so a turning ⟳ doesn't restart.
+  const [first, second] = [e.firstChild, e.childNodes[1]];
+  if (e.childNodes.length === 2 && first instanceof HTMLElement && first.textContent === `${mark} ` && second?.nodeType === Node.TEXT_NODE) second.textContent = line.slice(2);
+  else e.replaceChildren(...marked(mark, line.slice(2)));
+}
+
 const be: Backend = makeBackend();
 let info: Awaited<ReturnType<Backend["appInfo"]>>;
 let m: Model;
@@ -343,7 +360,7 @@ function markAdvance(row: HTMLElement, a: Advance | null): HTMLElement[] {
   if (!a) return [];
   row.classList.add("advanced");
   row.style.animationDelay = `${-Math.max(0, m.now() - a.at)}s`;
-  return [el(row.tagName.toLowerCase(), { className: "found" }, `✓ ${a.line}`)];
+  return [el(row.tagName.toLowerCase(), { className: "found" }, ...marked("✓", a.line))];
 }
 
 function fillChecks(list: HTMLElement, w: Worker) {
@@ -353,7 +370,7 @@ function fillChecks(list: HTMLElement, w: Worker) {
   if (list.dataset.key === key) return;
   list.dataset.key = key;
   list.replaceChildren(...rows.flatMap((r: Row, n) => {
-    const li = el("li", { className: r.cls }, `${r.mark} ${r.text}`);
+    const li = el("li", { className: r.cls }, ...marked(r.mark, r.text));
     if (r.retry) {
       const b = el("button", { className: "link", textContent: "Retry" });
       b.dataset.retry = r.retry;
@@ -382,7 +399,7 @@ function fillSetup(w: Worker) {
     name.dataset.prev = name.value;
   }
   // Without a container the worker is the one this app carries: nothing to find or install.
-  setText($("setup-runtime"), direct
+  setMarked($("setup-runtime"), direct
     ? `✓ Runs on ${sys} as you${w.config.browserOff ? " · No worker browser" : ""} · Review: ${REVIEW_FACT[w.review] ?? REVIEW_FACT.changes}`
     : m.runtimeState === "ok"
       ? `The worker runs in a container in ${m.runtimeName}, so your agent's commands stay inside it.`
@@ -408,7 +425,7 @@ function fillBrowserRow(box: HTMLElement, w: Worker) {
   const key = `${w.home}|${JSON.stringify([r, advance])}`;
   if (box.dataset.key === key) return;
   box.dataset.key = key;
-  const line = el("p", { className: r.cls }, `${r.mark} ${r.text}`);
+  const line = el("p", { className: r.cls }, ...marked(r.mark, r.text));
   if (r.retry) {
     const b = el("button", { className: "link", textContent: "Retry" });
     b.dataset.retry = "browser";
@@ -418,7 +435,8 @@ function fillBrowserRow(box: HTMLElement, w: Worker) {
   const kids: HTMLElement[] = [line, ...markAdvance(line, advance)];
   if (r.buttons.length) {
     kids.push(el("div", { className: "row" }, ...r.buttons.map((b) => {
-      const btn = el("button", { className: b.primary ? "primary" : "", textContent: b.label });
+      // On Set up, "Start the worker" is the card's one primary button.
+      const btn = el("button", { className: b.primary && !box.closest("#card-setup") ? "primary" : "", textContent: b.label });
       btn.dataset.browser = b.action;
       if (b.url) btn.dataset.url = b.url;
       btn.onclick = () => (b.action === "install" ? void runBrowserInstall(w) : void be.openUrl(b.url));
@@ -546,7 +564,7 @@ function fillRuntime(w: Worker) {
     text = "✗ No container runtime, and WSL isn't turned on. Docker Desktop and Rancher Desktop run containers in WSL 2, so it comes first: Windows asks for an administrator, then for a restart.";
   }
   setText($("runtime-title"), title);
-  setText($("runtime-text"), text);
+  setMarked($("runtime-text"), text);
 
   // Get a container runtime: one line per runtime, Install where the app can, its website always.
   const installing = !!m.install?.running;
@@ -566,15 +584,18 @@ function fillRuntime(w: Worker) {
     if (!runtimes.some((r) => r.install)) {
       list.replaceChildren(el("div", { className: "row" }, ...runtimes.map((r) => page(r, `Get ${r.name}`))));
     } else {
+      // The first runtime the app can install is the recommended one: the card's one primary button.
+      const first = runtimes.find((r) => r.install);
       list.replaceChildren(...runtimes.map((r) => {
-        const line = el("div", { className: "runtime-option" }, el("span", { className: "name", textContent: r.name }));
-        if (r.install) {
-          const b = el("button", { className: "primary", textContent: "Install", title: r.install });
+        const line = el("div", { className: "runtime-option" }, el("span", { className: "name", textContent: r.name, title: r.name }));
+        if (!r.install) line.append(el("span"));
+        else {
+          const b = el("button", { className: r === first ? "primary" : "", textContent: "Install", title: r.install });
           b.dataset.install = r.id;
           b.onclick = () => void runInstall(r.id, r.name);
           line.append(b);
         }
-        line.append(page(r, "Website", r.install ? "link" : ""));
+        line.append(page(r, "Website", "link"));
         return line;
       }));
     }
@@ -582,7 +603,7 @@ function fillRuntime(w: Worker) {
   // An install, a start or a compose install the app runs, on the card it belongs to.
   const own = m.install && (m.install.id === "start" ? step === "start" : m.install.id === "compose" ? step === "compose" : step === "get");
   const iline = own ? installLine(m) : "";
-  setText($("runtime-install"), iline);
+  setMarked($("runtime-install"), iline);
   $("runtime-install").className = iline.startsWith("✗") ? "bad" : "";
   show($("runtime-install"), !!iline);
   setText($("runtime-lines"), card.lines.join("\n"));
@@ -666,7 +687,7 @@ function fillStarting(w: Worker) {
     else if (w.browserLaunch) direct.push(`○ No worker browser: ${w.browserLaunch}`);
     direct.push(`${up ? "✓" : "⟳"} Starting the worker and registering with myoushq.com${up ? "" : clock}`);
     items.forEach((li, i) => {
-      setText(li, direct[i] ?? "");
+      setMarked(li, direct[i] ?? "");
       li.hidden = !direct[i];
       li.className = direct[i]?.startsWith("○") ? "todo" : "";
     });
@@ -682,7 +703,7 @@ function fillStarting(w: Worker) {
       : browserDone ? `⟳ Registering with myoushq.com${clock}` : "○ Registering with myoushq.com",
   ];
   items.forEach((li, i) => {
-    setText(li, rows[i]);
+    setMarked(li, rows[i]);
     li.className = rows[i].startsWith("○") ? "todo" : rows[i].startsWith("✗") ? "bad" : "";
   });
   const slow = elapsed > 300 || (pulled && elapsed > 180);
@@ -761,6 +782,8 @@ function fillRequests(w: Worker) {
       el("td", { textContent: text, title: text }),
       el("td", { textContent: out, className: cls }));
     tr.onclick = () => void showRequestDetail(r);
+    tr.tabIndex = 0;
+    tr.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); void showRequestDetail(r); } };
     return tr;
   }));
 }
@@ -833,17 +856,23 @@ function fillSidebar() {
   setText($("side-title"), `On ${sys}`);
   const rows: HTMLElement[] = [el("div", { className: "side-head", textContent: "WORKERS" })];
   for (const w of m.workers) {
-    const row = el("div", { className: `side-row${!m.selectedAgent && w === m.current ? " selected" : ""}` }, el("span", { className: kindClass(w.stateKind) }), w.name);
+    const row = el("div", { className: `side-row${!m.selectedAgent && w === m.current ? " selected" : ""}` }, el("span", { className: kindClass(w.stateKind) }), el("span", { textContent: w.name, title: w.name }));
     row.onclick = () => { m.current = w; m.selectedAgent = null; setupFilledFor = ""; render(); };
     rows.push(row);
   }
   if (agents.length) {
     rows.push(el("div", { className: "side-head", textContent: "AGENTS" }));
     for (const a of agents) {
-      const row = el("div", { className: `side-row${m.selectedAgent?.home === a.home ? " selected" : ""}` }, el("span", { className: kindClass(a.error ? "grey" : "none") }), agentName(a));
+      const row = el("div", { className: `side-row${m.selectedAgent?.home === a.home ? " selected" : ""}` }, el("span", { className: kindClass(a.error ? "grey" : "none") }), el("span", { textContent: agentName(a), title: agentName(a) }));
       row.onclick = () => { m.selectedAgent = a; render(); };
       rows.push(row);
     }
+  }
+  for (const r of rows) {
+    if (!r.classList.contains("side-row")) continue;
+    r.tabIndex = 0;
+    r.setAttribute("role", "button");
+    r.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); r.click(); } };
   }
   $("side-list").replaceChildren(...rows);
 }
