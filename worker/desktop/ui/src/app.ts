@@ -1489,7 +1489,7 @@ async function openSettings() {
     }
     if (hiddenBox.checked !== w.config.browserHidden) {
       w.config.browserHidden = hiddenBox.checked;
-      if (!m.fake) void be.macBrowserHidden(w.home, hiddenBox.checked);
+      if (!m.fake || be.preview) void be.macBrowserHidden(w.home, hiddenBox.checked);
     }
   }
   if (w.config.isDirect && browserBox.checked === w.config.browserOff) {
