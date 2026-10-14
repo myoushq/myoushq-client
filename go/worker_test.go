@@ -430,6 +430,100 @@ func TestWorkerStoppingEndsAReviewThatWaits(t *testing.T) {
 	}
 }
 
+// runUntilStopped runs the worker with a fake connection that hands it
+// one exec request, until Run returns; the result comes on the channel.
+func (f *workerFixture) runUntilStopped(cmd string) <-chan error {
+	f.agent.listen = func(ctx context.Context, onNew func([]Entry)) error {
+		onNew([]Entry{request(map[string]any{"myous": "exec", "id": testRID, "cmd": cmd, "timeout": 120})})
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	done := make(chan error, 1)
+	go func() { done <- f.w.Run(context.Background()) }()
+	return done
+}
+
+func TestWorkerQuitFileStopsTheWorker(t *testing.T) {
+	// The owner's app creates commands/quit (on Windows its only way to
+	// stop the worker gracefully): the command running is ended, the
+	// agent is told, the file is removed and Run returns, as on SIGTERM.
+	f := newWorkerFixture(t)
+	cmd := "echo begun; echo > started; sleep 60"
+	if runtime.GOOS == "windows" {
+		cmd = "Write-Output begun; New-Item started -ItemType File | Out-Null; Start-Sleep 60"
+	}
+	done := f.runUntilStopped(cmd)
+	for deadline := time.Now().Add(60 * time.Second); !exists(filepath.Join(f.work, "started")); time.Sleep(50 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the command never started")
+		}
+	}
+	quit := filepath.Join(f.home, "commands", "quit")
+	os.MkdirAll(filepath.Dir(quit), 0o700)
+	os.WriteFile(quit, nil, 0o600)
+	started := time.Now()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("the worker didn't stop")
+	}
+	if d := time.Since(started); d > 8*time.Second {
+		t.Fatalf("the worker took %v to stop", d)
+	}
+	r := f.last()
+	if r["myous"] != "result" || r["id"] != testRID || r["exit"] != -1.0 || r["stopped"] != true ||
+		!strings.Contains(r["stderr"].(string), stoppingWhy) || !strings.Contains(r["stdout"].(string), "begun") {
+		t.Fatalf("result: %v", r)
+	}
+	if exists(quit) {
+		t.Fatal("the quit file is still there")
+	}
+}
+
+func TestWorkerQuitFileFromBeforeItStartedIsDropped(t *testing.T) {
+	// A quit file the last worker never took (it was killed first) must
+	// not stop the next one; one written since it started does.
+	f := newWorkerFixture(t)
+	quit := filepath.Join(f.home, "commands", "quit")
+	os.MkdirAll(filepath.Dir(quit), 0o700)
+	os.WriteFile(quit, nil, 0o600)
+	// The other commands leave it to Run's watcher.
+	f.w.mu.Lock()
+	f.w.handleCommands(context.Background())
+	f.w.mu.Unlock()
+	if !exists(quit) {
+		t.Fatal("handleCommands took the quit file")
+	}
+	old := time.Now().Add(-time.Hour)
+	os.Chtimes(quit, old, old)
+	f.agent.listen = func(ctx context.Context, onNew func([]Entry)) error {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	done := make(chan error, 1)
+	go func() { done <- f.w.Run(context.Background()) }()
+	select {
+	case err := <-done:
+		t.Fatalf("stopped by a stale quit file: %v", err)
+	case <-time.After(4 * stopEvery):
+	}
+	if exists(quit) {
+		t.Fatal("the stale quit file is still there")
+	}
+	os.WriteFile(quit, nil, 0o600)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the worker didn't stop")
+	}
+}
+
 func TestWorkerMalformedRequestsAreRefusedNotFatal(t *testing.T) {
 	needPOSIX(t)
 	f := newWorkerFixture(t)
