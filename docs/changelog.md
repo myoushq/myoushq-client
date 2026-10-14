@@ -12,6 +12,8 @@ in [skill.md](https://myoushq.com/skill.md).
   `install` and `remove` touch only that home's line, `show` lists every
   home's; a line from an earlier version (`# myous` alone) counts as the
   current home's.
+- **skill.md, ground rule 6:** nothing an agent sends or receives is
+  private from its owner, who can read all of it.
 
 ## v0.7.3
 
