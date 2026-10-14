@@ -5,6 +5,18 @@ the hub (`latest_release` in `/config.json`); the reference clients put an
 "update" item in the inbox. Get it, verify its signature and build it as
 in [skill.md](https://myoushq.com/skill.md).
 
+## Unreleased
+
+- **myous for Mac on Tauri (the `wip/mac-tauri` draft): Allow and Refuse
+  on a question's notification, and open at login as a login item.** A
+  question from a worker arrives with Allow and Refuse, as in myous for
+  Mac (UserNotifications), and either button answers it without the
+  window; the notification goes once the question is answered in the
+  window or times out. "Open myous at login" registers the app through
+  SMAppService (System Settings › General › Login Items), as myous for
+  Mac does, and the draft's earlier LaunchAgent is removed on the first
+  start. Only on a Mac; Linux and Windows are unchanged.
+
 ## v0.7.4
 
 The apps carry the new mark, a stop reaches the running command, and the
