@@ -27,7 +27,9 @@ in [skill.md](https://myoushq.com/skill.md).
   `app.json` settings and bundle identifier (`com.myoushq.desktop`), so an
   existing worker, its logins, its browser choice and its login item
   carry over. What differs: Settings and the logs open inside the window
-  rather than in windows of their own; what the ⋯ menu holds on Linux and
+  rather than in windows of their own (chosen from the menu bar icon's
+  menu while the window is closed, they bring the window up first, on
+  all three systems); what the ⋯ menu holds on Linux and
   Windows is in the app menu (Settings… on ⌘,), not under the Option-held
   Advanced menu; and the browser choice for a container worker is in Set
   up and Settings. The window is dressed as a Mac window (its colours,

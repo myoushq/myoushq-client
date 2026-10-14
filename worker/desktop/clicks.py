@@ -245,8 +245,12 @@ def main() -> int:
         page.keyboard.press("Escape")
         page.wait_for_selector("#dlg", state="hidden")
         settings_id = next(i["id"] for i in app_menu if i.get("label") == "Settings…")
+        # The window was closed (hidden): Settings from the tray's menu brings it back before the dialog.
+        emit("window", False)
+        shows = names().count("showWindow")
         emit("tray", settings_id)
         page.wait_for_selector("#dlg[open]")
+        check(names().count("showWindow") > shows, "Settings from the tray shows the hidden window first")
         page.click("#dlg label:has-text('Dock') input")
         page.click("#dlg button:has-text('Save')")
         check(["setDock", [True]] in calls(), "a Mac: the Dock setting applies at once")

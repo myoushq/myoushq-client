@@ -173,7 +173,8 @@ behind `cfg(target_os = "macos")` or the window's `info.os === "macos"`.
   in the app menu (the ⋯ menu on Linux and Windows), so there is nothing
   to hold Option for.
 - **Separate Settings and log windows**: not planned. They open inside
-  the window, as on Linux and Windows.
+  the window, as on Linux and Windows; chosen from the menu bar icon's
+  menu while the window is closed, they bring the window up first.
 - **`--snapshot` and `--browser-test`**: later, if at all. `screens.py`
   (`--os macos`) draws every screen and `cargo test -- --ignored
   real_browser` runs the browser under the sandbox, which is what the

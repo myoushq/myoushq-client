@@ -92,6 +92,10 @@ let closeCurrent: ((v: { value: string; input: string } | null) => void) | null 
 
 function dialog(o: DialogOpts): Promise<{ value: string; input: string } | null> {
   const d = $<HTMLDialogElement>("dlg");
+  // A dialog opens inside the window. From the tray's menu the window may be hidden (closed, or
+  // never shown: a Mac's menu bar app) or behind another app, and a modal there shows nothing, so
+  // the window comes up and to the front first.
+  void showWindow();
   closeCurrent?.(null);
   d.replaceChildren();
   d.append(el("h2", { textContent: o.title }));
