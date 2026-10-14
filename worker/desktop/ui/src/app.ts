@@ -210,10 +210,10 @@ async function stop(w: Worker) {
   w.launchedAt = 0;
   w.launchStage = "";
   if (w.config.isDirect) {
-    // Ours: its exit arrives as an event. Started before this app was: ended by pid, gone now.
-    const ours = await be.directStop(w.home, w.fresh(m.now()) ? num(w.status?.pid) : 0);
+    // Ours: its exit arrives as an event. Started outside this app: ended by the pid in
+    // worker.json while that is still the worker, then a "stop" event (Stopping until then).
+    await be.directStop(w.home, w.fresh(m.now()) ? num(w.status?.pid) : 0);
     appendLog("stopping myous worker");
-    if (!ours) w.stopDoneAt = m.now();
     void refresh();
     return;
   }

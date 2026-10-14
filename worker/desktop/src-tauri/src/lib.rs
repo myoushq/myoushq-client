@@ -543,12 +543,25 @@ async fn browser_stop(home: String) {
 }
 
 /// Stops a worker that runs without a container: the one this app
-/// started, else the process `pid` from its worker.json. True if it was
-/// this app's (its exit then arrives as an event).
+/// started, else the process `pid` from its worker.json while that pid is
+/// still the worker. True if it was this app's: its exit then arrives as
+/// a `direct-exit` event; else a `stop` event once the stop is over (it
+/// exited, was killed, or there was nothing to stop).
 #[tauri::command]
-async fn direct_stop(home: String, pid: u32) -> bool {
+async fn direct_stop<R: Runtime>(app: AppHandle<R>, home: String, pid: u32) -> bool {
+    let log = app_logger(&app, &home);
     tauri::async_runtime::spawn_blocking(move || {
-        let ours = direct::stop(&home, pid);
+        let h = home.clone();
+        let ours = direct::stop(&home, pid, log, move || {
+            let _ = app.emit(
+                "compose-done",
+                Done {
+                    home: h,
+                    op: "stop".into(),
+                    status: 0,
+                },
+            );
+        });
         browser::stop(Path::new(&home));
         ours
     })

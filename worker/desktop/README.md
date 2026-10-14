@@ -183,7 +183,12 @@ is in `worker.log` (Show worker log, in the ⋯ menu). Stop writes a
 Windows): the worker ends the command it runs with everything it
 started, answers that request "stopped by the owner" and exits; after
 ten seconds the app kills it. When the app quits it waits for its
-workers the same way.
+workers the same way. A worker the app didn't start (found through the
+pid in `worker.json`) is stopped the same way only while that pid is
+still the worker: a myous worker program (`myous-worker`, `myous` or
+Python) that began no later than `worker.json`'s `started`, as `ps` (on
+Windows PowerShell's `Get-Process`) tells; otherwise, or if that can't
+be told, it is left alone and the log says why.
 
 ## How it is built
 
