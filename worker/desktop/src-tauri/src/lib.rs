@@ -15,6 +15,8 @@ mod engine;
 mod files;
 mod hub;
 mod install;
+#[cfg(target_os = "macos")]
+mod loginitem;
 mod paths;
 mod platform;
 mod toast;
@@ -931,13 +933,24 @@ fn copy_text<R: Runtime>(app: AppHandle<R>, text: String) -> Result<(), String> 
     app.clipboard().write_text(text).map_err(err)
 }
 
+/// Whether the app opens at login. A Mac (the app): a login item through
+/// SMAppService, as myous for Mac (loginitem.rs); elsewhere, and a Mac's
+/// program run from target/, the autostart plugin.
 #[tauri::command]
 fn autostart_get<R: Runtime>(app: AppHandle<R>) -> bool {
+    #[cfg(target_os = "macos")]
+    if usernotify::in_app_bundle() {
+        return loginitem::is_enabled();
+    }
     app.autolaunch().is_enabled().unwrap_or(false)
 }
 
 #[tauri::command]
 fn autostart_set<R: Runtime>(app: AppHandle<R>, on: bool) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    if usernotify::in_app_bundle() {
+        return loginitem::set(on);
+    }
     if on {
         app.autolaunch().enable()
     } else {
@@ -977,9 +990,10 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
-        // On a Mac a LaunchAgent (~/Library/LaunchAgents/myous.plist, run
-        // at login), not SMAppService as myous for Mac uses: the plugin
-        // offers only this and AppleScript.
+        // On a Mac the app opens at login through SMAppService instead
+        // (loginitem.rs), as myous for Mac; the plugin's LaunchAgent
+        // (~/Library/LaunchAgents/myous.plist) is left for a program run
+        // from target/, and an upgrade removes it (setup below).
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
@@ -1054,6 +1068,14 @@ pub fn run() {
                 // (none outside an app bundle: the plugin's plain ones).
                 let handle = app.handle().clone();
                 usernotify::setup(move |r| notification_response(&handle, r));
+                // Open at login: from the plugin's LaunchAgent to a login item.
+                if usernotify::in_app_bundle() {
+                    let agent = app.autolaunch();
+                    let on = agent.is_enabled().unwrap_or(false);
+                    if let Some(line) = loginitem::migrate(on, || agent.disable().map_err(err)) {
+                        files::append_app_log(&line);
+                    }
+                }
             }
             // Windows drops the toasts of an app it doesn't know.
             toast::register();
