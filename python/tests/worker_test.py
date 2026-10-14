@@ -3,7 +3,10 @@ import asyncio
 import json
 import os
 import sys
+import signal
+import subprocess
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -175,9 +178,37 @@ class WorkerTest(unittest.TestCase):
         victim = self.home / "victim"
         victim.write_text("keep me")
         self.run_(self.w.handle(message(json.dumps({"myous": "exec", "id": "../../../victim", "cmd": "echo ran"}))))
-        r = self.replies()[-1]
-        self.assertEqual((r["stdout"], r.get("stopped")), ("ran\n", None))
+        self.assertEqual(self.replies()[-1], {"myous": "ack", "id": "../../../victim", "ok": False, "error": worker.BAD_ID})
         self.assertEqual(victim.read_text(), "keep me")
+
+    def test_request_ids_are_plain_names(self):
+        # One rule for ids, as the apps and review.py have it: 1 to 64 of
+        # A-Z, a-z, 0-9, - and _. Anything else is refused before it runs.
+        for rid in ("a-b_C9", "x" * 64, "0"):
+            self.run_(self.w.handle(message(json.dumps({"myous": "exec", "id": rid, "cmd": "echo ran"}))))
+            self.assertEqual(self.replies()[-1]["stdout"], "ran\n", rid)
+            self.assertTrue((self.home / "requests" / f"{rid}.json").exists(), rid)
+        for rid in ("x" * 65, "", "caf\u00e9", "\u0661\u0662", "a.b", "a b", "a/b", "a\\b", "a\n"):
+            self.run_(self.w.handle(message(json.dumps({"myous": "exec", "id": rid, "cmd": "touch ran"}))))
+            self.assertEqual(self.replies()[-1], {"myous": "ack", "id": rid, "ok": False, "error": worker.BAD_ID}, repr(rid))
+        self.assertFalse((self.work / "ran").exists())
+        put = {"type": "file", "direction": "in", "peer": PEER, "alias": "muse", "name": "in.txt", "size": 1,
+               "x": "00", "w": ["put", "a.b", "in.txt"], "seq": 2, "at": 0}
+        self.run_(self.w.handle(put))
+        self.assertEqual(self.replies()[-1], {"myous": "ack", "id": "a.b", "ok": False, "error": worker.BAD_ID})
+        self.assertEqual(sorted(p.name for p in (self.home / "requests").iterdir()),
+                         sorted(["a-b_C9.json", "x" * 64 + ".json", "0.json"]))
+
+    def test_stopping_the_worker_ends_a_review_that_waits(self):
+        # A hook waiting for the owner when the worker is stopped: ended, and
+        # the agent is told.
+        self.w.review_cmd = "sleep 30"
+        threading.Timer(0.5, self.w.stopping.set).start()
+        started = time.time()
+        self.run_(self.w.handle(message(json.dumps({"myous": "exec", "id": RID, "cmd": "touch ran"}))))
+        self.assertEqual(self.replies()[-1], {"myous": "ack", "id": RID, "ok": False, "error": worker.STOPPING})
+        self.assertFalse((self.work / "ran").exists())
+        self.assertLess(time.time() - started, 5)
 
     def test_malformed_requests_are_refused_not_fatal(self):
         self.run_(self.w.handle(message('{"myous": "exec", "id": "%s", "cmd": "echo ok", "timeout": Infinity}' % RID)))
@@ -325,9 +356,9 @@ class WorkerTest(unittest.TestCase):
         self.run_(self.w.handle(message(json.dumps({"myous": "exec", "id": "cd" * 16, "cmd": "echo no"}))))
         rec = json.loads((self.home / "requests" / ("cd" * 16 + ".json")).read_text())
         self.assertEqual((rec["decision"], rec["reason"]), ("refuse", "worker is paused"))
-        # Odd ids can't escape the directory.
+        # Odd ids are refused, and can't name a record elsewhere.
         self.run_(self.w.handle(message(json.dumps({"myous": "exec", "id": "../x", "cmd": "echo"}))))
-        self.assertEqual(sorted(p.name for p in (self.home / "requests").iterdir()), sorted([f"{RID}.json", "cd" * 16 + ".json", "x.json"]))
+        self.assertEqual(sorted(p.name for p in (self.home / "requests").iterdir()), sorted([f"{RID}.json", "cd" * 16 + ".json"]))
 
     def test_request_records_are_pruned(self):
         for i in range(worker.REQUESTS_KEEP + 5):
@@ -386,6 +417,91 @@ class WorkerTest(unittest.TestCase):
         self.assertIsNone(self.w.paired)
         log = [json.loads(line) for line in (self.home / "worker.log").read_text().splitlines()]
         self.assertEqual(log[-1]["op"], "unpair")
+
+
+# A worker in a process of its own, as `myous worker` runs: its fake agent
+# hands it one exec request, writes its replies to a file and waits.
+STOP_SCRIPT = r"""
+import asyncio, json, sys
+from pathlib import Path
+from myous import worker
+from myous.storage import FileStorage
+
+home, work, cmd = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
+
+class Agent:
+    alias, card = "box", ""
+    def contacts(self):
+        return {"k": {"alias": "muse", "npub": "npub1peer", "status": "approved"}}
+    async def send(self, to, text):
+        with open(home / "sent.jsonl", "a") as f:
+            f.write(text + "\n")
+    async def listen(self, on_new, on_tick, tick):
+        req = {"myous": "exec", "id": "ab" * 16, "cmd": cmd, "timeout": 120}
+        await on_new([{"type": "message", "direction": "in", "peer": "npub1peer", "alias": "muse",
+                       "text": json.dumps(req), "request": req, "seq": 1, "at": 0}])
+        await asyncio.sleep(3600)
+    class keys:
+        @staticmethod
+        def public_key():
+            class PK:
+                @staticmethod
+                def to_bech32():
+                    return "npub1box"
+            return PK()
+
+asyncio.run(worker.Worker(Agent(), FileStorage(home), work).run())
+print("worker: exited", flush=True)
+"""
+
+
+@unittest.skipIf(processes.WINDOWS, "POSIX signals and process groups")
+class StopSignalTest(unittest.TestCase):
+    """Stopping the worker (SIGTERM, as the apps and `docker stop` do; or
+    SIGINT) ends the command it is running with its process group, answers
+    the agent and exits."""
+
+    def stop_with(self, sig):
+        with tempfile.TemporaryDirectory() as tmp:
+            home, work = Path(tmp) / "home", Path(tmp) / "work"
+            pid_file = Path(tmp) / "sleep.pid"
+            # The shell execs sleep, so the sleep is its process group's leader.
+            cmd = f"echo begun; echo $$ > {pid_file}; exec sleep 60"
+            env = dict(os.environ, PYTHONPATH=str(Path(worker.__file__).resolve().parents[1]))
+            proc = subprocess.Popen([sys.executable, "-c", STOP_SCRIPT, str(home), str(work), cmd], env=env,
+                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            try:
+                deadline = time.time() + 20
+                while not (pid_file.exists() and pid_file.read_text().strip()) and time.time() < deadline:
+                    time.sleep(0.05)
+                pgid = int(pid_file.read_text())
+                os.killpg(pgid, 0)   # running
+                started = time.time()
+                proc.send_signal(sig)
+                out, _ = proc.communicate(timeout=10)
+                self.assertLess(time.time() - started, 5)
+            finally:
+                if proc.poll() is None:
+                    proc.kill()
+                    proc.wait()
+            self.assertEqual(proc.returncode, 0, out)
+            self.assertIn("worker: exited", out)
+            with self.assertRaises(ProcessLookupError):
+                os.killpg(pgid, 0)   # the command's group is gone
+            sent = [json.loads(line) for line in (home / "sent.jsonl").read_text().splitlines()]
+            self.assertEqual(len(sent), 1)
+            r = sent[0]
+            self.assertEqual((r["myous"], r["id"], r["exit"], r["stopped"]), ("result", "ab" * 16, -1, True))
+            self.assertIn(worker.STOPPING, r["stderr"])
+            self.assertIn("begun", r["stdout"])
+            rec = json.loads((home / "requests" / ("ab" * 16 + ".json")).read_text())
+            self.assertTrue(rec["stopped"])
+
+    def test_sigterm(self):
+        self.stop_with(signal.SIGTERM)
+
+    def test_sigint(self):
+        self.stop_with(signal.SIGINT)
 
 
 if __name__ == "__main__":

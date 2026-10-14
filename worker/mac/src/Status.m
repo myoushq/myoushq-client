@@ -186,10 +186,18 @@ NSArray<NSDictionary *> *loadApprovals(Paths *paths) {
     return out;
 }
 
+BOOL validRequestId(NSString *rid) {
+    if (![rid isKindOfClass:[NSString class]] || rid.length < 1 || rid.length > 64) return NO;
+    for (NSUInteger i = 0; i < rid.length; i++) {
+        unichar c = [rid characterAtIndex:i];
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_')) return NO;
+    }
+    return YES;
+}
+
 void answerApproval(Paths *paths, NSString *rid, NSString *verdict) {
-    NSString *safe = [[rid componentsSeparatedByCharactersInSet:[[NSCharacterSet alphanumericCharacterSet] invertedSet]] componentsJoinedByString:@""];
-    if (!safe.length) return;
-    NSString *path = [[paths approvals] stringByAppendingPathComponent:[safe stringByAppendingString:@".answer"]];
+    if (!validRequestId(rid)) return;   // the worker refuses such ids; there is no question to answer
+    NSString *path = [[paths approvals] stringByAppendingPathComponent:[rid stringByAppendingString:@".answer"]];
     [[verdict dataUsingEncoding:NSUTF8StringEncoding] writeToFile:path atomically:YES];
 }
 

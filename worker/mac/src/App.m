@@ -1681,8 +1681,8 @@ static NSString *checkMark(NSString *state, double unsure) {
 /// A `stop-<id>` command file: the worker kills the command's process group.
 - (void)stopCommand {
     NSDictionary *r = [self runningRequest];
-    if (!r) return;
-    sendWorkerCommand(self.paths, [@"stop-" stringByAppendingString:str(r[@"id"]) ?: @""]);
+    if (!r || !validRequestId(str(r[@"id"]))) return;
+    sendWorkerCommand(self.paths, [@"stop-" stringByAppendingString:str(r[@"id"])]);
     [self append:[NSString stringWithFormat:@"stop: %@", str(r[@"cmd"]) ?: @""]];
     self.stopCommandButton.enabled = NO;
 }
@@ -2307,8 +2307,17 @@ static NSString *checkMark(NSString *state, double unsure) {
 
 - (void)stopDirect {
     if (self.direct) {
-        [self append:[NSString stringWithFormat:@"stopping myous worker (pid %d)", self.direct.processIdentifier]];
-        [self.direct terminate];
+        // SIGTERM: the worker ends the command it runs, answers that request
+        // and exits. If it is still there after ten seconds, SIGKILL.
+        NSTask *t = self.direct;
+        [self append:[NSString stringWithFormat:@"stopping myous worker (pid %d)", t.processIdentifier]];
+        [t terminate];
+        __weak typeof(self) weak = self;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if (!t.running) return;
+            kill(t.processIdentifier, SIGKILL);
+            [weak append:[NSString stringWithFormat:@"myous worker (pid %d) didn't stop in 10 seconds; killed", t.processIdentifier]];
+        });
     } else {
         NSNumber *pid = num([StatusFile readAt:self.paths].status[@"pid"]);   // started outside this app
         if (pid) { kill((pid_t)pid.intValue, SIGTERM); [self append:[NSString stringWithFormat:@"sent SIGTERM to worker pid %@", pid]]; }

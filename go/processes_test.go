@@ -5,6 +5,7 @@ package myous
 // the Go client doesn't have).
 
 import (
+	"context"
 	"runtime"
 	"strings"
 	"testing"
@@ -15,7 +16,7 @@ var win = runtime.GOOS == "windows"
 
 func runIn(t *testing.T, cmd string, timeout int) commandResult {
 	t.Helper()
-	r, err := runCommand(cmd, t.TempDir(), timeout, "")
+	r, err := runCommand(context.Background(), cmd, t.TempDir(), timeout, "")
 	if err != nil {
 		t.Fatal(err)
 	}

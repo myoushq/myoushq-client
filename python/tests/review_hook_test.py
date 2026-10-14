@@ -95,7 +95,18 @@ class HookTest(unittest.TestCase):
         t = threading.Thread(target=answer, args=("refuse",)); t.start()
         self.assertEqual(self.run_hook({"op": "exec", "id": "q2", "cmd": "ls"}), (1, "refused by the owner"))
         t.join()
+        # Ids with - and _ are asked about under their own name, which the apps answer.
+        t = threading.Thread(target=answer, args=("allow",)); t.start()
+        self.assertEqual(self.run_hook({"op": "exec", "id": "q-3_x", "cmd": "ls"})[0], 0)
+        t.join()
         self.assertEqual(list(approvals.glob("*")), [])
+
+    def test_ids_the_apps_cannot_answer_are_refused(self):
+        self.level("all")
+        bad = "bad request: the id must be 1 to 64 characters from A-Z, a-z, 0-9, - and _"
+        for rid in ("x" * 65, "", "caf\u00e9", "a.b", "../x", 7, None):
+            self.assertEqual(self.run_hook({"op": "exec", "id": rid, "cmd": "ls"}), (1, bad), repr(rid))
+        self.assertEqual(list(self.home.glob("approvals/*")), [])
 
 
 if __name__ == "__main__":

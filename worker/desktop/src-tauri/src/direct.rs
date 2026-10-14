@@ -154,16 +154,43 @@ pub fn start(
     Ok(pid)
 }
 
-/// Ends a process and what it started (taskkill /T on Windows, SIGTERM elsewhere).
+/// How long a worker sent SIGTERM has to end its command, answer the
+/// agent and exit before it is killed.
+const STOP_GRACE: Duration = Duration::from_secs(10);
+
+/// Ends a process and what it started. Elsewhere than Windows: SIGTERM,
+/// on which the worker ends the command it runs (its process group),
+/// answers that request and exits; SIGKILL if it is still there after
+/// STOP_GRACE. On Windows, where a worker without a console can't be
+/// asked: taskkill /T, which ends the worker and the command it runs.
 fn end(pid: u32) {
-    let pid = pid.to_string();
+    let id = pid.to_string();
     let mut cmd = crate::engine::command(if cfg!(windows) { "taskkill" } else { "kill" });
     if cfg!(windows) {
-        cmd.args(["/T", "/F", "/PID", &pid]);
+        cmd.args(["/T", "/F", "/PID", &id]);
     } else {
-        cmd.args(["-TERM", &pid]);
+        cmd.args(["-TERM", &id]);
     }
     let _ = run_capture(cmd, Duration::from_secs(15));
+    if !cfg!(windows) {
+        std::thread::spawn(move || {
+            let begun = std::time::Instant::now();
+            while begun.elapsed() < STOP_GRACE {
+                std::thread::sleep(Duration::from_millis(500));
+                if !signal(pid, "-0") {
+                    return; // gone (an exited child of ours is reaped by start's thread)
+                }
+            }
+            signal(pid, "-KILL");
+        });
+    }
+}
+
+/// `kill <sig> <pid>`: true if it succeeded (for -0: the process exists).
+fn signal(pid: u32, sig: &str) -> bool {
+    let mut cmd = crate::engine::command("kill");
+    cmd.args([sig, &pid.to_string()]);
+    run_capture(cmd, Duration::from_secs(15)).0 == 0
 }
 
 /// Stops the worker this app started for `home`, else the process `pid`

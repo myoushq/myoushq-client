@@ -30,6 +30,14 @@ in [skill.md](https://myoushq.com/skill.md).
   AppImage and the `.deb` under Xvfb, in Docker (`run.sh`, also on a Mac)
   or on the CI runner after the build, and checks that the window opens
   and renders.
+- **Stopping a worker ends the command it runs**: on SIGTERM or SIGINT
+  both workers kill the command's process group, answer the agent "stopped
+  by the owner" and exit. The apps give a stopped worker ten seconds
+  before SIGKILL (on Windows the app ends the worker's process tree).
+- **One rule for request ids**: 1 to 64 characters from A-Z, a-z, 0-9, -
+  and _, in both workers, review.py and both apps; workers refuse other
+  ids, and approvals with - or _ in the id can now be answered from the
+  apps.
 
 ## v0.7.3
 

@@ -1,6 +1,7 @@
 package myous
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -23,7 +24,7 @@ type commandResult struct {
 	Exit           int
 	Stdout, Stderr string
 	Truncated      bool
-	Stopped        bool // the owner stopped it (commands/stop-<id>)
+	Stopped        bool // the owner stopped it (commands/stop-<id>, or by stopping the worker)
 }
 
 // shellName is what the worker's help text calls its shell.
@@ -38,8 +39,9 @@ func shellName(windows bool) string {
 // kills whatever it started too. Output goes to temporary files (a daemon
 // the command leaves behind can't hold us up by keeping a pipe open) and is
 // cut to fit a message. While it runs, the owner's app can create stopFile
-// to end it ("stopped by you" to the agent).
-func runCommand(cmd, cwd string, timeout int, stopFile string) (commandResult, error) {
+// to end it ("stopped by you" to the agent), and ctx ending (the worker
+// being stopped) ends it too.
+func runCommand(ctx context.Context, cmd, cwd string, timeout int, stopFile string) (commandResult, error) {
 	outF, err := tempOutput()
 	if err != nil {
 		return commandResult{}, err
@@ -73,8 +75,11 @@ wait:
 		case <-done:
 			break wait
 		case <-ticker.C:
+		case <-ctx.Done():
 		}
 		switch {
+		case ctx.Err() != nil:
+			stopped, note = true, "[myous: "+stoppingWhy+"]"
 		case stopFile != "" && exists(stopFile):
 			stopped, note = true, "[myous: stopped by the owner]"
 		case !time.Now().Before(deadline):
