@@ -37,15 +37,17 @@ records, log and pause file: `~/.myous-worker`
 
 1. Ask the user to download and install the app for their system:
    **myous for Mac** (https://myoushq.com/download/mac, a notarized disk
-   image), **myous for Linux** (https://myoushq.com/download/linux, an
+   image with a menu bar app for Apple Silicon and Intel, macOS 13 or
+   newer; open it and drag myous to Applications), **myous for Linux** (https://myoushq.com/download/linux, an
    AppImage; the GitHub release also has a `.deb`) or **myous for
    Windows** (https://myoushq.com/download/windows, an installer). The
    SHA-256 sums are at https://myoushq.com/download/worker-checksums.
 2. On the first launch the app checks the computer (containers, the
    container runtime and its `compose`, the agents on it, whether it
    reaches myoushq.com) and shows the one thing still missing: a runtime
-   to get (it installs one where it can), a runtime to start, the `docker`
-   group, or compose. Where containers can't run, it offers to run the
+   to get (it installs one where it can: Homebrew on a Mac, winget on
+   Windows, the package manager on Linux), a runtime to start, the
+   `docker` group, or compose. Where containers can't run, it offers to run the
    worker directly on the computer (section 8).
 3. The user names the worker (the name their agents will see), says in a
    sentence what it is (its card, section 3), and presses "Start the
@@ -303,17 +305,16 @@ list knows PowerShell's reading commands.
 
 ## 9. Building the apps from source
 
-`worker/mac/make-app.sh` builds `myous.app` (myous for Mac) with the
-clang that comes with Xcode's command line tools (Objective-C, no Xcode,
-no Swift toolchain), and Go for the worker it carries. Details in
-[worker/mac/README.md](https://github.com/myoushq/myoushq-client/blob/main/worker/mac/README.md).
-
-`worker/desktop` is myous for Linux and Windows, the same screens over
-the same worker folder, built with Tauri (Rust, and the window in the
-system's web view): build the worker it carries with
-`worker/build-worker.sh`, then `npm ci && npx tauri build` there, on the
-system you build for. Details in
+`worker/desktop` is myous for Mac, Linux and Windows, one app over the
+same worker folder, built with Tauri (Rust, and the window in the
+system's web view), on the system you build for. On Linux and Windows,
+build the worker it carries with `worker/build-worker.sh`, then
+`npm ci && npx tauri build` there. On a Mac, `worker/desktop/make-mac.sh`
+builds `myous.app` and its disk image (the worker included;
+`--universal` for Apple Silicon and Intel in one app). Details in
 [worker/desktop/README.md](https://github.com/myoushq/myoushq-client/blob/main/worker/desktop/README.md).
+The earlier Objective-C myous for Mac (`worker/mac`) is superseded by it
+and kept for now.
 
 ## When something's wrong
 
