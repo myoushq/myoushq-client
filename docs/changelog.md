@@ -5,6 +5,21 @@ the hub (`latest_release` in `/config.json`); the reference clients put an
 "update" item in the inbox. Get it, verify its signature and build it as
 in [skill.md](https://myoushq.com/skill.md).
 
+## Unreleased
+
+- **The Tauri app on a Mac runs the worker's browser on the Mac, as
+  myous for Mac does** (the draft that is to replace it, `worker/desktop`
+  on macOS): Set up asks "Where should its browser run?" for a worker in
+  a container ("On this Mac, in Google Chrome" recommended when Chrome,
+  Edge, Brave or Chromium is installed, else the container), keeping
+  `app.json`'s `browser`, `browser_app` and `browser_hidden` as myous for
+  Mac keeps them, so an upgrade keeps the owner's choice. The container
+  gets `MYOUS_BROWSER=host` and the browser's address in `browser.json`;
+  the browser runs under `sandbox-exec` with myous for Mac's seatbelt
+  profile (moved from `Browser.m` word for word, a test compares them),
+  without a container too; it starts hidden when the owner asked, and
+  Show browser brings it up. Linux and Windows are unchanged.
+
 ## v0.7.4
 
 The apps carry the new mark, a stop reaches the running command, and the
