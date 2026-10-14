@@ -1,4 +1,17 @@
-# myous for Mac
+# myous for Mac (Objective-C, superseded)
+
+> **Superseded by `worker/desktop` on macOS.** As of the release that
+> follows this change ("Unreleased" in `docs/changelog.md`), myous for
+> Mac is the Tauri app in
+> [`worker/desktop`](../desktop/README.md) (one codebase for Mac, Linux
+> and Windows): the release builds it, and `/download/mac` serves it under
+> the same name, `myous-<version>.dmg`. This Objective-C app is kept, not
+> built by CI or released any more, until the Tauri app has shipped and
+> been tried; the owner decides when to delete it. `notarize.sh` and
+> `make-dmg.sh` here are still used by the Tauri app's build
+> (`worker/desktop/make-mac.sh` and the release's `mac-app` job), and
+> `compose-image.yml` by the published-image steps in `docs/worker.md`,
+> so they move rather than go when this folder is deleted.
 
 `myous.app` is the human's side of a worker on a Mac. It lives in the menu
 bar (a coloured dot shows the state), and its window walks through the
@@ -210,8 +223,10 @@ whether it stayed so).
 
 ## Releasing (maintainers)
 
-The release workflow builds the app on a macOS runner from the signed tag
-and runs, in this order:
+The release workflow no longer builds this app: it builds
+`worker/desktop` (`make-mac.sh --universal --no-dmg --sign …`) and then
+runs this folder's `notarize.sh` and `make-dmg.sh` on it. For this app it
+ran, in this order:
 
 ```sh
 worker/mac/make-app.sh --no-config --version 0.7.4 --sign "Developer ID Application: <name> (<team>)"
