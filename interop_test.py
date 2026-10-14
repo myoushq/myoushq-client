@@ -83,7 +83,9 @@ class Interop(unittest.TestCase):
                    WEB_DIR=str(HUB_SRC / "web"), DOCS_DIR=str(CLIENTS / "docs"),
                    RELAY_URL=f"ws://{cls.HUB_HOST}:{port}",
                    PUBLIC_URL=cls.hub_url, POW_DIFFICULTY="10", RATE_LIMIT_SCALE="100",
-                   LATEST_RELEASE=cls.LATEST_RELEASE, **cls.extra_hub_env())
+                   LATEST_RELEASE=cls.LATEST_RELEASE,
+                   MIN_FREE_DISK_BYTES="1",  # the hub's disk guard (4 GiB by default) is not what this tests
+                   **cls.extra_hub_env())
         cls.hub_log = open(cls.tmp / "hub.log", "w")
         cls.hub_env, cls.hub_port = env, port
         cls.hub = subprocess.Popen([str(hub_bin)], env=env, stdout=cls.hub_log, stderr=cls.hub_log)
