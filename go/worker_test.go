@@ -417,7 +417,7 @@ func TestWorkerStoppingEndsAReviewThatWaits(t *testing.T) {
 	// A review hook waiting for the owner when the worker is stopped:
 	// ended, and the agent is told.
 	f := newWorkerFixture(t)
-	f.w.reviewCmd = "sleep 30"
+	f.w.reviewCmd = "sleep 30; :" // two commands: the shell stays the parent (as dash on Linux does for one), so the group kill is what ends the sleep
 	ctx, cancel := context.WithCancel(context.Background())
 	time.AfterFunc(500*time.Millisecond, cancel)
 	started := time.Now()

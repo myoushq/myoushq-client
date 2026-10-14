@@ -885,9 +885,11 @@ mod tests {
                 &pythons.join("Launcher"),
             ]
         );
-        // No HOME: its folders are left out, not made relative.
+        // No HOME: its folders are left out, not made relative. (Checked
+        // on the string: on a Windows host a path without a drive letter
+        // is not `is_absolute`, and this test runs there too.)
         let none = extra_dirs("linux", &|_: &str| None);
-        assert!(none.iter().all(|p| p.is_absolute()));
+        assert!(none.iter().all(|p| p.to_string_lossy().starts_with('/')));
         std::fs::remove_dir_all(&tmp).unwrap();
     }
 
