@@ -1,22 +1,30 @@
-# myous for Linux and Windows
+# myous for Mac, Linux and Windows
 
-`myous` is the human's side of a worker on a Linux or Windows computer:
-a tray icon whose colour shows the state, and a window that walks through
-the steps. Find a container runtime, name the worker, start it (with the
+`myous` is the human's side of a worker on a Mac, Linux or Windows
+computer: a menu bar or tray icon whose colour shows the state, and a
+window that walks through the steps. Find a container runtime, name the worker, start it (with the
 phases shown while it downloads, starts the browser and registers), hand
 the pairing message to an agent, confirm the verification code, then the
 everyday view: every request the agent made with its outcome (click a row
 for the command and its output), Allow and Refuse when the review level
-asks, Pause, Stop this command, and "Open browser". It is the same app as
-myous for Mac (`worker/mac`): the same screens and words, the same worker
-container, the same files in the worker folder, so a folder moves between
-them unchanged.
+asks, Pause, Stop this command, and "Open browser". One codebase for the
+three systems: the same screens and words, the same worker container, the
+same files in the worker folder, so a folder moves between them
+unchanged. On a Mac it replaces the earlier Objective-C app
+(`worker/mac`), which reads and writes the same folder; "On a Mac" below
+says what differs.
 
 ## Download
 
 Each release has, on the GitHub release page and at the links below (their
 SHA-256 sums are in `SHA256SUMS`):
 
+- **Mac:** `myous-<version>.dmg` (https://myoushq.com/download/mac),
+  one app for Apple Silicon and Intel, macOS 13 or newer, signed with a
+  Developer ID and notarized by Apple. Open the image, drag myous to
+  Applications, open it. For containers you need Docker Desktop,
+  OrbStack or Rancher Desktop (the app installs Docker Desktop or
+  OrbStack with Homebrew where Homebrew is there).
 - **Windows:** `myous-<version>-windows-x64-setup.exe`
   (https://myoushq.com/download/windows). An installer for your user
   only, no administrator rights; it fetches Microsoft's WebView2 if the PC
@@ -35,15 +43,15 @@ The app runs the published container image `ghcr.io/myoushq/worker:<version>`
 (the same version as the app) from the compose file built into it
 (`compose.yml` here, the same services as `worker/mac/compose-image.yml`;
 a test keeps them equal). The first start pulls about 2 GB. Everything the
-worker keeps lives in `~/.myous-worker` on Linux and
+worker keeps lives in `~/.myous-worker` on a Mac and on Linux, and
 `%LOCALAPPDATA%\myous\worker` on Windows; the browser's logins and the work
 directory are container volumes. The app writes its own log to `app.log`
 there.
 
-What differs from the Mac app: with a container the worker's browser
-runs only in the container (shown through the browser view in your own
-browser); without one it runs on the computer (below). Notifications have
-no buttons (Allow and Refuse are in the window).
+With a container the worker's browser runs only in the container (shown
+through the browser view in your own browser); without one it runs on the
+computer (below). Notifications have no buttons: a question brings up the
+window, which has Allow and Refuse.
 
 ## The first launch
 
@@ -101,7 +109,7 @@ desktops), or virtualization turned off in the firmware, says so. Either
 way, and on Linux as an option, the owner can go on without containers:
 the app remembers it (`"containers": false` in the first worker's
 `app.json`), goes straight to Set up, every worker then runs directly on
-the computer, as the Mac app's direct mode does, and the ⋯ menu offers
+the computer, as the Objective-C Mac app's direct mode does, and the ⋯ menu offers
 the way back. Without a container, commands run as the owner
 (PowerShell on Windows, `/bin/sh` elsewhere), and the review starts at
 "Ask me before anything that changes things". The agents on the
@@ -128,7 +136,7 @@ starts, the app starts the browser first: `--user-data-dir=<folder>/browser/<mse
 page (`browser/start.html`) that says whose window it is. It is a plain
 process, never launched through Playwright, so pages aren't marked as
 automated. The port goes into `browser.json` once it answers (the keys
-the Mac app writes, plus `python` and `kind: "host"`), which the worker
+the Objective-C Mac app writes, plus `python` and `kind: "host"`), which the worker
 reads at each `help`: a line with the address for Playwright's
 `connect_over_cdp`, and on the shell line the Python that has Playwright
 (as PowerShell takes it on Windows), its version, and whether the plain
@@ -163,15 +171,15 @@ is in `worker.log` (Show worker log, in the ⋯ menu).
 
 [Tauri 2](https://tauri.app): a small Rust program that owns the tray, the
 worker folders and the container runtime, and a window drawn by the
-system's web view (WebView2 on Windows, WebKitGTK on Linux). The window
-is plain HTML, CSS and TypeScript with no framework. An earlier version
+system's web view (WKWebView on a Mac, WebView2 on Windows, WebKitGTK on
+Linux). The window is plain HTML, CSS and TypeScript with no framework. An earlier version
 drew with OpenGL (Go and Fyne) and showed no window at all on PCs
 without a graphics driver, such as cloud desktops and many virtual
 machines; a web view has no such need.
 
 | Where | What |
 |---|---|
-| `ui/src/model.ts` | The state machine: which screen each worker is on, the state word and colour, notifications. A port of the Mac app's `evaluate`. |
+| `ui/src/model.ts` | The state machine: which screen each worker is on, the state word and colour, notifications. A port of the Objective-C Mac app's `evaluate`. |
 | `ui/src/app.ts` | The window: renders the model, runs the buttons, keeps the tray menu in step. |
 | `ui/src/menu.ts` | The tray menu, built from the model. |
 | `ui/src/backend.ts` | Every call into Rust, and a stand-in for a plain browser (previews, screenshots, tests). |
@@ -211,9 +219,55 @@ npx tauri build               # Linux: AppImage and deb; Windows: the NSIS insta
 npx tauri dev                 # run it from source
 ```
 
-On a Mac the same app builds too, as a draft port of myous for Mac
-(`worker/mac`): `./make-mac.sh` makes `build/myous.app` and a dmg. What
-works there and what doesn't yet is in `MAC-PORT.md`.
+On a Mac, `./make-mac.sh` builds the app (next section).
+
+## On a Mac
+
+The same app, built on macOS with the system's web view (WKWebView). The
+Mac parts are behind `cfg(target_os = "macos")` in Rust and
+`html.os-macos` in the window, so the Linux and Windows app is unchanged
+by them. `MAC-PORT.md` has the details and what is still to come.
+
+**Build and try it** (Node 22, Rust, Go and the Command Line Tools;
+`make-mac.sh` builds the worker it carries itself):
+
+```sh
+cd worker/desktop
+./make-mac.sh                 # build/myous.app for this Mac's architecture, signed ad hoc, and build/myous-<version>.dmg
+./make-mac.sh --universal     # Apple Silicon and Intel in one app (rustup target add aarch64-apple-darwin x86_64-apple-darwin)
+open build/myous.app
+MYOUS_WORKER_HOME=/tmp/w MYOUS_FAKE_STATE=pair build/myous.app/Contents/MacOS/myous-desktop   # look without touching a real worker
+python3 screens.py /tmp/screens --os macos                                                   # the previews at the Mac window's size
+```
+
+`make-mac.sh` runs `tauri build --bundles app --no-sign`, signs the
+worker and then the app (`--sign "Developer ID Application: …"` for the
+hardened runtime and a timestamp, else ad hoc), and packs the disk image
+with `worker/mac/make-dmg.sh`; with `--key-id`, `--issuer` and `--key` it
+also notarizes with `worker/mac/notarize.sh`. The release builds it
+universal and signed (`.github/workflows/release.yml`, the `mac-app`
+job). Inside the app the program is `Contents/MacOS/myous-desktop` (not
+on PATH, so it never stands in for the client's `myous`), with
+`myous-worker` next to it.
+
+**What differs on a Mac:**
+
+- A menu bar app (no Dock icon unless Settings turns one on); the menu
+  bar icon is the mark in the state's colour, with the count of new
+  requests next to it and on the Dock icon.
+- The window is dressed as a Mac window (the system's text sizes,
+  colours, push buttons, pop-up menus and striped table; dark mode, the
+  accent colour and Increase Contrast follow System Settings), fits its
+  content and isn't resizable. What the ⋯ menu holds elsewhere is in the
+  app menu (Settings… on ⌘,), and Running has Open log.
+- Open at login is a LaunchAgent (`~/Library/LaunchAgents/myous.plist`),
+  listed under "Allow in the Background" in System Settings.
+- The default worker name is the Computer Name.
+- A worker without a container uses Chrome, Edge, Brave or Chromium
+  from `/Applications` or `~/Applications`, with its profile in
+  `<worker folder>/browser/<bundle id>` (where the Objective-C app kept
+  it, so its logins carry over), and never the Mac's `/usr/bin/python3`.
+  The runtime cards install with Homebrew.
 
 ## Looking at the screens without a worker
 
