@@ -824,7 +824,8 @@ struct Ask {
 /// with notifications allowed) every notification goes through
 /// UserNotifications, as myous for Mac's do, and a question's (`ask`)
 /// has Allow and Refuse; true then, and the window needn't come up.
-/// Otherwise the plugin's plain notification, as elsewhere.
+/// Without permission the Mac app shows none (the window comes up for a
+/// question); a program run from target/ has the plugin's plain one.
 #[tauri::command]
 fn notify<R: Runtime>(
     app: AppHandle<R>,
@@ -842,7 +843,14 @@ fn notify<R: Runtime>(
     );
     #[cfg(not(target_os = "macos"))]
     let posted = false;
-    if !posted {
+    // A Mac app that took UserNotifications can't post the plugin's
+    // (NSUserNotification) ones as well: usernoted refuses a process that
+    // mixes the two. Not allowed there means not allowed for either.
+    #[cfg(target_os = "macos")]
+    let plain = !posted && !usernotify::active();
+    #[cfg(not(target_os = "macos"))]
+    let plain = true;
+    if plain {
         let mut n = app.notification().builder().title(title).body(body);
         if urgent {
             n = n.sound(URGENT_SOUND);

@@ -8,9 +8,10 @@
 //! UNUserNotificationCenter aborts the process when it isn't inside an
 //! app bundle (`cargo run`, the test binary), so none of this runs there:
 //! [`setup`] says no and the app keeps the notification plugin's plain
-//! notifications. It says no too while the owner hasn't allowed
-//! notifications (System Settings › Notifications › myous), and the app
-//! then brings up the window for a question, as before.
+//! notifications. Inside the bundle the plugin's can't stand in: usernoted
+//! refuses a process that mixes them with these. So while the owner hasn't
+//! allowed notifications (System Settings › Notifications › myous) there
+//! are none, and the app brings up the window for a question, as before.
 
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -64,6 +65,11 @@ pub fn in_app_bundle() -> bool {
         let bundle = NSBundle::mainBundle();
         bundle.bundleIdentifier().is_some() && bundle.bundlePath().to_string().ends_with(".app")
     })
+}
+
+/// Whether [`setup`] took the notification centre (the app, from its bundle).
+pub fn active() -> bool {
+    ACTIVE.load(Ordering::SeqCst)
 }
 
 /// The identifier of a question's notification, as myous for Mac names it.
@@ -178,15 +184,20 @@ pub fn setup(handler: impl Fn(Response) + Send + Sync + 'static) -> bool {
     );
     c.setNotificationCategories(&NSSet::from_retained_slice(&[category]));
 
-    let done = RcBlock::new(|granted: Bool, _error: *mut NSError| {
+    let done = RcBlock::new(|granted: Bool, error: *mut NSError| {
         let before = ALLOWANCE.swap(
             if granted.as_bool() { ALLOWED } else { DENIED },
             Ordering::SeqCst,
         );
         if !granted.as_bool() && before != DENIED {
-            crate::files::append_app_log(
-                "notifications: not allowed (System Settings › Notifications › myous); a question brings up the window",
-            );
+            // SAFETY: null or a valid error for the call.
+            let why = match unsafe { error.as_ref() } {
+                Some(e) => format!(" ({}, code {})", e.localizedDescription(), e.code()),
+                None => String::new(),
+            };
+            crate::files::append_app_log(&format!(
+                "notifications: not allowed{why} (System Settings › Notifications › myous); a question brings up the window",
+            ));
         }
     });
     c.requestAuthorizationWithOptions_completionHandler(
@@ -215,7 +226,8 @@ fn recheck() {
 /// worker folder and request id) with Allow and Refuse, anything else
 /// plain. `sound` plays the default sound. Returns false when it can't
 /// (outside an app bundle, or notifications not allowed), and the caller
-/// falls back to the plugin and the window.
+/// brings up the window for a question (and, outside an app bundle, uses
+/// the plugin).
 pub fn post(title: &str, body: &str, sound: bool, ask: Option<(&str, &str)>) -> bool {
     if !ACTIVE.load(Ordering::SeqCst) {
         return false;
@@ -341,6 +353,7 @@ mod tests {
     fn outside_an_app_nothing_is_posted() {
         assert!(!in_app_bundle());
         assert!(!setup(|_| {}));
+        assert!(!active());
         assert!(!post("t", "b", true, Some(("/tmp/w", "r1"))));
         withdraw(&["r1".into()]);
         withdraw_gone(|_, _| false);
