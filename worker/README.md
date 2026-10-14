@@ -99,7 +99,16 @@ the container's browser the owner's clock and language.
 picked up by the worker: `new-code` (a fresh pairing code while
 unpaired), `unpair` (drop every contact and offer a code) and
 `stop-<request id>` (end the command running under that id; its result
-says `stopped by the owner`). The apps use all of these.
+says `stopped by the owner`). The apps use all of these. Request ids name
+these files, so the worker refuses a request whose id isn't 1 to 64
+characters from A-Z, a-z, 0-9, - and _ (protocol.md, 7.1).
+
+**Stopping the worker.** On SIGTERM or SIGINT (`docker compose down`,
+the apps' Stop) the worker ends the command it is running with
+everything it started, answers that request "stopped by the owner (the
+worker is shutting down)", and exits. The apps give a worker running
+without a container ten seconds for this, then kill it; on Windows they
+end the worker and its command at once (`taskkill /T`).
 
 **Questions to the owner.** At the `changes` and `all` review levels, a
 request that needs the owner is written to
@@ -118,7 +127,8 @@ review hook strict.
 ```sh
 python3 -m venv ~/.myous-worker/venv
 ~/.myous-worker/venv/bin/pip install --require-hashes -r python/requirements.lock
-~/.myous-worker/venv/bin/pip install --no-deps ./python playwright
+~/.myous-worker/venv/bin/pip install --no-deps ./python
+~/.myous-worker/venv/bin/pip install playwright==1.63.0             # the version the container has
 ~/.myous-worker/venv/bin/playwright install chromium
 MYOUS_HOME=~/.myous-worker ~/.myous-worker/venv/bin/myous init --alias "Max's Mac"
 MYOUS_HOME=~/.myous-worker ~/.myous-worker/venv/bin/python worker/browser.py &   # a Chromium window appears; log in there
