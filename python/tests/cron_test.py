@@ -2,6 +2,7 @@
 anywhere), the crontab path elsewhere, and the listener restart's pid
 check."""
 import argparse
+import datetime
 import io
 import os
 import subprocess
@@ -9,6 +10,7 @@ import sys
 import tempfile
 import time
 import unittest
+import xml.etree.ElementTree as ET
 from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
@@ -20,9 +22,20 @@ REAL_PYTHON = sys.executable   # the tests below pretend it's elsewhere
 NOT_FOUND = b"ERROR: The system cannot find the file specified.\r\n"
 
 
-def task_xml(command: str, arguments: str) -> bytes:
-    """What `schtasks /Query /XML` prints (UTF-16, as the task file is)."""
-    xml = ('<?xml version="1.0" encoding="UTF-16"?>\r\n<Task version="1.2">\r\n  <Actions Context="Author">\r\n'
+NS = {"t": vm.TASK_NS}
+
+
+def task_xml(command: str, arguments: str, current: bool = True) -> bytes:
+    """What `schtasks /Query /XML` prints (UTF-16, as the task file is);
+    not current: a task as /SC MINUTE made it (no logon trigger, the
+    battery defaults)."""
+    battery = "false" if current else "true"
+    logon = "    <LogonTrigger>\r\n      <Enabled>true</Enabled>\r\n    </LogonTrigger>\r\n" if current else ""
+    xml = ('<?xml version="1.0" encoding="UTF-16"?>\r\n<Task version="1.2">\r\n'
+           f"  <Triggers>\r\n    <TimeTrigger>\r\n    </TimeTrigger>\r\n{logon}  </Triggers>\r\n"
+           f"  <Settings>\r\n    <DisallowStartIfOnBatteries>{battery}</DisallowStartIfOnBatteries>\r\n"
+           f"    <StopIfGoingOnBatteries>{battery}</StopIfGoingOnBatteries>\r\n  </Settings>\r\n"
+           '  <Actions Context="Author">\r\n'
            f"    <Exec>\r\n      <Command>{command}</Command>\r\n      <Arguments>{arguments}</Arguments>\r\n"
            "    </Exec>\r\n  </Actions>\r\n</Task>\r\n")
     return xml.replace('"', "&quot;").replace("&quot;1.0&quot;", '"1.0"').encode("utf-16")
@@ -38,6 +51,9 @@ class Schtasks:
     def __call__(self, argv, **kwargs):
         self.calls.append(argv)
         assert argv[0] == "schtasks", argv
+        if "/XML" in argv and argv[1] == "/Create":
+            # The definition as schtasks reads it, at the time it does.
+            self.definition = Path(argv[argv.index("/XML") + 1]).read_bytes()
         code, out, err = self.answers[argv[1]]
         return subprocess.CompletedProcess(argv, code, out, err)
 
@@ -57,7 +73,8 @@ class TaskSchedulerTest(unittest.TestCase):
         self.pythonw = str(scripts / "pythonw.exe")
         for patch in (mock.patch.object(vm, "WINDOWS", True),
                       mock.patch.object(vm, "DEFAULT_HOME", str(root / ".myous")),
-                      mock.patch.object(sys, "executable", str(scripts / "python.exe"))):
+                      mock.patch.object(sys, "executable", str(scripts / "python.exe")),
+                      mock.patch.dict(os.environ, {"USERDOMAIN": "LAPTOP", "USERNAME": "max"})):
             patch.start()
             self.addCleanup(patch.stop)
 
@@ -68,20 +85,79 @@ class TaskSchedulerTest(unittest.TestCase):
         with mock.patch.object(vm.subprocess, "run", fake):
             return fn(*args)
 
-    def wanted_tr(self):
-        return f'"{self.pythonw}" "{self.st.path("ensure.pyw")}"'
+    def definition(self, fake):
+        """The task definition schtasks was given, parsed."""
+        return ET.fromstring(fake.definition)
 
     def test_install(self):
         fake = Schtasks()
         self.assertEqual(self.run_with(fake, vm.install_cron, self.st), "scheduled task installed")
+        xml_file = str(self.st.path("ensure-task.xml"))
         self.assertEqual(fake.calls, [
             ["schtasks", "/Query", "/TN", "myous ensure", "/XML"],
-            ["schtasks", "/Create", "/F", "/SC", "MINUTE", "/MO", "1", "/TN", "myous ensure", "/TR", self.wanted_tr()],
+            ["schtasks", "/Create", "/F", "/XML", xml_file, "/TN", "myous ensure"],
         ])
+        action = self.definition(fake).find("t:Actions/t:Exec", NS)
+        self.assertEqual(action.findtext("t:Command", namespaces=NS), self.pythonw)
+        self.assertEqual(action.findtext("t:Arguments", namespaces=NS), f'"{self.st.path("ensure.pyw")}"')
         script = self.st.path("ensure.pyw").read_text(encoding="utf-8")
         self.assertIn(f"HOME = {str(self.st.home)!r}", script)
         self.assertIn('sys.argv = ["myous", "ensure", "--quiet"]', script)
         compile(script, "ensure.pyw", "exec")
+
+    def test_definition_settings(self):
+        fake = Schtasks()
+        self.run_with(fake, vm.install_cron, self.st)
+        task = self.definition(fake)
+        self.assertEqual(task.tag, f"{{{vm.TASK_NS}}}Task")
+        settings = {e.tag.split("}")[1]: e.text for e in task.find("t:Settings", NS)}
+        for key, value in {"DisallowStartIfOnBatteries": "false", "StopIfGoingOnBatteries": "false",
+                           "MultipleInstancesPolicy": "IgnoreNew", "StartWhenAvailable": "true",
+                           "ExecutionTimeLimit": "PT10M", "AllowHardTerminate": "true",
+                           "RunOnlyIfNetworkAvailable": "false", "RunOnlyIfIdle": "false",
+                           "Enabled": "true", "Hidden": "false"}.items():
+            self.assertEqual(settings[key], value, key)
+        principal = task.find("t:Principals/t:Principal", NS)
+        self.assertEqual(principal.findtext("t:UserId", namespaces=NS), "LAPTOP\\max")
+        self.assertEqual(principal.findtext("t:LogonType", namespaces=NS), "InteractiveToken")
+        self.assertEqual(principal.findtext("t:RunLevel", namespaces=NS), "LeastPrivilege")
+        self.assertEqual(task.find("t:Actions", NS).get("Context"), principal.get("id"))
+        self.assertIsNone(principal.find("t:Password", NS))
+
+    def test_definition_triggers(self):
+        fake = Schtasks()
+        before = datetime.datetime.now().replace(microsecond=0)
+        self.run_with(fake, vm.install_cron, self.st)
+        triggers = self.definition(fake).find("t:Triggers", NS)
+        self.assertEqual([t.tag.split("}")[1] for t in triggers], ["TimeTrigger", "LogonTrigger"])
+        timer, logon = triggers
+        start = datetime.datetime.fromisoformat(timer.findtext("t:StartBoundary", namespaces=NS))
+        self.assertTrue(before <= start <= datetime.datetime.now(), start)
+        self.assertEqual(logon.findtext("t:UserId", namespaces=NS), "LAPTOP\\max")
+        for trigger in triggers:
+            self.assertEqual(trigger.findtext("t:Repetition/t:Interval", namespaces=NS), "PT1M")
+            self.assertIsNone(trigger.find("t:Repetition/t:Duration", NS))   # indefinitely
+            # The schema's order for a trigger (a sequence).
+            order = ["Enabled", "StartBoundary", "EndBoundary", "Repetition", "ExecutionTimeLimit", "UserId", "Delay"]
+            tags = [e.tag.split("}")[1] for e in trigger]
+            self.assertEqual(tags, sorted(tags, key=order.index))
+
+    def test_definition_file_is_utf16_with_bom(self):
+        fake = Schtasks()
+        self.run_with(fake, vm.install_cron, self.st)
+        data = fake.definition
+        self.assertTrue(data.startswith(b"\xff\xfe<\x00?\x00x\x00m\x00l\x00"), data[:12])
+        text = data[2:].decode("utf-16-le")
+        self.assertTrue(text.startswith('<?xml version="1.0" encoding="UTF-16"?>\r\n'), text[:60])
+        self.assertNotIn("\n", text.replace("\r\n", ""))
+        self.assertEqual(data, self.st.path("ensure-task.xml").read_bytes())
+
+    def test_definition_escapes(self):
+        st = FileStorage(Path(self.tmp.name) / "a&b <c>")
+        task = ET.fromstring(vm.task_definition(st, "PC\\o'neil & co", datetime.datetime(2026, 10, 14, 9, 30, 5, 7)))
+        self.assertEqual(task.findtext("t:Principals/t:Principal/t:UserId", namespaces=NS), "PC\\o'neil & co")
+        self.assertEqual(task.findtext("t:Actions/t:Exec/t:Arguments", namespaces=NS), f'"{st.path("ensure.pyw")}"')
+        self.assertEqual(task.findtext("t:Triggers/t:TimeTrigger/t:StartBoundary", namespaces=NS), "2026-10-14T09:30:05")
 
     def test_ensure_pyw_logs_what_ensure_says(self):
         self.run_with(Schtasks(), vm.install_cron, self.st)
@@ -107,6 +183,14 @@ class TaskSchedulerTest(unittest.TestCase):
         self.assertEqual(self.run_with(fake, vm.install_cron, self.st), "scheduled task installed")
         self.assertEqual(fake.verbs(), ["/Query", "/Create"])
 
+    def test_replaces_a_task_from_before_the_definition(self):
+        # Same command, but made with /SC MINUTE: not on battery, no logon trigger.
+        xml = task_xml(self.pythonw, f'"{self.st.path("ensure.pyw")}"', current=False)
+        fake = Schtasks(query=(0, xml, b""))
+        self.assertEqual(self.run_with(fake, vm.install_cron, self.st), "scheduled task installed")
+        self.assertEqual(fake.verbs(), ["/Query", "/Create"])
+        self.assertIn("/XML", fake.calls[1])
+
     def test_show(self):
         xml = task_xml(self.pythonw, f'"{self.st.path("ensure.pyw")}"')
         shown = self.run_with(Schtasks(query=(0, xml, b"")), vm.show_cron, self.st)
@@ -129,8 +213,9 @@ class TaskSchedulerTest(unittest.TestCase):
         self.assertEqual(vm.task_name(other), "myous ensure (agent2)")
         fake = Schtasks()
         self.run_with(fake, vm.install_cron, other)
-        self.assertEqual(fake.calls[1][8:], ["myous ensure (agent2)", "/TR",
-                                             f'"{self.pythonw}" "{other.path("ensure.pyw")}"'])
+        self.assertEqual(fake.calls[1][3:], ["/XML", str(other.path("ensure-task.xml")), "/TN", "myous ensure (agent2)"])
+        self.assertEqual(self.definition(fake).findtext("t:Actions/t:Exec/t:Arguments", namespaces=NS),
+                         f'"{other.path("ensure.pyw")}"')
         self.assertIn(repr(str(other.home)), other.path("ensure.pyw").read_text(encoding="utf-8"))
 
     def test_not_available(self):
@@ -149,7 +234,7 @@ class TaskSchedulerTest(unittest.TestCase):
         fake = Schtasks()
         out = self.run_with(fake, vm.install_cron, self.st)
         self.assertTrue(out.startswith("scheduled task installed (there is no pythonw.exe"), out)
-        self.assertEqual(fake.calls[1][-1], f'"{sys.executable}" "{self.st.path("ensure.pyw")}"')
+        self.assertEqual(self.definition(fake).findtext("t:Actions/t:Exec/t:Command", namespaces=NS), sys.executable)
 
     def test_cli_passes_the_home(self):
         out = io.StringIO()
@@ -158,6 +243,33 @@ class TaskSchedulerTest(unittest.TestCase):
             cli.cmd_cron(None, other, argparse.Namespace(action="show"))
             cli.cmd_cron(None, other, argparse.Namespace(action="remove"))
         self.assertEqual(out.getvalue(), "no scheduled task\nno scheduled task to remove\n")
+
+
+@unittest.skipUnless(sys.platform == "win32" and os.environ.get("GITHUB_ACTIONS"),
+                     "registers a real task: Windows CI only")
+class RealTaskSchedulerTest(unittest.TestCase):
+    """schtasks itself accepts the definition (encoding, schema, the user's
+    account without a password) and keeps its settings."""
+
+    NAME = f"myous ci test {os.getpid()}"
+
+    def test_schtasks_accepts_the_definition(self):
+        with tempfile.TemporaryDirectory() as d:
+            st = FileStorage(d)
+            path = Path(d) / "task.xml"
+            vm.write_task_definition(path, vm.task_definition(st, vm._windows_user()))
+            r = subprocess.run(["schtasks", "/Create", "/F", "/XML", str(path), "/TN", self.NAME],
+                               stdin=subprocess.DEVNULL, capture_output=True)
+            self.assertEqual(r.returncode, 0, vm._text(r.stderr) + vm._text(r.stdout))
+            try:
+                query = subprocess.run(["schtasks", "/Query", "/TN", self.NAME, "/XML"],
+                                       stdin=subprocess.DEVNULL, capture_output=True)
+                self.assertEqual(query.returncode, 0)
+                self.assertTrue(vm._task_current(query), vm._text(query.stdout))
+                self.assertIn(str(st.path("ensure.pyw")), vm._task_line(query))
+            finally:
+                subprocess.run(["schtasks", "/Delete", "/F", "/TN", self.NAME],
+                               stdin=subprocess.DEVNULL, capture_output=True)
 
 
 class CrontabTest(unittest.TestCase):
