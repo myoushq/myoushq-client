@@ -10,6 +10,15 @@
 //! Mac's browser on the Mac, and the worker reads it for its help, which
 //! tells agents the address and the Python (so a browser opened while the
 //! worker runs is in its next help).
+//!
+//! On a Mac this is also myous for Mac's browser (`worker/mac/src/
+//! Browser.m`, ported here): Chrome, Edge, Brave or Chromium run under
+//! `sandbox-exec` with that app's seatbelt profile, which keeps the browser
+//! to its own folders, both without a container and for a worker in a
+//! container that asked for its browser on the Mac (`browser: "mac"` in
+//! app.json). For the latter, browser.json is the Mac app's (host
+//! `host.docker.internal`, no `kind`), which the container's forward.py
+//! reads; the browser starts hidden when `browser_hidden` says so.
 
 use std::collections::HashMap;
 use std::fs;
@@ -231,6 +240,11 @@ fn env_var(k: &str) -> Option<String> {
 }
 
 pub fn find_browser() -> Option<Found> {
+    // A Mac: the apps as Launch Services knows them, as myous for Mac finds them.
+    #[cfg(target_os = "macos")]
+    if env_var("MYOUS_BROWSER_BIN").is_none() {
+        return mac::find("");
+    }
     find_browser_with(
         crate::platform::os(),
         &crate::engine::which,
@@ -576,6 +590,99 @@ Downloads go to the downloads folder in the worker's work folder.</small></p></m
     )
 }
 
+/// The start page of a browser under the Mac's sandbox: myous for Mac's
+/// words (Browser.m's `startPage`), with the bubble that explains the bar
+/// Chrome shows about `--no-sandbox`.
+pub fn start_page_sandboxed(worker: &str) -> String {
+    let name = escape(if worker.is_empty() {
+        "the worker"
+    } else {
+        worker
+    });
+    format!(
+        "<!doctype html><meta charset=utf-8><title>myous · {name}</title>\
+<style>body{{font:15px/1.5 -apple-system,system-ui,sans-serif;color:#222;background:#f4f1ea;margin:0;min-height:100vh;display:flex;flex-direction:column}}\
+main{{max-width:36em;margin:0 auto;padding:2em 2em 3em}}h1{{font-size:1.4em;margin:0 0 .5em}}h1 b{{color:#1f7a6d}}p{{margin:.5em 0}}small{{color:#666}}\
+.bubble{{position:relative;align-self:flex-end;margin:22px 14px 0 14px;max-width:24em;background:#fff6dc;border:1px solid #d9b25a;border-radius:12px;padding:.7em 1em;box-shadow:0 2px 8px rgba(0,0,0,.08)}}\
+.bubble:before,.bubble:after{{content:'';position:absolute;right:22px;border:12px solid transparent;border-top:0}}\
+.bubble:before{{top:-13px;border-bottom-color:#d9b25a}}.bubble:after{{top:-11px;border-bottom-color:#fff6dc}}\
+.bubble b{{color:#7a5a00}}kbd{{font:inherit;white-space:nowrap;background:#eee;border:1px solid #ccc;border-radius:4px;padding:0 .3em}}</style>\
+<div class=bubble><b>That bar is expected.</b> Close it with its &times;. It says <kbd>--no-sandbox</kbd> is unsupported: \
+myous confines this browser with a macOS sandbox of its own, and macOS allows no sandbox inside another, so the browser's built-in one is off here. The outer one does the work.</div>\
+<main><h1><b>myous</b> · {name}'s browser</h1>\
+<p>This window belongs to the worker <b>{name}</b>: your agent browses here, and so can you. \
+Sites you log into here stay logged in for it.</p>\
+<p>It is kept to the worker's folder by that sandbox: it can't read your files, reach other programs on this Mac, or save anywhere but the worker's downloads folder.</p>\
+<p><small>Your own browser and its logins are untouched. Close this window when you like; myous starts it again while the worker runs.</small></p></main>"
+    )
+}
+
+/// myous for Mac's seatbelt profile (Browser.m's `seatbeltFor:`, the same
+/// text; a test compares them): the browser may use its own folder, its
+/// downloads and the network, nothing else of the Mac. `home` is the
+/// owner's home folder, `bundle` the browser's app folder, `id` its
+/// bundle id (for its preferences file).
+pub fn seatbelt(home: &str, browser_dir: &str, downloads: &str, id: &str, bundle: &str) -> String {
+    format!(
+        "(version 1)\n\
+;; myous: this worker's browser may use its own folder and the network, nothing else of this Mac.\n\
+(allow default)\n\
+;; The owner's files: nothing, except the browser's own folder and downloads.\n\
+(deny file-read* file-write* (subpath \"{home}\"))\n\
+(allow file-read-metadata (subpath \"{home}\"))\n\
+(allow file-read* file-write* (subpath \"{browser_dir}\"))\n\
+(allow file-read* file-write* (subpath \"{downloads}\"))\n\
+(allow file-read* (subpath \"{home}/Library/Fonts\"))\n\
+(allow file-read* (literal \"{home}/Library/Preferences/.GlobalPreferences.plist\"))\n\
+(allow file-read* (literal \"{home}/Library/Preferences/{id}.plist\"))\n\
+;; Other disks: no.\n\
+(deny file-read* file-write* (subpath \"/Volumes\"))\n\
+;; Programs: only the browser's own.\n\
+(deny process-exec*)\n\
+(allow process-exec* (subpath \"{bundle}\"))\n\
+;; Nothing on this Mac's local ports (the owner's services, Docker, dev servers).\n\
+(deny network-outbound (remote ip \"localhost:*\"))\n"
+    )
+}
+
+/// What myous for Mac runs to learn whether this macOS can sandbox a
+/// program (Browser.m's `canSandbox`): sandbox-exec with a small profile.
+pub const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub const SANDBOX_PROBE: &str =
+    "(version 1)(allow default)(deny network-outbound (remote ip \"localhost:*\"))";
+
+/// Why the browser can't run on this Mac, in myous for Mac's words (short:
+/// they go in a pop-up's line), or None when it can.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn unavailable_reason(installed: bool, sandbox: bool) -> Option<&'static str> {
+    if !installed {
+        Some("no browser it can run is installed")
+    } else if !sandbox {
+        Some("this macOS can't sandbox it")
+    } else {
+        None
+    }
+}
+
+/// myous for Mac's message when its browser can't start.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn cant_run(why: &str) -> String {
+    format!(
+        "Can't run the browser on this Mac: {why}. Install Google Chrome, Microsoft Edge, Brave or Chromium (all free), or choose the browser in the container."
+    )
+}
+
+/// The app folder a program is in (`…/Google Chrome.app` for its
+/// `Contents/MacOS/Google Chrome`), else the program's own folder.
+pub fn bundle_of(exe: &Path) -> PathBuf {
+    exe.ancestors()
+        .nth(3)
+        .filter(|p| p.extension().is_some_and(|e| e == "app"))
+        .unwrap_or_else(|| exe.parent().unwrap_or(exe))
+        .to_path_buf()
+}
+
 /// The profile's settings, set once before it exists (the owner's later
 /// choices stand): a name, avatar and toolbar colour that say "myous", the
 /// start page as home, downloads into the work folder, where the agent
@@ -616,6 +723,30 @@ pub struct Spec {
     pub python: String,
     /// More switches (the tests' `--headless=new`).
     pub extra: Vec<String>,
+    /// A Mac: the seatbelt profile it runs under (`<home>/browser.sb`,
+    /// through sandbox-exec), as myous for Mac runs it.
+    pub sandbox: Option<PathBuf>,
+    /// A Mac: the browser of a worker in a container (browser.json for
+    /// the container's forward.py).
+    pub container: bool,
+    /// A Mac: hidden once it is up, until Show browser.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    pub hidden: bool,
+}
+
+/// How the browser runs, beyond the program and its port. All off on
+/// Linux and Windows.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct How {
+    /// For a worker in a container (a Mac): browser.json as myous for Mac
+    /// writes it, and downloads in `<home>/downloads`, which the
+    /// container sees in the worker folder.
+    pub container: bool,
+    /// Under sandbox-exec with myous for Mac's seatbelt profile (a Mac).
+    pub sandbox: bool,
+    /// Hidden once its window is up, until Show browser (a Mac's
+    /// `browser_hidden`).
+    pub hidden: bool,
 }
 
 /// The browser's command line after the program: its own profile, the
@@ -636,6 +767,18 @@ pub fn args(s: &Spec, os: &str) -> Vec<String> {
         // Never the login keychain (and never its dialog).
         a.push("--use-mock-keychain".into());
     }
+    if s.sandbox.is_some() {
+        // No sandbox inside a sandbox on macOS: the seatbelt is the
+        // sandbox (Chrome shows a bar about it; --test-type would hide the
+        // bar but marks every page as automated). The rest as myous for
+        // Mac runs it.
+        a.push("--no-sandbox".into());
+        a.push(format!(
+            "--disk-cache-dir={}",
+            s.profile.join("cache").display()
+        ));
+        a.push("--window-size=1200,800".into());
+    }
     a.extend(s.extra.iter().cloned());
     a.push("--new-window".into());
     a.push(s.start_url.clone());
@@ -644,7 +787,9 @@ pub fn args(s: &Spec, os: &str) -> Vec<String> {
 
 /// Writes the start page and the profile's first settings; the folders
 /// it needs. Each browser has its own profile (`<home>/browser/<id>`, as
-/// on the Mac), so Edge and Chrome never share one.
+/// on the Mac), so Edge and Chrome never share one. As on Linux and
+/// Windows (the tests; the app uses `prepare_with`).
+#[cfg(test)]
 pub fn prepare(
     home: &Path,
     worker: &str,
@@ -653,16 +798,62 @@ pub fn prepare(
     python: &str,
     extra: Vec<String>,
 ) -> Result<Spec, String> {
+    prepare_with(home, worker, found, port, python, extra, &How::default())
+}
+
+/// `prepare`, and on a Mac the sandbox's profile (`<home>/browser.sb`)
+/// and a container worker's downloads folder.
+pub fn prepare_with(
+    home: &Path,
+    worker: &str,
+    found: &Found,
+    port: u16,
+    python: &str,
+    extra: Vec<String>,
+    how: &How,
+) -> Result<Spec, String> {
     let dir = paths::browser_dir(home);
     let profile = dir.join(&found.id);
-    let downloads = home.join("work").join("downloads");
+    // In a container the worker folder is mounted (~/.myous), the work
+    // folder isn't: downloads where myous for Mac puts them.
+    let downloads = if how.container {
+        home.join("downloads")
+    } else {
+        home.join("work").join("downloads")
+    };
     for d in [&dir, &profile, &downloads] {
         paths::ensure(d).map_err(|e| format!("{}: {e}", d.display()))?;
     }
     let page = dir.join("start.html");
-    fs::write(&page, start_page(worker)).map_err(|e| e.to_string())?;
+    let html = if how.sandbox {
+        start_page_sandboxed(worker)
+    } else {
+        start_page(worker)
+    };
+    fs::write(&page, html).map_err(|e| e.to_string())?;
     let start_url = file_url(&page);
     seed_preferences(&profile, worker, &start_url, &downloads);
+    let sandbox = if how.sandbox {
+        // The sandbox sees resolved paths (/private/tmp, not /tmp).
+        let real = |p: &Path| {
+            p.canonicalize()
+                .unwrap_or_else(|_| p.to_path_buf())
+                .to_string_lossy()
+                .to_string()
+        };
+        let text = seatbelt(
+            &real(&paths::user_home()),
+            &real(&dir),
+            &real(&downloads),
+            &found.id,
+            &real(&bundle_of(Path::new(&found.path))),
+        );
+        let sb = home.join("browser.sb");
+        fs::write(&sb, text).map_err(|e| format!("{}: {e}", sb.display()))?;
+        Some(sb)
+    } else {
+        None
+    };
     Ok(Spec {
         exe: PathBuf::from(&found.path),
         app: found.name.clone(),
@@ -671,17 +862,48 @@ pub fn prepare(
         port,
         python: python.into(),
         extra,
+        sandbox,
+        container: how.container,
+        hidden: how.hidden,
     })
+}
+
+/// The command that runs the browser's program: itself, or on a Mac
+/// sandbox-exec with the profile, which runs it confined (the same
+/// process: sandbox-exec ends in exec, so the pid is the browser's).
+fn browser_command(s: &Spec) -> std::process::Command {
+    let mut cmd = match &s.sandbox {
+        Some(sb) => {
+            let mut c = crate::engine::command(SANDBOX_EXEC);
+            c.arg("-f").arg(sb).arg(&s.exe);
+            c
+        }
+        None => crate::engine::command(&s.exe),
+    };
+    hide(&mut cmd);
+    cmd
 }
 
 /// browser.json: the keys myous for Mac writes (host, port, pid, app,
 /// at), plus the Python with Playwright and `kind` "host" (on this
-/// computer, no container in between).
+/// computer, no container in between). For a worker in a container (a
+/// Mac): exactly myous for Mac's, the host as the container reaches it,
+/// no `kind` (the worker in the container reads it through forward.py,
+/// and its help names localhost:9222 as with the container's browser).
 pub fn browser_json(spec: &Spec, pid: u32) -> Value {
     let at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
+    if spec.container {
+        return json!({
+            "host": "host.docker.internal",
+            "port": spec.port,
+            "pid": pid,
+            "app": spec.app,
+            "at": at,
+        });
+    }
     json!({
         "host": "127.0.0.1",
         "port": spec.port,
@@ -703,6 +925,9 @@ struct Proc {
     pid: u32,
     /// Which launch this is; a watcher of an earlier one stops.
     gen: u64,
+    /// The owner asked to see it (Show browser): a Mac stops hiding it.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    shown: bool,
 }
 
 fn procs() -> &'static Mutex<HashMap<String, Proc>> {
@@ -743,16 +968,22 @@ pub fn devtools_answers(port: u16) -> bool {
     port_answers(port) && get_text(&format!("http://127.0.0.1:{port}/json/version")).is_ok()
 }
 
-/// The browser a browser.json names, if it is this app's kind and still
-/// answers: (port, pid).
-fn adoptable(home: &Path) -> Option<(u16, u32)> {
+/// The browser a browser.json names, if it is this app's and still
+/// answers: (port, pid, whether it is a container worker's). A container
+/// worker's (myous for Mac's kind: no `kind`, the host as the container
+/// reaches it) only on a Mac.
+fn adoptable(home: &Path) -> Option<(u16, u32, bool)> {
     let v: Value = serde_json::from_slice(&fs::read(paths::browser_json(home)).ok()?).ok()?;
-    if v.get("kind")?.as_str()? != "host" || v.get("host")?.as_str()? != "127.0.0.1" {
-        return None;
-    }
+    let kind = v.get("kind").and_then(Value::as_str).unwrap_or("");
+    let host = v.get("host").and_then(Value::as_str).unwrap_or("");
+    let container = match (kind, host) {
+        ("host", "127.0.0.1") => false,
+        ("", "host.docker.internal") if cfg!(target_os = "macos") => true,
+        _ => return None,
+    };
     let port = u16::try_from(v.get("port")?.as_u64()?).ok()?;
     let pid = v.get("pid").and_then(Value::as_u64).unwrap_or(0) as u32;
-    devtools_answers(port).then_some((port, pid))
+    devtools_answers(port).then_some((port, pid, container))
 }
 
 /// Starts the program for `spec`, keeps it as this worker's browser and
@@ -761,22 +992,26 @@ pub fn launch(home: &Path, spec: Spec, log: Log) -> Result<u32, String> {
     let key = home.to_string_lossy().to_string();
     fs::create_dir_all(&spec.profile).map_err(|e| e.to_string())?;
     let out = fs::File::create(paths::browser_log(home)).map_err(|e| e.to_string())?;
-    let mut cmd = crate::engine::command(&spec.exe);
+    let mut cmd = browser_command(&spec);
     cmd.args(args(&spec, crate::platform::os()))
         .stdin(Stdio::null())
         .stdout(out.try_clone().map_err(|e| e.to_string())?)
         .stderr(out);
-    hide(&mut cmd);
     let child = cmd
         .spawn()
         .map_err(|e| format!("could not run {}: {e}", spec.exe.display()))?;
     let pid = child.id();
     let gen = GEN.fetch_add(1, Ordering::SeqCst);
     log(format!(
-        "browser: {} started (pid {pid}), profile {}, DevTools port {}; its output is in browser.log",
+        "browser: {} started (pid {pid}), profile {}, DevTools port {}{}; its output is in browser.log",
         spec.app,
         spec.profile.display(),
-        spec.port
+        spec.port,
+        if spec.sandbox.is_some() {
+            ", sandboxed to the worker's browser folder"
+        } else {
+            ""
+        }
     ));
     procs().lock().unwrap().insert(
         key.clone(),
@@ -785,6 +1020,7 @@ pub fn launch(home: &Path, spec: Spec, log: Log) -> Result<u32, String> {
             child: Some(child),
             pid,
             gen,
+            shown: false,
         },
     );
     watch(home.to_path_buf(), gen, log);
@@ -804,6 +1040,7 @@ fn adopt(home: &Path, spec: Spec, pid: u32, log: Log) {
             child: None,
             pid,
             gen,
+            shown: false,
         },
     );
     watch(home.to_path_buf(), gen, log);
@@ -840,8 +1077,13 @@ fn watch(home: PathBuf, gen: u64, log: Log) {
             if let Some(why) = ended {
                 let _ = fs::remove_file(paths::browser_json(&home));
                 log(format!(
-                    "browser: {} closed ({why}); Show browser opens it again",
-                    spec.app
+                    "browser: {} closed ({why}); {}",
+                    spec.app,
+                    if spec.container {
+                        "myous starts it again while the worker runs"
+                    } else {
+                        "Show browser opens it again"
+                    }
                 ));
                 return;
             }
@@ -854,9 +1096,19 @@ fn watch(home: PathBuf, gen: u64, log: Log) {
                         .as_bytes(),
                 );
                 log(format!(
-                    "browser: {} answers on 127.0.0.1:{} (browser.json)",
-                    spec.app, spec.port
+                    "browser: {} answers on 127.0.0.1:{} (browser.json){}",
+                    spec.app,
+                    spec.port,
+                    if spec.container {
+                        "; the container's localhost:9222 goes there"
+                    } else {
+                        ""
+                    }
                 ));
+                #[cfg(target_os = "macos")]
+                if spec.hidden {
+                    mac::hide_while_starting(key.clone(), gen, pid);
+                }
             } else if !ready && !warned && started.elapsed() > Duration::from_secs(30) {
                 warned = true;
                 log(format!(
@@ -876,6 +1128,27 @@ pub struct Started {
     pub python: String,
 }
 
+/// How the browser of a worker without a container runs: on a Mac under
+/// the sandbox when this macOS can sandbox it (else as on Linux and
+/// Windows, said in the log); plain elsewhere.
+fn direct_how(log: &Log) -> How {
+    #[cfg(target_os = "macos")]
+    {
+        if mac::can_sandbox() {
+            return How {
+                sandbox: true,
+                ..How::default()
+            };
+        }
+        log(
+            "browser: this macOS can't sandbox it; it runs without myous's sandbox, as on Linux and Windows"
+                .into(),
+        );
+    }
+    let _ = log;
+    How::default()
+}
+
 /// Starts the worker's browser, with the worker or while it runs (its
 /// help names the browser from browser.json): only when there is a
 /// browser and Playwright in the app's environment.
@@ -891,15 +1164,38 @@ pub fn start(home: &Path, worker: &str, extra: Vec<String>, log: Log) -> Result<
                 .into(),
         );
     }
-    start_with(home, worker, &found, &envpy.to_string_lossy(), extra, log)
+    let how = direct_how(&log);
+    start_with_how(
+        home,
+        worker,
+        &found,
+        &envpy.to_string_lossy(),
+        extra,
+        how,
+        log,
+    )
 }
 
+/// `start_with_how` as on Linux and Windows (the tests).
+#[cfg(test)]
 pub fn start_with(
     home: &Path,
     worker: &str,
     found: &Found,
     python: &str,
     extra: Vec<String>,
+    log: Log,
+) -> Result<Started, String> {
+    start_with_how(home, worker, found, python, extra, How::default(), log)
+}
+
+pub fn start_with_how(
+    home: &Path,
+    worker: &str,
+    found: &Found,
+    python: &str,
+    extra: Vec<String>,
+    how: How,
     log: Log,
 ) -> Result<Started, String> {
     let key = home.to_string_lossy().to_string();
@@ -912,17 +1208,23 @@ pub fn start_with(
             });
         }
     }
-    if let Some((port, pid)) = adoptable(home) {
-        let spec = prepare(home, worker, found, port, python, extra)?;
-        adopt(home, spec, pid, log);
-        return Ok(Started {
-            port,
-            app: found.name.clone(),
-            python: python.into(),
-        });
+    match adoptable(home) {
+        Some((port, pid, container)) if container == how.container => {
+            let spec = prepare_with(home, worker, found, port, python, extra, &how)?;
+            adopt(home, spec, pid, log);
+            return Ok(Started {
+                port,
+                app: found.name.clone(),
+                python: python.into(),
+            });
+        }
+        // The other kind (a Mac's worker that changed between a container
+        // and none while its browser ran): ended, a new one started.
+        Some((_, pid, _)) if pid != 0 => end_gracefully(pid, None),
+        _ => {}
     }
     let port = free_port().ok_or("no free port for the browser")?;
-    let spec = prepare(home, worker, found, port, python, extra)?;
+    let spec = prepare_with(home, worker, found, port, python, extra, &how)?;
     launch(home, spec, log)?;
     Ok(Started {
         port,
@@ -994,7 +1296,7 @@ pub fn stop(home: &Path) {
             }
         }
         None => {
-            if let Some((_, pid)) = adoptable(home) {
+            if let Some((_, pid, _)) = adoptable(home) {
                 if pid != 0 {
                     end_gracefully(pid, None);
                 }
@@ -1079,29 +1381,68 @@ fn allow_foreground() {}
 /// Not running (the owner closed it): started again on the same port, so
 /// the address the worker gave agents stays right. What it did, in words.
 pub fn show(home: &Path, worker: &str, log: Log) -> Result<String, String> {
+    let how = direct_how(&log);
+    let fresh = |port: u16| -> Result<Spec, String> {
+        let found = find_browser().ok_or("no browser found here")?;
+        let envpy = env_python();
+        prepare_with(
+            home,
+            worker,
+            &found,
+            port,
+            &envpy.to_string_lossy(),
+            Vec::new(),
+            &how,
+        )
+    };
+    show_with(home, &fresh, log)
+}
+
+/// `show`, with what a browser started from nothing would be (`fresh`,
+/// given the port to use).
+pub fn show_with(
+    home: &Path,
+    fresh: &dyn Fn(u16) -> Result<Spec, String>,
+    log: Log,
+) -> Result<String, String> {
     let key = home.to_string_lossy().to_string();
     let known = procs()
         .lock()
         .unwrap()
         .get(&key)
         .map(|p| (p.spec.clone(), p.pid));
-    let port = match &known {
-        Some((s, _)) => s.port,
-        None => adoptable(home).map(|(p, _)| p).unwrap_or(0),
+    let (port, pid) = match &known {
+        Some((s, pid)) => (s.port, *pid),
+        None => adoptable(home)
+            .map(|(port, pid, _)| (port, pid))
+            .unwrap_or((0, 0)),
     };
     if port != 0 && port_answers(port) {
+        // A Mac: out of hiding and to the front, as myous for Mac's Show
+        // browser does; and no more hiding while it starts.
+        #[cfg(target_os = "macos")]
+        if pid != 0 {
+            if let Some(p) = procs().lock().unwrap().get_mut(&key) {
+                p.shown = true;
+            }
+            mac::show(pid);
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = pid;
         allow_foreground();
         match activate(port) {
             Ok(true) => return Ok("brought to the front".into()),
             Ok(false) => {
                 if let Some((spec, _)) = &known {
-                    let mut cmd = crate::engine::command(&spec.exe);
+                    let mut cmd = browser_command(spec);
+                    if spec.sandbox.is_some() {
+                        cmd.args(["--no-sandbox", "--use-mock-keychain"]);
+                    }
                     cmd.arg(format!("--user-data-dir={}", spec.profile.display()))
                         .arg(&spec.start_url)
                         .stdin(Stdio::null())
                         .stdout(Stdio::null())
                         .stderr(Stdio::null());
-                    hide(&mut cmd);
                     let mut c = cmd.spawn().map_err(|e| e.to_string())?;
                     // It hands the address to the running browser and ends.
                     std::thread::spawn(move || {
@@ -1113,24 +1454,15 @@ pub fn show(home: &Path, worker: &str, log: Log) -> Result<String, String> {
             Err(e) => log(format!("browser: couldn't bring it forward: {e}")),
         }
     }
-    let spec = match known {
+    let mut spec = match known {
         Some((spec, _)) => spec,
         None => {
-            let found = find_browser().ok_or("no browser found here")?;
-            let envpy = env_python();
             let port = if port != 0 {
                 port
             } else {
                 free_port().ok_or("no free port for the browser")?
             };
-            prepare(
-                home,
-                worker,
-                &found,
-                port,
-                &envpy.to_string_lossy(),
-                Vec::new(),
-            )?
+            fresh(port)?
         }
     };
     if port_answers(spec.port) {
@@ -1139,8 +1471,272 @@ pub fn show(home: &Path, worker: &str, log: Log) -> Result<String, String> {
             spec.port
         ));
     }
+    // Asked for: not hidden this time.
+    spec.hidden = false;
     launch(home, spec, log)?;
     Ok("started it again".into())
+}
+
+// --- a Mac ---------------------------------------------------------------------
+
+/// myous for Mac's browser (Browser.m): the browsers as Launch Services
+/// knows them, the sandbox probe, a container worker's browser kept
+/// running while the worker runs, and hide and show through AppKit.
+#[cfg(target_os = "macos")]
+pub mod mac {
+    use super::*;
+    use objc2::rc::Retained;
+    use objc2::{msg_send, ClassType};
+    use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication, NSWorkspace};
+    use objc2_foundation::{NSBundle, NSString};
+
+    /// The names myous for Mac gives them (Browser.m's `known`).
+    fn long_name(id: &str) -> &'static str {
+        match id {
+            "com.google.Chrome" => "Google Chrome",
+            "com.microsoft.edgemac" => "Microsoft Edge",
+            "com.brave.Browser" => "Brave",
+            _ => "Chromium",
+        }
+    }
+
+    /// Where Launch Services has the app with this bundle id: its program.
+    fn program_for(id: &str) -> Option<String> {
+        let url = NSWorkspace::sharedWorkspace()
+            .URLForApplicationWithBundleIdentifier(&NSString::from_str(id))?;
+        let bundle = NSBundle::bundleWithURL(&url)?;
+        let exe = bundle.executableURL()?.path()?;
+        Some(exe.to_string())
+    }
+
+    /// The browsers this Mac has, in myous for Mac's order: where Launch
+    /// Services has them, else in /Applications or ~/Applications.
+    pub fn installed() -> Vec<Found> {
+        MAC.iter()
+            .filter_map(|(id, app, exe, _)| {
+                let path = program_for(id)
+                    .filter(|p| Path::new(p).is_file())
+                    .or_else(|| {
+                        [
+                            PathBuf::from("/Applications"),
+                            paths::user_home().join("Applications"),
+                        ]
+                        .into_iter()
+                        .map(|d| d.join(app).join("Contents").join("MacOS").join(exe))
+                        .find(|p| p.is_file())
+                        .map(|p| p.to_string_lossy().to_string())
+                    })?;
+                Some(Found {
+                    id: id.to_string(),
+                    name: long_name(id).into(),
+                    path,
+                })
+            })
+            .collect()
+    }
+
+    /// The browser with this bundle id if it is installed, else the first
+    /// one that is (Browser.m's `find:`).
+    pub fn find(id: &str) -> Option<Found> {
+        pick(installed(), id)
+    }
+
+    fn pick(all: Vec<Found>, id: &str) -> Option<Found> {
+        let chosen = all.iter().position(|b| b.id == id).unwrap_or(0);
+        all.into_iter().nth(chosen)
+    }
+
+    /// Whether this macOS can confine the browser: sandbox-exec runs a
+    /// small profile (asked once).
+    pub fn can_sandbox() -> bool {
+        static OK: OnceLock<bool> = OnceLock::new();
+        *OK.get_or_init(|| {
+            let mut cmd = crate::engine::command(SANDBOX_EXEC);
+            cmd.args(["-p", SANDBOX_PROBE, "/usr/bin/true"]);
+            run_capture(cmd, Duration::from_secs(10)).0 == 0
+        })
+    }
+
+    /// What Set up and Settings offer for a worker in a container.
+    #[derive(Serialize, Clone, Debug, Default)]
+    pub struct Choices {
+        /// The browsers it can run, in order (the first is recommended).
+        pub installed: Vec<Found>,
+        /// Why "On this Mac" can't be offered ("" when it can).
+        pub why: String,
+    }
+
+    pub fn choices() -> Choices {
+        let installed = installed();
+        let why = unavailable_reason(!installed.is_empty(), can_sandbox()).unwrap_or("");
+        Choices {
+            installed,
+            why: why.into(),
+        }
+    }
+
+    fn running_app(pid: u32) -> Option<Retained<NSRunningApplication>> {
+        let pid = i32::try_from(pid).ok().filter(|p| *p > 0)?;
+        unsafe {
+            msg_send![
+                NSRunningApplication::class(),
+                runningApplicationWithProcessIdentifier: pid
+            ]
+        }
+    }
+
+    /// Out of the way, like ⌘H: still running (its launch switches keep
+    /// its pages working).
+    pub fn hide(pid: u32) {
+        if let Some(app) = running_app(pid) {
+            app.hide();
+        }
+    }
+
+    /// Out of hiding, every window to the front.
+    #[allow(deprecated)]
+    pub fn show(pid: u32) {
+        if let Some(app) = running_app(pid) {
+            app.unhide();
+            app.activateWithOptions(NSApplicationActivationOptions::ActivateAllWindows);
+        }
+    }
+
+    /// The DevTools port opens before the window exists, and the window
+    /// may come to the front after it shows: hidden now and again every
+    /// half second for the first six, unless the owner asked to see it
+    /// meanwhile (Browser.m's `hideWhenReady:`).
+    pub(super) fn hide_while_starting(key: String, gen: u64, pid: u32) {
+        std::thread::spawn(move || {
+            for _ in 0..13 {
+                let wanted = procs()
+                    .lock()
+                    .unwrap()
+                    .get(&key)
+                    .is_some_and(|p| p.gen == gen && p.pid == pid && p.spec.hidden && !p.shown);
+                if !wanted {
+                    return;
+                }
+                hide(pid);
+                std::thread::sleep(Duration::from_millis(500));
+            }
+        });
+    }
+
+    /// The browser of a worker in a container, started if this app doesn't
+    /// run it (or take over the one a run before left), as myous for Mac's
+    /// `ensureMacBrowser:`: called while the worker starts and runs, so a
+    /// browser the owner quit comes back. `app` is app.json's
+    /// `browser_app` ("" the first installed). What it did, in words.
+    pub fn ensure(
+        home: &Path,
+        worker: &str,
+        app: &str,
+        hidden: bool,
+        log: Log,
+    ) -> Result<String, String> {
+        let key = home.to_string_lossy().to_string();
+        if let Some(p) = procs().lock().unwrap().get_mut(&key) {
+            if p.pid != 0 {
+                p.spec.hidden = hidden;
+                return Ok("running".into());
+            }
+        }
+        let all = installed();
+        if let Some(why) = unavailable_reason(!all.is_empty(), can_sandbox()) {
+            return Err(cant_run(why));
+        }
+        let found = pick(all, app).ok_or_else(|| cant_run("no browser it can run is installed"))?;
+        if !app.is_empty() && found.id != app {
+            log(format!(
+                "browser: {app} isn't installed; using {}",
+                found.name
+            ));
+        }
+        let how = How {
+            container: true,
+            sandbox: true,
+            hidden,
+        };
+        let s = start_with_how(home, worker, &found, "", Vec::new(), how, log)?;
+        Ok(format!("{} on port {}", s.app, s.port))
+    }
+
+    /// Show browser for a worker in a container: to the front, or started
+    /// (not hidden) if it isn't running.
+    pub fn show_container(
+        home: &Path,
+        worker: &str,
+        app: &str,
+        log: Log,
+    ) -> Result<String, String> {
+        let fresh = |port: u16| -> Result<Spec, String> {
+            let all = installed();
+            if let Some(why) = unavailable_reason(!all.is_empty(), can_sandbox()) {
+                return Err(cant_run(why));
+            }
+            let found = pick(all, app).ok_or_else(|| cant_run("no browser"))?;
+            let how = How {
+                container: true,
+                sandbox: true,
+                hidden: false,
+            };
+            prepare_with(home, worker, &found, port, "", Vec::new(), &how)
+        };
+        show_with(home, &fresh, log)
+    }
+
+    /// Settings' "Start this worker's browser hidden", applied at once:
+    /// hidden now, or shown.
+    pub fn set_hidden(home: &Path, hidden: bool) {
+        let key = home.to_string_lossy().to_string();
+        let pid = {
+            let mut map = procs().lock().unwrap();
+            let Some(p) = map.get_mut(&key) else { return };
+            p.spec.hidden = hidden;
+            p.shown = !hidden;
+            p.pid
+        };
+        if pid == 0 {
+            return;
+        }
+        if hidden {
+            hide(pid);
+        } else {
+            show(pid);
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn picks_the_chosen_browser_else_the_first() {
+            let b = |id: &str| Found {
+                id: id.into(),
+                name: long_name(id).into(),
+                path: format!("/Applications/{id}"),
+            };
+            let all = vec![b("com.google.Chrome"), b("com.brave.Browser")];
+            assert_eq!(
+                pick(all.clone(), "com.brave.Browser").unwrap().name,
+                "Brave"
+            );
+            assert_eq!(pick(all.clone(), "").unwrap().name, "Google Chrome");
+            assert_eq!(
+                pick(all, "com.microsoft.edgemac").unwrap().id,
+                "com.google.Chrome"
+            );
+            assert_eq!(pick(Vec::new(), ""), None);
+        }
+
+        /// What this Mac has, printed; the probe answers either way.
+        #[test]
+        fn this_mac() {
+            println!("browsers here: {:?}; sandbox: {}", choices(), can_sandbox());
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1600,6 +2196,228 @@ mod tests {
             )
         );
         assert!(j["at"].as_u64().unwrap() > 1_700_000_000);
+        fs::remove_dir_all(&home).unwrap();
+    }
+
+    /// A `stringWithFormat:` in myous for Mac's Browser.m, after `marker`:
+    /// its format (the literals joined and unescaped, comments skipped)
+    /// and its arguments as written.
+    fn objc_format(src: &str, marker: &str) -> (String, Vec<String>) {
+        let body = &src[src.find(marker).expect(marker)..];
+        let at = body.find("stringWithFormat:").unwrap() + "stringWithFormat:".len();
+        let end = at + body[at..].find("];").unwrap();
+        let mut chars = body[at..end].chars().peekable();
+        let (mut text, mut rest) = (String::new(), String::new());
+        let (mut in_str, mut done) = (false, false);
+        while let Some(c) = chars.next() {
+            if done {
+                rest.push(c);
+            } else if in_str {
+                match c {
+                    '\\' => match chars.next() {
+                        Some('n') => text.push('\n'),
+                        Some(o) => text.push(o),
+                        None => {}
+                    },
+                    '"' => in_str = false,
+                    _ => text.push(c),
+                }
+            } else if c == '"' {
+                in_str = true;
+            } else if c == '/' && chars.peek() == Some(&'/') {
+                for c in chars.by_ref() {
+                    if c == '\n' {
+                        break;
+                    }
+                }
+            } else if c == ',' {
+                done = true;
+            }
+        }
+        (
+            text,
+            rest.split(',').map(|a| a.trim().to_string()).collect(),
+        )
+    }
+
+    /// `%@` by `%@`, the values given.
+    fn fill(format: &str, values: &[&str]) -> String {
+        assert_eq!(format.matches("%@").count(), values.len(), "{format}");
+        let mut parts = format.split("%@");
+        let mut out = parts.next().unwrap().to_string();
+        for (part, v) in parts.zip(values) {
+            out.push_str(v);
+            out.push_str(part);
+        }
+        out
+    }
+
+    fn browser_m() -> Option<String> {
+        let m = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../mac/src/Browser.m");
+        let src = fs::read_to_string(&m).ok();
+        if src.is_none() {
+            println!("no {}: the profile here is the one", m.display());
+        }
+        src
+    }
+
+    /// The sandbox is myous for Mac's, word for word: its profile, its
+    /// probe, the start page that explains Chrome's bar.
+    #[test]
+    fn the_sandbox_is_myous_for_macs() {
+        let Some(src) = browser_m() else { return };
+        let (format, args) = objc_format(&src, "- (NSString *)seatbeltFor:");
+        let values: Vec<&str> = args
+            .iter()
+            .map(|a| match a.as_str() {
+                "home" => "/Users/max",
+                "[self.paths browserDir]" => "/Users/max/.myous-worker/browser",
+                "[self.paths downloads]" => "/Users/max/.myous-worker/downloads",
+                "browser[@\"id\"]" => "com.google.Chrome",
+                "browser[@\"bundle\"]" => "/Applications/Google Chrome.app",
+                other => panic!("Browser.m's profile takes {other}"),
+            })
+            .collect();
+        assert_eq!(
+            seatbelt(
+                "/Users/max",
+                "/Users/max/.myous-worker/browser",
+                "/Users/max/.myous-worker/downloads",
+                "com.google.Chrome",
+                "/Applications/Google Chrome.app"
+            ),
+            fill(&format, &values)
+        );
+        // The probe.
+        let probe = src
+            .split("@\"-p\", @\"")
+            .nth(1)
+            .and_then(|s| s.split("\", @\"/usr/bin/true\"").next())
+            .unwrap()
+            .replace("\\\"", "\"");
+        assert_eq!(SANDBOX_PROBE, probe);
+        // The start page, the name escaped.
+        let (format, args) = objc_format(&src, "- (NSString *)startPage");
+        assert!(args.iter().all(|a| a == "esc"), "{args:?}");
+        let esc = "Max's &lt;Mac&gt;";
+        assert_eq!(
+            start_page_sandboxed("Max's <Mac>"),
+            fill(&format, &[esc, esc, esc])
+        );
+    }
+
+    #[test]
+    fn a_macs_browser_and_why_not() {
+        assert_eq!(
+            bundle_of(Path::new(
+                "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+            )),
+            PathBuf::from("/Applications/Google Chrome.app")
+        );
+        assert_eq!(
+            bundle_of(Path::new("/opt/cft/chrome")),
+            PathBuf::from("/opt/cft")
+        );
+        assert_eq!(
+            unavailable_reason(false, true),
+            Some("no browser it can run is installed")
+        );
+        assert_eq!(
+            unavailable_reason(true, false),
+            Some("this macOS can't sandbox it")
+        );
+        assert_eq!(unavailable_reason(true, true), None);
+        assert_eq!(
+            cant_run("this macOS can't sandbox it"),
+            "Can't run the browser on this Mac: this macOS can't sandbox it. Install Google Chrome, Microsoft Edge, Brave or Chromium (all free), or choose the browser in the container."
+        );
+    }
+
+    /// A Mac's browser for a worker in a container: under sandbox-exec with
+    /// the profile, myous for Mac's switches and browser.json, downloads
+    /// in the worker folder.
+    #[test]
+    fn a_container_workers_browser_on_a_mac() {
+        let home = temp("mac");
+        let found = Found {
+            id: "com.google.Chrome".into(),
+            name: "Google Chrome".into(),
+            path: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome".into(),
+        };
+        let how = How {
+            container: true,
+            sandbox: true,
+            hidden: true,
+        };
+        let spec = prepare_with(&home, "Max's Mac", &found, 41234, "", vec![], &how).unwrap();
+        let sb = home.join("browser.sb");
+        assert_eq!(spec.sandbox.as_deref(), Some(sb.as_path()));
+        assert!(spec.container && spec.hidden);
+        let real = |p: &Path| p.canonicalize().unwrap().to_string_lossy().to_string();
+        assert_eq!(
+            fs::read_to_string(&sb).unwrap(),
+            seatbelt(
+                &paths::user_home()
+                    .canonicalize()
+                    .unwrap_or_else(|_| paths::user_home())
+                    .to_string_lossy(),
+                &real(&home.join("browser")),
+                &real(&home.join("downloads")),
+                "com.google.Chrome",
+                "/Applications/Google Chrome.app"
+            )
+        );
+        let cmd = browser_command(&spec);
+        assert_eq!(cmd.get_program(), SANDBOX_EXEC);
+        let first: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        assert_eq!(
+            first,
+            [
+                "-f".to_string(),
+                sb.to_string_lossy().to_string(),
+                found.path.clone()
+            ]
+        );
+        let a = args(&spec, "macos");
+        for flag in [
+            "--no-sandbox".to_string(),
+            "--use-mock-keychain".to_string(),
+            format!("--disk-cache-dir={}", spec.profile.join("cache").display()),
+            "--window-size=1200,800".to_string(),
+            "--remote-debugging-port=41234".to_string(),
+        ] {
+            assert!(a.contains(&flag), "{flag}: {a:?}");
+        }
+        assert_eq!(a.last(), Some(&spec.start_url));
+        // The page that explains Chrome's bar; downloads where the container sees them.
+        let page = fs::read_to_string(home.join("browser").join("start.html")).unwrap();
+        assert!(page.contains("That bar is expected"), "{page}");
+        let prefs: Value = serde_json::from_str(
+            &fs::read_to_string(spec.profile.join("Default/Preferences")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            prefs["download"]["default_directory"],
+            home.join("downloads").to_string_lossy().as_ref()
+        );
+        // browser.json: myous for Mac's, for forward.py; no kind, so the
+        // worker in the container doesn't take it for a browser beside it.
+        let j = browser_json(&spec, 777);
+        assert_eq!(j["host"], "host.docker.internal");
+        assert_eq!(j["port"].as_u64(), Some(41234));
+        assert_eq!(j["pid"].as_u64(), Some(777));
+        assert_eq!(j["app"], "Google Chrome");
+        assert!(j.get("kind").is_none() && j.get("python").is_none());
+        // Linux and Windows: none of it.
+        let plain = prepare(&home, "Max's Mac", &found, 41234, "", vec![]).unwrap();
+        assert_eq!(plain.sandbox, None);
+        assert!(!plain.container && !plain.hidden);
+        assert!(!args(&plain, "linux").contains(&"--no-sandbox".to_string()));
+        assert_eq!(browser_command(&plain).get_program(), found.path.as_str());
+        assert_eq!(browser_json(&plain, 1)["kind"], "host");
         fs::remove_dir_all(&home).unwrap();
     }
 

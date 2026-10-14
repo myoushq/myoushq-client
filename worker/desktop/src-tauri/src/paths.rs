@@ -7,7 +7,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-fn user_home() -> PathBuf {
+pub fn user_home() -> PathBuf {
     if let Some(h) = std::env::var_os("HOME") {
         return PathBuf::from(h);
     }

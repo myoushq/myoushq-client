@@ -36,6 +36,14 @@ winreg = "0.56"
 # Tauri builds it with this feature already; listed so the app doesn't rely on that.
 windows = { version = "0.62", features = ["Win32_UI_Shell"] }
 
+# A Mac: the worker's browser found, hidden and shown through AppKit
+# (browser.rs's mac). Already in the tree under Tauri with these features,
+# so nothing new is built; default features off for the same reason.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSURL", "NSBundle"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSRunningApplication", "NSWorkspace"] }
+
 [profile.release]
 strip = true
 lto = true

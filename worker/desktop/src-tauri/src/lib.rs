@@ -420,6 +420,108 @@ async fn browser_show<R: Runtime>(
         .map_err(err)?
 }
 
+// --- a Mac: the browser of a worker in a container (browser.rs's mac) ---
+
+/// What Set up and Settings offer for a worker in a container: the
+/// browsers it can run on the Mac, and why not when it can't.
+#[tauri::command]
+async fn mac_browsers() -> serde_json::Value {
+    tauri::async_runtime::spawn_blocking(mac_choices)
+        .await
+        .unwrap_or_default()
+}
+
+#[cfg(target_os = "macos")]
+fn mac_choices() -> serde_json::Value {
+    serde_json::to_value(browser::mac::choices()).unwrap_or_default()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn mac_choices() -> serde_json::Value {
+    serde_json::json!({"installed": [], "why": "not a Mac"})
+}
+
+/// The browser on the Mac of a worker in a container, started unless it
+/// runs (the window asks while the worker starts and runs, as myous for
+/// Mac does). `browser_app` is app.json's (a bundle id, "" the first).
+#[tauri::command]
+async fn mac_browser_ensure<R: Runtime>(
+    app: AppHandle<R>,
+    home: String,
+    name: String,
+    browser_app: String,
+    hidden: bool,
+) -> Result<String, String> {
+    let log = app_logger(&app, &home);
+    tauri::async_runtime::spawn_blocking(move || {
+        mac_ensure(&home, &name, &browser_app, hidden, log)
+    })
+    .await
+    .map_err(err)?
+}
+
+#[cfg(target_os = "macos")]
+fn mac_ensure(
+    home: &str,
+    name: &str,
+    browser_app: &str,
+    hidden: bool,
+    log: browser::Log,
+) -> Result<String, String> {
+    browser::mac::ensure(Path::new(home), name, browser_app, hidden, log)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn mac_ensure(_: &str, _: &str, _: &str, _: bool, _: browser::Log) -> Result<String, String> {
+    Err("only on a Mac".into())
+}
+
+/// Show browser for a worker in a container on a Mac: out of hiding and
+/// to the front, or started.
+#[tauri::command]
+async fn mac_browser_show<R: Runtime>(
+    app: AppHandle<R>,
+    home: String,
+    name: String,
+    browser_app: String,
+) -> Result<String, String> {
+    let log = app_logger(&app, &home);
+    tauri::async_runtime::spawn_blocking(move || mac_show(&home, &name, &browser_app, log))
+        .await
+        .map_err(err)?
+}
+
+#[cfg(target_os = "macos")]
+fn mac_show(
+    home: &str,
+    name: &str,
+    browser_app: &str,
+    log: browser::Log,
+) -> Result<String, String> {
+    browser::mac::show_container(Path::new(home), name, browser_app, log)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn mac_show(_: &str, _: &str, _: &str, _: browser::Log) -> Result<String, String> {
+    Err("only on a Mac".into())
+}
+
+/// Settings' "Start this worker's browser hidden", at once.
+#[tauri::command]
+fn mac_browser_hidden(home: String, hidden: bool) {
+    #[cfg(target_os = "macos")]
+    browser::mac::set_hidden(Path::new(&home), hidden);
+    #[cfg(not(target_os = "macos"))]
+    let _ = (home, hidden);
+}
+
+/// Ends the worker's browser (a Mac's container worker stopped, or its
+/// browser moved into the container).
+#[tauri::command]
+async fn browser_stop(home: String) {
+    let _ = tauri::async_runtime::spawn_blocking(move || browser::stop(Path::new(&home))).await;
+}
+
 /// Stops a worker that runs without a container: the one this app
 /// started, else the process `pid` from its worker.json. True if it was
 /// this app's (its exit then arrives as an event).
@@ -948,7 +1050,12 @@ pub fn run() {
             worker_log,
             browser_check,
             browser_install,
-            browser_show
+            browser_show,
+            mac_browsers,
+            mac_browser_ensure,
+            mac_browser_show,
+            mac_browser_hidden,
+            browser_stop
         ])
         .setup(|app| {
             // A menu bar app on a Mac (Info.plist's LSUIElement), with a
