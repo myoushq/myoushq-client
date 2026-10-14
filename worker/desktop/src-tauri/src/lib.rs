@@ -724,8 +724,10 @@ const URGENT_SOUND: &str = if cfg!(windows) {
 
 /// Shows a notification. An urgent one (a request waiting for the owner)
 /// also plays a sound and asks for attention on the window: the taskbar
-/// button flashes on Windows, the Dock icon bounces on a Mac, the window
-/// is marked urgent on Linux.
+/// button flashes on Windows, the Dock icon bounces on a Mac (when it has
+/// one), the window is marked urgent on Linux. On every system it is
+/// plain, without Allow and Refuse: the window, which the app brings up
+/// for a question, has them (on a Mac the buttons are for later).
 #[tauri::command]
 fn notify<R: Runtime>(
     app: AppHandle<R>,
@@ -942,12 +944,21 @@ pub fn run() {
             files::append_app_log(&format!("{} could not start: {e}", now_stamp()));
             std::process::exit(1);
         })
-        .run(|_, event| {
+        .run(|app, event| {
             // Workers without a container are this app's children: don't leave them orphaned.
             if let tauri::RunEvent::Exit = event {
                 direct::stop_all();
                 browser::stop_all();
             }
+            // A Mac: a click on the Dock icon (when the setting shows one), or
+            // opening the app again from the Finder, shows the window, as
+            // myous for Mac does.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = event {
+                show_window(app.clone());
+            }
+            #[cfg(not(target_os = "macos"))]
+            let _ = app;
         });
 }
 
