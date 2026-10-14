@@ -252,6 +252,7 @@ export function fakeAgents(now: number): Agent[] {
 /** What browser.rs finds: everything ("ready"), or one thing missing. */
 export function previewBrowserCheck(os: string, kind: string): BrowserCheck {
   const win = os === "windows";
+  if (os === "macos") return macBrowserCheck(kind);
   const c: BrowserCheck = {
     browser: win ? { id: "msedge", name: "Edge", path: "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe" }
       : { id: "chrome", name: "Chrome", path: "/usr/bin/google-chrome-stable" },
@@ -273,9 +274,36 @@ export function previewBrowserCheck(os: string, kind: string): BrowserCheck {
   return c;
 }
 
+/** browser.rs on a Mac: Chrome in /Applications, Homebrew's Python, the app's environment in Application Support. */
+function macBrowserCheck(kind: string): BrowserCheck {
+  const c: BrowserCheck = {
+    browser: { id: "chrome", name: "Chrome", path: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" },
+    python: null, python_old: "", playwright: "1.63.0",
+    env_python: "/Users/max/Library/Application Support/myous/browser-python/bin/python",
+    python_line: "", venv_line: "", python_url: "https://www.python.org/downloads/macos/",
+    get: [{ name: "Chrome", url: "https://www.google.com/chrome/" }, { name: "Edge", url: "https://www.microsoft.com/edge/download" }],
+  };
+  const py = { path: "/opt/homebrew/bin/python3", version: "3.12", venv: true };
+  switch (kind) {
+    case "nobrowser": return { ...c, browser: null };
+    case "nopython": return { ...c, playwright: "" };
+    case "oldpython": return { ...c, playwright: "", python_old: "3.9" };
+    case "novenv": return { ...c, playwright: "", python: { ...py, version: "3.11", venv: false } };
+    case "noplaywright": return { ...c, playwright: "", python: py };
+  }
+  return c;
+}
+
 /** What install.rs offers on a computer with the tools (winget on Windows;
  * pkexec, systemd and apt on an Ubuntu): the previews show every button. */
 export function previewOptions(os: string): RuntimeOptions {
+  if (os === "macos") {
+    return { tool: "Homebrew", start: "", start_line: "", group_lines: [], compose: "brew install docker-compose", compose_line: "brew install docker-compose",
+      compose_url: "https://docs.docker.com/compose/install/", runtimes: [
+        { id: "docker-desktop", name: "Docker Desktop", url: "https://www.docker.com/products/docker-desktop/", install: "brew install --cask docker-desktop" },
+        { id: "orbstack", name: "OrbStack", url: "https://orbstack.dev/", install: "brew install --cask orbstack" },
+      ] };
+  }
   if (os === "windows") {
     return { tool: "winget", start: "", start_line: "", group_lines: ['net localgroup docker-users "max" /add'], compose: "", compose_line: "",
       compose_url: "https://docs.docker.com/compose/install/", runtimes: [

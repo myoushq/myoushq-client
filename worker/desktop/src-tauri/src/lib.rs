@@ -616,6 +616,50 @@ fn set_tray<R: Runtime>(
     Ok(())
 }
 
+/// The count of new requests while the window is away, where a Mac shows
+/// it: next to the menu bar icon and on the Dock icon (which shows only
+/// when the Dock setting is on). 0 clears both. Elsewhere the tooltip
+/// carries it, so this does nothing.
+#[tauri::command]
+fn set_counts<R: Runtime>(app: AppHandle<R>, fresh: u32) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(tray) = app.tray_by_id(TRAY_ID) {
+            // A space first, as the Mac app's title has: it keeps the
+            // number off the icon.
+            let title = (fresh > 0).then(|| format!(" {fresh}"));
+            tray.set_title(title).map_err(err)?;
+        }
+        if let Some(w) = app.get_webview_window("main") {
+            w.set_badge_count((fresh > 0).then_some(i64::from(fresh)))
+                .map_err(err)?;
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = (app, fresh);
+    Ok(())
+}
+
+/// The Dock setting, `dock` in the first worker's app.json where myous
+/// for Mac keeps it: off unless the owner turned it on.
+#[cfg(target_os = "macos")]
+fn dock_setting() -> bool {
+    std::fs::read_to_string(paths::config_file(&paths::default_home()))
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .and_then(|v| v.get("dock").and_then(Value::as_bool))
+        .unwrap_or(false)
+}
+
+#[cfg(target_os = "macos")]
+fn dock_policy(dock: bool) -> tauri::ActivationPolicy {
+    if dock {
+        tauri::ActivationPolicy::Regular
+    } else {
+        tauri::ActivationPolicy::Accessory
+    }
+}
+
 #[tauri::command]
 fn show_window<R: Runtime>(app: AppHandle<R>) {
     if let Some(w) = app.get_webview_window("main") {
@@ -792,6 +836,7 @@ pub fn run() {
             latest_release,
             qr_png,
             set_tray,
+            set_counts,
             show_window,
             window_visible,
             quit,
@@ -814,8 +859,10 @@ pub fn run() {
             browser_show
         ])
         .setup(|app| {
+            // A menu bar app on a Mac (Info.plist's LSUIElement), with a
+            // Dock icon only when the owner asked for one, as myous for Mac.
             #[cfg(target_os = "macos")]
-            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+            app.set_activation_policy(dock_policy(dock_setting()));
             // Windows drops the toasts of an app it doesn't know.
             toast::register();
             let icon = app.default_window_icon().cloned().ok_or("no icon")?;

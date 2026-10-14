@@ -47,6 +47,7 @@
     },
     "linux": {
       "appimage": { "bundleMediaFramework": false }
-    }
+    },
+    "macOS": { "minimumSystemVersion": "13.0" }
   }
 }

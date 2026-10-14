@@ -52,6 +52,7 @@ let logLines: string[] = [];
 let trayActions = new Map<string, () => void>();
 let lastTrayItems = "";
 let lastTrayIcon = "";
+let lastCounts = 0;
 let setupFilledFor = "";
 let lastRequestsKey = "";
 let pairAgents: Agent[] = [];
@@ -889,14 +890,10 @@ const MARK_SQUARE = "M7 0H25A7 7 0 0 1 32 7V25A7 7 0 0 1 25 32H7A7 7 0 0 1 0 25V
 const MARK_MU = "M7.5 6.5V25.5M7.5 13.5a5.25 5.25 0 0 0 10.5 0M18 6.5V15C18 21.5 22 24 26.25 24";
 const MARK_DOTS: [number, number][] = [[7.5, 6.5], [7.5, 25.5], [18, 6.5], [26.25, 24]];
 
-/** The tray icon: the mark on a square in the state's colour, a white dot in its corner while a request runs. */
-function trayIcon(kind: Kind, dot: boolean): string {
-  const c = document.createElement("canvas");
-  c.width = c.height = 64;
-  const g = c.getContext("2d");
-  if (!g) return "";
-  g.setTransform(60 / 32, 0, 0, 60 / 32, 2, 2);
-  g.fillStyle = KIND_COLORS[kind];
+/** The mark on a square in `color`, scaled from its 32-point box and moved in by `offset` pixels. */
+function drawMark(g: CanvasRenderingContext2D, scale: number, offset: number, color: string) {
+  g.setTransform(scale, 0, 0, scale, offset, offset);
+  g.fillStyle = color;
   g.fill(new Path2D(MARK_SQUARE));
   g.strokeStyle = g.fillStyle = "#ffffff";
   g.lineWidth = 2.75;
@@ -908,11 +905,26 @@ function trayIcon(kind: Kind, dot: boolean): string {
     g.fill();
   }
   g.setTransform(1, 0, 0, 1, 0, 0);
+}
+
+/** The tray icon: the mark on a square in the state's colour, a white dot in its corner while a request runs.
+ * A Mac's menu bar shows any icon 18 points high, so there it is drawn at 36 pixels (two per point on a
+ * Retina screen, halved evenly on others) with myous for Mac's proportions (Icon.m): the square one point
+ * in from each edge, the dot 5.2 points wide in the top right corner. */
+function trayIcon(kind: Kind, dot: boolean): string {
+  const mac = info.os === "macos";
+  const c = document.createElement("canvas");
+  c.width = c.height = mac ? 36 : 64;
+  const g = c.getContext("2d");
+  if (!g) return "";
+  drawMark(g, mac ? 1 : 60 / 32, 2, KIND_COLORS[kind]);
   if (dot) {
+    const [x, y, r, w] = mac ? [28, 8, 5.2, 2.4] : [52, 12, 9, 3];
+    g.fillStyle = "#ffffff";
     g.strokeStyle = KIND_COLORS[kind];
-    g.lineWidth = 3;
+    g.lineWidth = w;
     g.beginPath();
-    g.arc(52, 12, 9, 0, Math.PI * 2);
+    g.arc(x, y, r, 0, Math.PI * 2);
     g.fill();
     g.stroke();
   }
@@ -950,6 +962,12 @@ function renderTray() {
   const iconKey = `${kind}${dot}`;
   const itemsKey = JSON.stringify(items);
   const n = m.newRequests;
+  // A Mac shows the count next to the menu bar icon and on the Dock icon, as myous for Mac does.
+  const fresh = windowShown ? 0 : n;
+  if (info.os === "macos" && fresh !== lastCounts) {
+    lastCounts = fresh;
+    void be.setCounts(fresh).catch((e) => appendLog(`counts: ${e}`));
+  }
   const tooltip = `myous · ${m.workers.map((w) => `${w.name}: ${w.stateWord}`).join(" · ")}${n > 0 && !windowShown ? ` · ${n} new` : ""}`;
   if (iconKey === lastTrayIcon && itemsKey === lastTrayItems) return;
   const icon = iconKey === lastTrayIcon ? null : trayIcon(kind, dot);
@@ -1565,7 +1583,8 @@ async function main() {
   if (info.fake) {
     const t = Date.now() / 1000;
     m.now = () => t; // a still picture: the screenshots don't change while taken
-    applyFake(m, info.fake, info.os === "windows" ? "C:\\Users\\max\\AppData\\Local\\myous\\worker" : "/home/max/.myous-worker");
+    const fakeHome = (<Record<string, string>>{ windows: "C:\\Users\\max\\AppData\\Local\\myous\\worker", macos: "/Users/max/.myous-worker" })[info.os] ?? "/home/max/.myous-worker";
+    applyFake(m, info.fake, fakeHome);
   } else {
     m.load(await be.readWorkers());
     // Every check at once, none waited for: the window shows "⟳" where one is still out.

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- macOS only: Tauri merges this into the app's Info.plist. A menu bar
+     app, as myous for Mac is: no Dock icon until the owner turns one on in
+     Settings (the app then switches its activation policy at run time). -->
+<plist version="1.0">
+<dict>
+	<key>LSUIElement</key><true/>
+</dict>
+</plist>
