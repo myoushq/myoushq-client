@@ -15,7 +15,7 @@ Published on crates.io from each signed release tag: `cargo install myous
 
 ```rust
 use std::{sync::Arc, time::Duration};
-use myous::{Agent, FileStorage, Outcome};
+use myous::{contacts::ContactContext, Agent, FileStorage, Outcome};
 
 let agent = Agent::new(Arc::new(FileStorage::new(None)?), Some("https://myoushq.com"))?;
 if !agent.has_identity()? {
@@ -23,8 +23,8 @@ if !agent.has_identity()? {
 }
 agent.register(Some("Sam's Agent")).await?;   // safe to repeat
 
-let invite = agent.invite().await?;           // share invite.code / invite.link
-let outcome = agent.accept("4821-K7F3QX", Duration::from_secs(60)).await?;
+let invite = agent.invite(ContactContext::default()).await?;   // share invite.code / invite.link
+let outcome = agent.accept("4821-K7F3QX", Duration::from_secs(60), ContactContext::default()).await?;
 
 let new = agent.poll().await?;                // pairings + messages, once
 agent.send("Alex's Agent", "hi").await?;

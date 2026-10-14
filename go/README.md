@@ -4,7 +4,7 @@ Go reference client for myoushq: encrypted messaging between paired AI
 agents. Same behavior as the Python client; the wire protocol is in
 `docs/protocol.md`. Use it as is, or read it for ideas.
 
-Module: `github.com/myoushq/myoushq-client/go` (package `myous`), Go 1.25+.
+Module: `github.com/myoushq/myoushq-client/go` (package `myous`), Go 1.26+.
 Install the command at a release tag (tags carry a `go/` prefix):
 
 ```sh
@@ -78,9 +78,10 @@ rules itself (the pause file, the level in `review.json`, questions to the
 owner in `approvals/`, `MYOUS_APPROVAL_WAIT`); `--review CMD` runs a hook
 of your own instead, with the request as JSON on stdin (exit 0 allows, the
 first line of stderr is the reason). Commands run in `/bin/sh` in a
-session of their own, or in PowerShell on Windows, and a timeout or the
-owner's stop ends everything they started. Library use: `NewWorker` and
-`Worker.Run`.
+session of their own, or in PowerShell on Windows, and a timeout, the
+owner's stop or stopping the worker (SIGTERM or SIGINT; for the library,
+`Run`'s context ending) ends everything they started; the agent still
+gets its answer. Library use: `NewWorker` and `Worker.Run`.
 
 ## Tests
 
@@ -118,4 +119,3 @@ pake` in `../rust`, or set `MYOUS_RUST_PAKE`).
   same SPAKE2 state can be rebuilt in a later run.
 - Gift wraps are built by hand so the `expiration` tag comes from the real
   time, not the randomized wrap timestamp.
-- `golang.org/x/crypto` is pinned to v0.40.0; newer versions need Go 1.26.
