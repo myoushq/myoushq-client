@@ -21,11 +21,66 @@ parts are behind `cfg(target_os = "macos")` or the window's
   icon while the window is away, as in myous for Mac.
 - **Settings › "Show an icon in the Dock as well as the menu bar"**,
   applied at once. A click on the Dock icon shows the window.
-- **Open at login** through the autostart plugin: a LaunchAgent,
-  `~/Library/LaunchAgents/myous.plist`, pointing at the program inside
-  the app. Not SMAppService (see below).
-- **Notifications** without buttons; a question brings up the window,
-  which has Allow and Refuse (as on Linux and Windows).
+- **Open at login** as a login item through SMAppService
+  (`src-tauri/src/loginitem.rs`), as myous for Mac: the `auto-launch`
+  crate under the autostart plugin, in its SMAppService mode, which the
+  plugin doesn't offer. Settings' checkbox reads and sets it; it shows
+  under System Settings › General › Login Items › Open at Login. If the
+  owner turned myous off there, ticking the box can't turn it back on
+  (macOS wants the owner to do it there), and the log says so. On the
+  first start after an upgrade from this draft's earlier builds, the
+  autostart plugin's LaunchAgent (`~/Library/LaunchAgents/myous.plist`)
+  is removed and, since it was on, the app registers instead, so there is
+  never a second entry. The bundle identifier is myous for Mac's
+  (`com.myoushq.desktop`), so a login item the Mac app registered is this
+  app's too. A program run from `target/` (not an app) keeps the plugin's
+  LaunchAgent, as SMAppService needs the bundle.
+- **Notifications through UserNotifications**
+  (`src-tauri/src/usernotify.rs`), as myous for Mac's: a question comes
+  with **Allow** and **Refuse** (the category "approval", the
+  notification `ask-<request id>`), and a press answers it through the
+  same Rust path as the window's buttons (`answer_approval`, in the worker
+  whose `approvals/` holds the request, as myous for Mac looks it up); the
+  window logs "allow (from the notification): ..." and drops the
+  question. The window doesn't come up for a question then. A click on
+  any notification brings up the window. The notification goes when the
+  question is answered in the window (`answer_approval`), or when it
+  stops waiting (answered elsewhere, or timed out: `read_workers` sees it
+  gone). Permission is asked once, at the first start; if the owner
+  refuses (or later turns notifications off; the app rechecks at each
+  notification, so the change counts from the next one), there is no
+  notification and the app brings up the window for a question, as
+  before; the app log says why ("notifications: not allowed (...)").
+  The plugin's plain notification can't stand in there: usernoted
+  refuses a process that mixes the old notifications (the plugin's,
+  NSUserNotification) with UserNotifications, and the permission is
+  the same one anyway. Every notification goes through
+  UserNotifications, so a Mac has one kind and one click behaviour; the
+  plugin stays for Linux and Windows. UserNotifications aborts a process
+  that isn't an app bundle, so a program run from `target/` and `cargo
+  test` never touch it (`in_app_bundle`: a bundle identifier and a path
+  ending in `.app`) and keep the plugin's plain notifications.
+- **Built and tried (2026-10-14), not yet pressed.** `cargo build`,
+  `cargo test`, clippy and rustfmt pass on a Mac, `npm test` and
+  `clicks.py` pass, and the Linux and Windows previews are pixel for
+  pixel those of `wip/mac-tauri`. The app (`make-mac.sh`, ad hoc) was
+  run with a worker folder holding `app.json` (a name), a fresh
+  `worker.json` (`{"phase":"running","contacts":1}`, so the window starts
+  hidden) and then `approvals/r5.json`
+  (`{"id":"r5","op":"exec","cmd":"ls","asked_at":<now>,"wait":120}`).
+  It set up the centre and the category and asked for permission; on
+  that Mac macOS already held a decision for `com.myoushq.desktop` (the
+  identifier myous for Mac's builds share), so no dialog came and the
+  answer was "Notifications are not allowed for this application"
+  (code 1). The question then brought up the window, as it should. Still
+  to see, with notifications allowed for myous in System Settings ›
+  Notifications: the permission dialog on a Mac that hasn't decided, the
+  notification with Allow and Refuse, a press answering it, a click
+  bringing up the window, and the notification going when the window
+  answers. Open at login: no `~/Library/LaunchAgents/myous.plist` was
+  made; Settings' checkbox (SMAppService's status) wasn't opened, as
+  that needs a click in the window. The fake states
+  (`MYOUS_FAKE_STATE`) never notify.
 - **Workers in a container** (Docker Desktop, OrbStack, Rancher
   Desktop), found from the Finder's short PATH, with the container's
   own browser and its browser view (`MYOUS_BROWSER: container`). The
@@ -74,12 +129,6 @@ parts are behind `cfg(target_os = "macos")` or the window's
 
 ## Phase 2 (not built)
 
-- **Allow and Refuse on the notification.** The notification plugin
-  (2.6.0) can show actions on macOS through `notify-rust`
-  (NSUserNotification: two actions become an "Options" menu, and a
-  shown notification can't be withdrawn), or the app talks to
-  UserNotifications itself (`objc2-user-notifications`), which is what
-  myous for Mac does.
 - **The browser on the Mac for a worker in a container**
   (`MYOUS_BROWSER=host`, the forwarder), with Set up's "Where should its
   browser run?" (myous for Mac recommends "On this Mac, in Google
@@ -90,11 +139,6 @@ parts are behind `cfg(target_os = "macos")` or the window's
   container runs its browser unconfined, as on Linux and Windows,
   where myous for Mac runs it under the seatbelt. Hide and show of
   that browser too.
-- **SMAppService** for open at login. `auto-launch` 0.6, already in the
-  dependency tree under the autostart plugin, has an SMAppService mode
-  the plugin doesn't offer; using it directly would be a few lines.
-  An upgrade from myous for Mac would also need to remove the old
-  login item, or the owner sees two.
 - The Option-held Advanced menu (it is always there), separate Settings
   and log windows, `--snapshot` and `--browser-test`.
 
@@ -176,12 +220,8 @@ notarization rejects the app, Apple's log is in the job's output.
   with the shared layout: the runtime rows, the approval banner, the
   ok / refused column. Settings and the logs open inside it, not in
   windows of their own.
-- A question's notification has no buttons; it brings up the window.
 - A worker in a container uses the container's browser (through the
   browser view), not Chrome on the Mac.
-- Open at login is listed under "Allow in the Background" in System
-  Settings (a LaunchAgent), not as a login item, and it points at
-  where the app was when it was turned on.
 - New: the first-launch checks, the runtime install cards, the app
   menu's worker items (myous for Mac has them under the menu bar icon's
   Advanced).

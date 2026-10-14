@@ -15,17 +15,21 @@ mod engine;
 mod files;
 mod hub;
 mod install;
+#[cfg(target_os = "macos")]
+mod loginitem;
 mod paths;
 mod platform;
 mod toast;
 mod tray;
+#[cfg(target_os = "macos")]
+mod usernotify;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use base64::Engine as _;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, Runtime, WindowEvent};
 use tauri_plugin_autostart::ManagerExt as _;
@@ -86,10 +90,22 @@ fn app_info() -> AppInfo {
 
 #[tauri::command]
 fn read_workers() -> Vec<files::WorkerFiles> {
-    paths::all_homes()
+    let workers: Vec<files::WorkerFiles> = paths::all_homes()
         .iter()
         .map(|h| files::read_worker(h))
-        .collect()
+        .collect();
+    // A Mac: a question answered elsewhere or timed out (the worker took
+    // it away) takes its notification with it.
+    #[cfg(target_os = "macos")]
+    usernotify::withdraw_gone(|home, id| {
+        workers.iter().any(|w| {
+            w.home == home
+                && w.approvals
+                    .iter()
+                    .any(|q| q.get("id").and_then(Value::as_str) == Some(id))
+        })
+    });
+    workers
 }
 
 fn err<E: std::fmt::Display>(e: E) -> String {
@@ -119,7 +135,11 @@ fn answer_approval(home: String, id: String, verdict: String) -> Result<(), Stri
     if verdict != "allow" && verdict != "refuse" {
         return Err("verdict must be allow or refuse".into());
     }
-    files::answer_approval(Path::new(&home), &id, &verdict).map_err(err)
+    files::answer_approval(Path::new(&home), &id, &verdict).map_err(err)?;
+    // A Mac: the question's notification, with its Allow and Refuse, goes.
+    #[cfg(target_os = "macos")]
+    usernotify::answered(&id);
+    Ok(())
 }
 
 #[tauri::command]
@@ -786,30 +806,104 @@ const URGENT_SOUND: &str = if cfg!(windows) {
     "message-new-instant"
 };
 
+/// A question's worker folder and request id (`ask` in `notify`).
+#[derive(Deserialize)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+struct Ask {
+    home: String,
+    id: String,
+}
+
 /// Shows a notification. An urgent one (a request waiting for the owner)
 /// also plays a sound and asks for attention on the window: the taskbar
 /// button flashes on Windows, the Dock icon bounces on a Mac (when it has
-/// one), the window is marked urgent on Linux. On every system it is
-/// plain, without Allow and Refuse: the window, which the app brings up
-/// for a question, has them (on a Mac the buttons are for later).
+/// one), the window is marked urgent on Linux.
+///
+/// On Linux and Windows it is plain, without Allow and Refuse: the window,
+/// which the app brings up for a question, has them. On a Mac (the app,
+/// with notifications allowed) every notification goes through
+/// UserNotifications, as myous for Mac's do, and a question's (`ask`)
+/// has Allow and Refuse; true then, and the window needn't come up.
+/// Without permission the Mac app shows none (the window comes up for a
+/// question); a program run from target/ has the plugin's plain one.
 #[tauri::command]
 fn notify<R: Runtime>(
     app: AppHandle<R>,
     title: String,
     body: String,
     urgent: bool,
-) -> Result<(), String> {
-    let mut n = app.notification().builder().title(title).body(body);
-    if urgent {
-        n = n.sound(URGENT_SOUND);
+    ask: Option<Ask>,
+) -> Result<bool, String> {
+    #[cfg(target_os = "macos")]
+    let posted = usernotify::post(
+        &title,
+        &body,
+        urgent,
+        ask.as_ref().map(|a| (a.home.as_str(), a.id.as_str())),
+    );
+    #[cfg(not(target_os = "macos"))]
+    let posted = false;
+    // A Mac app that took UserNotifications can't post the plugin's
+    // (NSUserNotification) ones as well: usernoted refuses a process that
+    // mixes the two. Not allowed there means not allowed for either.
+    #[cfg(target_os = "macos")]
+    let plain = !posted && !usernotify::active();
+    #[cfg(not(target_os = "macos"))]
+    let plain = true;
+    if plain {
+        let mut n = app.notification().builder().title(title).body(body);
+        if urgent {
+            n = n.sound(URGENT_SOUND);
+        }
+        n.show().map_err(err)?;
     }
-    n.show().map_err(err)?;
     if urgent {
         if let Some(w) = app.get_webview_window("main") {
             let _ = w.request_user_attention(Some(tauri::UserAttentionType::Critical));
         }
     }
-    Ok(())
+    Ok(posted && ask.is_some())
+}
+
+/// A Mac: what the owner did with a notification. A click on it brings up
+/// the window. Allow or Refuse on a question answers it as the window's
+/// buttons do (answer_approval), in the worker whose approvals hold it
+/// (myous for Mac looks it up the same way), and tells the window.
+#[cfg(target_os = "macos")]
+fn notification_response<R: Runtime>(app: &AppHandle<R>, response: usernotify::Response) {
+    #[derive(Clone, Serialize)]
+    struct Answered {
+        home: String,
+        id: String,
+        verdict: String,
+        error: String,
+    }
+    let (id, verdict) = match response {
+        usernotify::Response::Open => return show_window(app.clone()),
+        usernotify::Response::Answer { id, verdict } => (id, verdict),
+    };
+    let home = if files::valid_id(&id) {
+        paths::all_homes()
+            .into_iter()
+            .find(|h| paths::approvals_dir(h).join(format!("{id}.json")).is_file())
+    } else {
+        None
+    };
+    let result = match &home {
+        Some(h) => answer_approval(h.to_string_lossy().to_string(), id.clone(), verdict.into()),
+        None => Err("the request no longer waits for an answer".into()),
+    };
+    let _ = app.emit(
+        "approval-answered",
+        Answered {
+            home: home
+                .map(|h| h.to_string_lossy().to_string())
+                .unwrap_or_default(),
+            id,
+            verdict: verdict.into(),
+            error: result.err().unwrap_or_default(),
+        },
+    );
 }
 
 #[tauri::command]
@@ -847,13 +941,24 @@ fn copy_text<R: Runtime>(app: AppHandle<R>, text: String) -> Result<(), String> 
     app.clipboard().write_text(text).map_err(err)
 }
 
+/// Whether the app opens at login. A Mac (the app): a login item through
+/// SMAppService, as myous for Mac (loginitem.rs); elsewhere, and a Mac's
+/// program run from target/, the autostart plugin.
 #[tauri::command]
 fn autostart_get<R: Runtime>(app: AppHandle<R>) -> bool {
+    #[cfg(target_os = "macos")]
+    if usernotify::in_app_bundle() {
+        return loginitem::is_enabled();
+    }
     app.autolaunch().is_enabled().unwrap_or(false)
 }
 
 #[tauri::command]
 fn autostart_set<R: Runtime>(app: AppHandle<R>, on: bool) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    if usernotify::in_app_bundle() {
+        return loginitem::set(on);
+    }
     if on {
         app.autolaunch().enable()
     } else {
@@ -893,9 +998,10 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
-        // On a Mac a LaunchAgent (~/Library/LaunchAgents/myous.plist, run
-        // at login), not SMAppService as myous for Mac uses: the plugin
-        // offers only this and AppleScript.
+        // On a Mac the app opens at login through SMAppService instead
+        // (loginitem.rs), as myous for Mac; the plugin's LaunchAgent
+        // (~/Library/LaunchAgents/myous.plist) is left for a program run
+        // from target/, and an upgrade removes it (setup below).
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
@@ -965,6 +1071,18 @@ pub fn run() {
                     w.set_resizable(false)?;
                     w.set_size(tauri::LogicalSize::new(560.0, 420.0))?;
                     w.center()?;
+                }
+                // Notifications with Allow and Refuse, as myous for Mac's
+                // (none outside an app bundle: the plugin's plain ones).
+                let handle = app.handle().clone();
+                usernotify::setup(move |r| notification_response(&handle, r));
+                // Open at login: from the plugin's LaunchAgent to a login item.
+                if usernotify::in_app_bundle() {
+                    let agent = app.autolaunch();
+                    let on = agent.is_enabled().unwrap_or(false);
+                    if let Some(line) = loginitem::migrate(on, || agent.disable().map_err(err)) {
+                        files::append_app_log(&line);
+                    }
                 }
             }
             // Windows drops the toasts of an app it doesn't know.

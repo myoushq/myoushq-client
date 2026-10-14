@@ -16,9 +16,9 @@ in [skill.md](https://myoushq.com/skill.md).
   drawn by the system's web view and dressed as a Mac window (its colours, push buttons and striped table, dark mode and
   the accent colour from System Settings), with Settings and the logs
   inside it rather than in windows of their own; the menu bar icon, the
-  count of new requests and the Dock setting are as before; open at login
-  is a LaunchAgent, listed under "Allow in the Background" in System
-  Settings, not a login item; and new on the Mac: the first-launch
+  count of new requests and the Dock setting are as before; a question's
+  notification has Allow and Refuse (UserNotifications), and open at login
+  is a login item through SMAppService, as in myous for Mac; and new on the Mac: the first-launch
   checks, the cards that install a container runtime with Homebrew, and
   the worker items in the app menu. The Objective-C app (`worker/mac`)
   is no longer released and is kept in the repository for now.

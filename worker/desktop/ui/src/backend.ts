@@ -18,6 +18,12 @@ export interface AppInfo {
   image_tag: string;
 }
 
+/** A question's worker folder and request id, for a notification with Allow and Refuse. */
+export interface Ask {
+  home: string;
+  id: string;
+}
+
 export interface TrayItem {
   id?: string;
   label?: string;
@@ -68,8 +74,10 @@ export interface Backend {
   showWindow(): Promise<void>;
   quit(): Promise<void>;
   logLine(line: string): Promise<void>;
-  /** An urgent one also plays a sound and asks for attention on the window. */
-  notify(title: string, body: string, urgent: boolean): Promise<void>;
+  /** An urgent one also plays a sound and asks for attention on the window. `ask`
+   * names a question's worker and request; true when its notification carries
+   * Allow and Refuse (a Mac), so the window needn't come up. */
+  notify(title: string, body: string, urgent: boolean, ask?: Ask | null): Promise<boolean>;
   openUrl(url: string): Promise<void>;
   openPath(path: string): Promise<void>;
   pickFolder(): Promise<string | null>;
@@ -130,7 +138,7 @@ class TauriBackend implements Backend {
   showWindow() { return this.invoke("show_window"); }
   quit() { return this.invoke("quit"); }
   logLine(line: string) { return this.invoke("log_line", { line }); }
-  notify(title: string, body: string, urgent: boolean) { return this.invoke("notify", { title, body, urgent }); }
+  notify(title: string, body: string, urgent: boolean, ask: Ask | null = null) { return this.invoke("notify", { title, body, urgent, ask }); }
   openUrl(url: string) { return this.invoke("open_url", { url }); }
   openPath(path: string) { return this.invoke("open_path", { path }); }
   pickFolder() { return this.invoke("pick_folder"); }
@@ -209,7 +217,7 @@ export class PreviewBackend implements Backend {
   showWindow() { return this.rec("showWindow", [], undefined); }
   quit() { return this.rec("quit", [], undefined); }
   logLine(...a: [string]) { return this.rec("logLine", a, undefined); }
-  notify(...a: [string, string, boolean]) { return this.rec("notify", a, undefined); }
+  notify(...a: [string, string, boolean, (Ask | null)?]) { return this.rec("notify", a, false); }
   openUrl(...a: [string]) { return this.rec("openUrl", a, undefined); }
   openPath(...a: [string]) { return this.rec("openPath", a, undefined); }
   pickFolder() { return this.rec("pickFolder", [], null); }

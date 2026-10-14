@@ -354,7 +354,8 @@ export class Model {
   advances: Record<string, Advance> = {};
 
   now: () => number = () => Date.now() / 1000;
-  notify: (kind: string, title: string, body: string) => void = () => {};
+  /** `ask` names a question's worker folder and request id (a Mac puts Allow and Refuse on its notification). */
+  notify: (kind: string, title: string, body: string, ask?: { home: string; id: string }) => void = () => {};
   start: (w: Worker) => void = () => {};
   windowVisible: () => boolean = () => false;
   writeConfig: (w: Worker) => void = () => {};
@@ -548,7 +549,7 @@ export class Model {
     this.notifyApproval(w);
   }
 
-  notifyOnce(w: Worker, key: string, title: string, body: string) {
+  notifyOnce(w: Worker, key: string, title: string, body: string, ask?: { home: string; id: string }) {
     let kind = "stopped";
     if (key.startsWith("ask-")) kind = "approval";
     else if (key.startsWith("update-")) kind = "update";
@@ -559,7 +560,7 @@ export class Model {
     this.notified.add(key);
     const app = this.appConfig;
     if (this.fake || !app.notifications || !app.notifies(kind)) return;
-    this.notify(kind, title, body);
+    this.notify(kind, title, body, ask);
   }
 
   private notifyPaired(w: Worker) {
@@ -587,7 +588,8 @@ export class Model {
   private notifyApproval(w: Worker) {
     const q = w.approvals[0];
     if (!q) return;
-    this.notifyOnce(w, `ask-${str(q.id)}`, `${str(q.alias) || "Your agent"} wants to ${verb(str(q.op))} on ${w.name}`, what(q));
+    this.notifyOnce(w, `ask-${str(q.id)}`, `${str(q.alias) || "Your agent"} wants to ${verb(str(q.op))} on ${w.name}`, what(q),
+      { home: w.home, id: str(q.id) });
   }
 
   /** The tray colour: the worst state over every worker. */
