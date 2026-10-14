@@ -37,7 +37,8 @@ pub type Log = Arc<dyn Fn(String) + Send + Sync>;
 #[derive(Serialize, Clone, Debug, PartialEq, Default)]
 pub struct Found {
     /// Its profile folder's name under `<home>/browser`: "msedge",
-    /// "chrome", "chromium", "custom" ($MYOUS_BROWSER_BIN).
+    /// "chrome", "chromium", "custom" ($MYOUS_BROWSER_BIN); on a Mac the
+    /// bundle id ("com.google.Chrome").
     pub id: String,
     /// As the screens say it: "Edge", "Chrome", "Chromium".
     pub name: String,
@@ -81,22 +82,34 @@ const LINUX: [(&str, &str, &str); 6] = [
     ("microsoft-edge-stable", "msedge", "Edge"),
 ];
 
-/// A Mac (only for running the app here while developing it).
-const MAC: [(&str, &str, &str); 3] = [
+/// A Mac: the apps, in myous for Mac's order, in /Applications or the
+/// owner's own ~/Applications. Each is (bundle id, app folder, program).
+/// The bundle id names the profile folder, as myous for Mac names it, so
+/// a worker folder moved from that app keeps the browser's logins.
+const MAC: [(&str, &str, &str, &str); 4] = [
     (
-        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-        "chrome",
+        "com.google.Chrome",
+        "Google Chrome.app",
+        "Google Chrome",
         "Chrome",
     ),
     (
-        "/Applications/Chromium.app/Contents/MacOS/Chromium",
-        "chromium",
-        "Chromium",
+        "com.microsoft.edgemac",
+        "Microsoft Edge.app",
+        "Microsoft Edge",
+        "Edge",
     ),
     (
-        "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-        "msedge",
-        "Edge",
+        "com.brave.Browser",
+        "Brave Browser.app",
+        "Brave Browser",
+        "Brave",
+    ),
+    (
+        "org.chromium.Chromium",
+        "Chromium.app",
+        "Chromium",
+        "Chromium",
     ),
 ];
 
@@ -141,9 +154,14 @@ pub fn find_browser_with(
             }
         }
         "macos" => {
-            for (path, id, name) in MAC {
-                if is_file(Path::new(path)) {
-                    return Some(found(id, name, Path::new(path)));
+            let mut dirs = vec![PathBuf::from("/Applications")];
+            dirs.extend(var("HOME").map(|h| Path::new(&h).join("Applications")));
+            for (id, app, exe, name) in MAC {
+                for d in &dirs {
+                    let p = d.join(app).join("Contents").join("MacOS").join(exe);
+                    if is_file(&p) {
+                        return Some(found(id, name, &p));
+                    }
                 }
             }
         }
@@ -273,6 +291,12 @@ pub fn find_python_with(
     let mut old = String::new();
     for (name, pre) in tries {
         let Some(p) = which(name) else { continue };
+        // A Mac's /usr/bin/python3 is the Command Line Tools' 3.9, too old
+        // for Playwright; where those tools aren't installed, running it
+        // puts up the system's dialog offering to install them.
+        if os == "macos" && p == Path::new("/usr/bin/python3") {
+            continue;
+        }
         let mut args: Vec<String> = pre.iter().map(|s| s.to_string()).collect();
         args.extend(["-c".into(), PROBE.into()]);
         let Some(out) = probe(&p, &args) else {
@@ -433,6 +457,8 @@ pub fn check() -> Check {
         venv_line,
         python_url: if os == "windows" {
             "https://www.python.org/downloads/windows/".into()
+        } else if os == "macos" {
+            "https://www.python.org/downloads/macos/".into()
         } else {
             "https://www.python.org/downloads/".into()
         },
@@ -1208,10 +1234,34 @@ mod tests {
         assert_eq!((f.id.as_str(), f.name.as_str()), ("chrome", "Chrome"));
         assert_eq!(f.path, dir.join("google-chrome-stable").to_string_lossy());
         fs::remove_dir_all(&dir).unwrap();
-        // A Mac, for development: the apps in /Applications.
+        // A Mac: the apps in /Applications, else in ~/Applications, in
+        // myous for Mac's order; the profile folder is the bundle id.
         let mac = |p: &Path| p.to_string_lossy().contains("Microsoft Edge.app");
         let f = find_browser_with("macos", &no_which, &none, &mac, &no_app_path).unwrap();
-        assert_eq!(f.name, "Edge");
+        assert_eq!(
+            (f.id.as_str(), f.name.as_str(), f.path.as_str()),
+            (
+                "com.microsoft.edgemac",
+                "Edge",
+                "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"
+            )
+        );
+        let home = |k: &str| (k == "HOME").then(|| "/Users/max".to_string());
+        let both = |p: &Path| {
+            let p = p.to_string_lossy();
+            p == "/Users/max/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"
+                || p == "/Applications/Chromium.app/Contents/MacOS/Chromium"
+        };
+        let f = find_browser_with("macos", &no_which, &home, &both, &no_app_path).unwrap();
+        assert_eq!(
+            (f.id.as_str(), f.name.as_str()),
+            ("com.brave.Browser", "Brave")
+        );
+        assert!(f.path.starts_with("/Users/max/Applications/"));
+        assert_eq!(
+            find_browser_with("macos", &no_which, &home, &|_| false, &no_app_path),
+            None
+        );
     }
 
     #[test]
@@ -1292,7 +1342,8 @@ mod tests {
                 && !version_ok("3.9")
                 && !version_ok("2.7")
         );
-        // Elsewhere, a versioned name when python3 is too old (macOS's 3.9, Homebrew's 3.13).
+        // Elsewhere, a versioned name when python3 is too old (an old
+        // distribution's 3.9, Homebrew's 3.13).
         let mac = |p: &Path, _: &[String]| -> Option<String> {
             match p.to_string_lossy().as_ref() {
                 "/usr/bin/python3" => Some("/usr/bin/python3\n3.9\nTrue".into()),
@@ -1300,11 +1351,15 @@ mod tests {
                 _ => None,
             }
         };
-        let (py, old) = find_python_with("macos", &at, &mac);
+        let (py, old) = find_python_with("linux", &at, &mac);
         assert_eq!(
             (py.unwrap().version.as_str(), old.as_str()),
             ("3.13", "3.9")
         );
+        // A Mac never runs /usr/bin/python3 (the Command Line Tools' 3.9,
+        // or their install dialog).
+        let (py, old) = find_python_with("macos", &at, &mac);
+        assert_eq!((py.unwrap().version.as_str(), old.as_str()), ("3.13", ""));
     }
 
     /// A real Python on a test PATH: a script standing in for it, found by

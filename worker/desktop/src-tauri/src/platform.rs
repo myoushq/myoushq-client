@@ -90,7 +90,9 @@ fn windows_zone() -> Option<String> {
 }
 
 /// The owner's language as a BCP 47 tag (MYOUS_LANG), from the locale
-/// variables; empty when they say nothing.
+/// variables; empty when they say nothing. A Mac app opened from the
+/// Finder or at login has none of them, so there it is the first of the
+/// owner's preferred languages, as myous for Mac sends.
 pub fn language() -> String {
     for k in ["LC_ALL", "LC_MESSAGES", "LANG"] {
         if let Ok(v) = std::env::var(k) {
@@ -102,5 +104,38 @@ pub fn language() -> String {
             }
         }
     }
+    if cfg!(target_os = "macos") {
+        return first_apple_language(&crate::engine::output(
+            "/usr/bin/defaults",
+            &["read", "-g", "AppleLanguages"],
+            std::time::Duration::from_secs(5),
+        ));
+    }
     String::new()
+}
+
+/// The first entry of `defaults read -g AppleLanguages`, a property list
+/// in the old text form: `(\n    "en-US",\n    de\n)`.
+fn first_apple_language(out: &str) -> String {
+    out.lines()
+        .map(|l| l.trim().trim_end_matches(',').trim_matches('"'))
+        .find(|l| !l.is_empty() && *l != "(" && *l != ")")
+        .unwrap_or("")
+        .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_the_macs_preferred_language() {
+        assert_eq!(
+            first_apple_language("(\n    \"en-US\",\n    \"de-DE\"\n)\n"),
+            "en-US"
+        );
+        assert_eq!(first_apple_language("(\n    fr\n)"), "fr");
+        assert_eq!(first_apple_language("(\n)"), "");
+        assert_eq!(first_apple_language(""), "");
+    }
 }
