@@ -327,7 +327,7 @@ func TestWorkerExecTimeoutKillsTheCommand(t *testing.T) {
 	f := newWorkerFixture(t)
 	started := time.Now()
 	r := f.exec("sleep 30", "timeout", 1)
-	if r["exit"] != -1.0 || !strings.Contains(r["stderr"].(string), "killed after 1 seconds") || time.Since(started) > 10*time.Second {
+	if r["exit"] != -1.0 || !strings.Contains(r["stderr"].(string), "[myous: killed after 1 second]") || time.Since(started) > 10*time.Second {
 		t.Fatalf("%v after %v", r, time.Since(started))
 	}
 }

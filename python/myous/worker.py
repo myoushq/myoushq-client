@@ -698,7 +698,7 @@ def run_command(cmd: str, cwd: Path, timeout: int, stop_file: Path | None = None
                 stopped = True
                 note = "[myous: stopped by the owner]"
             elif time.time() >= deadline:
-                note = f"[myous: killed after {timeout} seconds]"
+                note = f"[myous: killed after {timeout} {'second' if timeout == 1 else 'seconds'}]"
             else:
                 continue
             processes.kill_tree(proc)

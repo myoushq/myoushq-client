@@ -40,7 +40,7 @@ func TestWorkerTimeoutDoesNotWaitForAnEscapedGrandchild(t *testing.T) {
 	cmd := fmt.Sprintf("MYOUS_TEST_DAEMON=1 %s -test.run='^TestWorkerHelperDaemon$' & wait", shlexQuote(os.Args[0]))
 	started := time.Now()
 	r := f.exec(cmd, "timeout", 1)
-	if r["exit"] != -1.0 || !strings.Contains(r["stderr"].(string), "killed after 1 seconds") ||
+	if r["exit"] != -1.0 || !strings.Contains(r["stderr"].(string), "[myous: killed after 1 second]") ||
 		!strings.Contains(r["stdout"].(string), "started") || time.Since(started) > 12*time.Second {
 		t.Fatalf("%v after %v", r, time.Since(started))
 	}

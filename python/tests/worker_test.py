@@ -136,7 +136,7 @@ class WorkerTest(WorkerFixture):
         self.run_(self.w.handle(message(json.dumps({"myous": "exec", "id": RID, "cmd": "sleep 30", "timeout": 1}))))
         r = self.replies()[-1]
         self.assertEqual(r["exit"], -1)
-        self.assertIn("killed after 1 seconds", r["stderr"])
+        self.assertIn("[myous: killed after 1 second]", r["stderr"])
         self.assertLess(time.time() - started, 10)
 
     def test_timeout_does_not_wait_for_an_escaped_grandchild(self):
@@ -147,7 +147,7 @@ class WorkerTest(WorkerFixture):
         self.run_(self.w.handle(message(json.dumps({"myous": "exec", "id": RID, "cmd": cmd, "timeout": 1}))))
         r = self.replies()[-1]
         self.assertEqual(r["exit"], -1)
-        self.assertIn("killed after 1 seconds", r["stderr"])
+        self.assertIn("[myous: killed after 1 second]", r["stderr"])
         self.assertIn("started", r["stdout"])
         self.assertLess(time.time() - started, 12)
 
