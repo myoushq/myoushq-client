@@ -404,8 +404,10 @@ def cmd_contacts(agent: Agent, st: FileStorage, args) -> None:
         return
     if not all_contacts:
         print("no contacts yet; pair with `myous invite` or `myous accept`")
+        return
+    print(f"{'name':<20} {'status':<9} {'relation':<10} {'added by':<8} key")
     for c in all_contacts.values():
-        print(f"{c['alias']:<20} {c['status']:<9} {c.get('relationship') or '-':<10} {c.get('added_by') or '-':<7} {c['npub']}")
+        print(f"{c['alias']:<20} {c['status']:<9} {c.get('relationship') or '-':<10} {c.get('added_by') or '-':<8} {c['npub']}")
         card = c.get("card") or {}
         if card.get("about") or (card.get("name") and card["name"] != c["alias"]):
             calls = f"calls itself \"{card['name']}\"; " if card.get("name") != c["alias"] else ""
@@ -539,9 +541,21 @@ def cmd_status(agent: Agent, st: FileStorage, args) -> None:
     }
     if args.json:
         print(json.dumps(info, indent=2))
-    else:
-        for k, v in info.items():
-            print(f"{k:<17} {v}")
+        return
+    for k, v in info.items():
+        if k == "contact_list":
+            for c in v:
+                about = [c["status"], c.get("relationship"), c.get("added_by") and f"added by {c['added_by']}",
+                         c.get("paired_at") and "paired " + time.strftime("%Y-%m-%d", time.localtime(c["paired_at"]))]
+                print(f"  {c['alias']} ({', '.join(a for a in about if a)})")
+            continue
+        if k == "hook":   # `myous hook`, which runs a command on new items; not a tool's own hooks
+            k, v = "wake_hook", v or "(none)"
+        elif k == "last_used" and v:
+            v = time.strftime("%Y-%m-%d %H:%M", time.localtime(v))
+        elif k == "pending_pairings":
+            v = "; ".join(v) or "(none)"
+        print(f"{k:<17} {v}")
 
 
 def _pending_summary(agent: Agent) -> list[str]:

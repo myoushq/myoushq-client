@@ -12,6 +12,8 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
 
+from nostr_sdk import Keys
+
 from myous import __version__, cli, contacts
 from myous.agent import Agent
 from myous.storage import FileStorage
@@ -62,6 +64,27 @@ class StatusTest(unittest.TestCase):
         self.assertNotIn("sharing", contacts.context_fields(added_by=" owner "))
         self.assertEqual(contacts.context_fields(added_by=" owner "), {"added_by": "owner"})
         self.assertEqual(contacts.context_fields(), {})
+
+    def test_plain_output_is_readable(self):
+        self.agent.create_identity()
+        peer = Keys.generate().public_key()
+        contacts.add(self.st, peer.to_hex(), "Max's Muse")
+        contacts.update(self.st, "Max's Muse", **contacts.context_fields("friend", "anything", "owner"))
+        status, listing = io.StringIO(), io.StringIO()
+        with redirect_stdout(status):
+            cli.cmd_status(self.agent, self.st, argparse.Namespace(json=False))
+        with redirect_stdout(listing):
+            cli.cmd_contacts(self.agent, self.st, argparse.Namespace(json=False))
+        lines = status.getvalue().splitlines()
+        today = time.strftime("%Y-%m-%d")
+        self.assertIn(f"  Max's Muse (approved, friend, added by owner, paired {today})", lines)
+        self.assertIn("wake_hook         (none)", lines)
+        self.assertIn("pending_pairings  (none)", lines)
+        self.assertTrue(any(line.startswith(f"last_used         {today} ") for line in lines), lines)
+        self.assertFalse(any("contact_list" in line or "{" in line for line in lines), lines)
+        self.assertEqual(listing.getvalue().splitlines(), [
+            "name                 status    relation   added by key",
+            f"Max's Muse           approved  friend     owner    {peer.to_bech32()}"])
 
     def test_last_used_is_the_newest_file_outside_installs(self):
         self.assertIsNone(FileStorage(tempfile.mkdtemp()).last_used())
