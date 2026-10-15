@@ -349,6 +349,12 @@ class WorkerTest(WorkerFixture):
         self.w.write_status()
         self.assertEqual(json.loads((self.home / "worker.json").read_text())["phase"], "paused")
 
+    def test_status_has_the_version(self):
+        # The owner's app compares it with its own (Remove stale containers offers an older worker's container).
+        from myous import __version__
+        self.w.write_status()
+        self.assertEqual(json.loads((self.home / "worker.json").read_text())["version"], __version__)
+
     def test_request_records_for_the_owner(self):
         self.run_(self.w.handle(message(json.dumps({"myous": "exec", "id": RID, "cmd": "echo hi"}))))
         rec = json.loads((self.home / "requests" / f"{RID}.json").read_text())

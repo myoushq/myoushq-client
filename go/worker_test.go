@@ -791,8 +791,12 @@ func TestWorkerStatusHasAPhase(t *testing.T) {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	if got := strings.Join(keys, " "); got != "alias contacts invite last npub paired paused phase pid requests started updated work" {
+	if got := strings.Join(keys, " "); got != "alias contacts invite last npub paired paused phase pid requests started updated version work" {
 		t.Fatalf("keys: %s", got)
+	}
+	// The app compares it with its own (Remove stale containers offers an older worker's container).
+	if v := s["version"]; v != Version {
+		t.Fatalf("version: %v", v)
 	}
 }
 
