@@ -1,11 +1,14 @@
 # myous for Mac on Tauri
 
-This app (`worker/desktop`) is myous for Mac since 2026-10-14, replacing
-`worker/mac` (Objective-C), which is kept in the repository for now and
-no longer built or released. This file says what the Mac parts are, how
-the app is built and released for the Mac, and what a Mac user notices.
-Nothing here changes the app on Linux or Windows: the Mac parts are
-behind `cfg(target_os = "macos")` or the window's `info.os === "macos"`.
+This app (`worker/desktop`) is myous for Mac from the release after
+v0.7.5, replacing `worker/mac` (Objective-C, the myous for Mac that
+v0.7.5 and earlier shipped), which is kept in the repository for now and
+no longer built or released. Where this file compares the two, "myous
+for Mac" is that Objective-C app. This file says what the Mac parts are,
+how the app is built and released for the Mac, and what a Mac user
+notices. Nothing here changes the app on Linux or Windows: the Mac parts
+are behind `cfg(target_os = "macos")` or the window's
+`info.os === "macos"`.
 
 ## What works on a Mac
 
@@ -156,22 +159,29 @@ behind `cfg(target_os = "macos")` or the window's `info.os === "macos"`.
 - **The app menu** holds what the ⋯ menu holds on Linux and Windows
   (Settings… on ⌘,, Check for updates…, the browser, the logs and the
   worker folder, adding workers and agents' folders, the modes), with
-  About, Hide and Quit, and Edit and Window menus; the window has no ⋯,
-  and Running has **Open log** (the app log) under the requests.
+  About, Hide and Quit, and Edit and Window menus. It shows in the menu
+  bar while the Dock setting is on. With the setting off (the default)
+  the app is an accessory app, as myous for Mac was, and macOS may show
+  no menus for it (not tried). The ⋯ items are also in the menu bar
+  icon's menu: Settings…, Check for updates…, the browser item, and the
+  rest under Advanced. The window has no ⋯, and Running has **Open
+  log** (the app log) under the requests.
 - **The default worker name is the Computer Name** ("Max's MacBook
   Air", `scutil --get ComputerName`, as myous for Mac takes it), the
   host name only if that can't be read. The previews for macOS say
   "Max's Mac".
 - Everything else is the shared app: Set up and the first-launch
   checks, runtime install with Homebrew, pairing, requests, review,
-  several workers, the agents on the Mac, the update check against
-  `/download/mac`.
+  several workers, the agents on the Mac, the update check (the hub's
+  `latest_release` in `/config.json`; its Download button opens
+  `/download/mac`).
 
 ## Not ported from myous for Mac
 
-- **The Option-held Advanced menu**: not planned. Its items are always
-  in the app menu (the ⋯ menu on Linux and Windows), so there is nothing
-  to hold Option for.
+- **The Option-held Advanced menu**: not planned. The menu bar icon's
+  menu always has Advanced, and its items are in the app menu too while
+  the Dock setting is on (the ⋯ menu on Linux and Windows), so there is
+  nothing to hold Option for.
 - **Separate Settings and log windows**: not planned. They open inside
   the window, as on Linux and Windows; chosen from the menu bar icon's
   menu while the window is closed, they bring the window up first.
@@ -267,9 +277,10 @@ notarization rejects the app, Apple's log is in the job's output.
   per browser (`browser/Default`) isn't moved into
   `browser/<bundle id>`; myous for Mac has moved it already on any Mac
   that ran a recent version.
-- New: the first-launch checks, the runtime install cards, the app
-  menu's worker items (myous for Mac has them under the menu bar icon's
-  Advanced).
+- New: one Install per runtime with a Website link, and the app menu's
+  worker items while the Dock setting is on (both apps also have them
+  under the menu bar icon's Advanced, which myous for Mac showed only
+  with Option held, in a checkout or in direct mode).
 - Remove stale containers… asks which containers go (just the stopped
   ones, or all; this app's own worker only when it runs an older
   version, and only when ticked). The Objective-C app removed every

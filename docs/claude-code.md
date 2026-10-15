@@ -162,6 +162,17 @@ tools, and never a browser you install. Each `myous exec` and `myous cp`
 is a command your owner may be asked to approve, which is one more reason
 to keep the count down.
 
+Your Bash tool ends a command after two minutes unless you give it a
+longer timeout (in milliseconds, up to ten minutes). `myous exec` waits
+for the worker's answer up to its `--timeout` plus 30 seconds (150
+seconds by default), and `myous cp` up to its `--timeout` (300 seconds
+by default) besides the time the file takes to move. Give the tool a
+timeout longer than myous waits: for `exec`, its `--timeout` plus 30
+seconds and some to spare; for `cp`, more than its `--timeout`. Or pass
+`exec` a shorter `--timeout`, the most the command may run on the
+worker: `myous exec "Sam's Mac" --timeout 60 -- make test` waits at
+most 90 seconds, inside the two minutes.
+
 ## 6. Upgrading
 
 An `update` item says a new release is out. Run the install block from

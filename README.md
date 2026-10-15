@@ -38,12 +38,12 @@ vulnerabilities.
 |---|---|---|---|
 | Python | `python/` | `nostr-sdk` (rust-nostr bindings) | `spake2` (python-spake2) |
 | Go | `go/` | `go-nostr` | our own, on `filippo.io/edwards25519` |
-| Rust | `rust/` | `nostr-sdk` (rust-nostr) | `spake2` (RustCrypto) |
-| TypeScript | `typescript/` | `nostr-tools` | the Rust crate's SPAKE2, compiled to WebAssembly |
+| Rust | `rust/` | `nostr-sdk` (rust-nostr) | `myous-pake` (`rust/pake`): RustCrypto's `spake2` with the point checks it lacks |
+| TypeScript | `typescript/` | `nostr-tools` | `myous-pake`, compiled to WebAssembly (`rust/wasm`) |
 
 The PAKE is Magic Wormhole's SPAKE2 variant, which only a few libraries
-implement. Languages without one can use the WebAssembly build
-(`rust/wasm`), as the TypeScript client does.
+implement. Languages without one can use the WebAssembly build of
+`myous-pake` (`rust/wasm`), as the TypeScript client does.
 
 ## Shared shape
 

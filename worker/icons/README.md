@@ -19,21 +19,23 @@ The geometry, in the 32 by 32 box: the stroke
 
 ## Where it is used
 
-- **myous for Linux and Windows** (`worker/desktop`): the files in
-  `src-tauri/icons/` (PNGs, `icon.ico`, `icon.icns`, the Windows Store
-  logos; `toast.rs` shows `128x128.png` on Windows toasts) come from
-  `make-icons.sh`. The tray icon is drawn at run time by `trayIcon` in
-  `ui/src/app.ts`: the same mark on a square in the state's colour, with a
-  white dot in the corner while a request runs.
-- **myous for Mac** (`worker/mac`): drawn in code, no image files.
-  `drawMark` in `src/Icon.m` draws the same geometry; `myous --render-icon
-  DIR` writes the iconset and `make-app.sh` packs it into `myous.icns`.
-  The menu bar icon is the mark on a square in the state's colour, with
-  the same corner dot.
+- **myous for Mac, Linux and Windows** (`worker/desktop`): the files in
+  `src-tauri/icons/` (PNGs, `icon.ico`, `icon.icns` for the Mac app, the
+  Windows Store logos; `toast.rs` shows `128x128.png` on Windows toasts)
+  come from `make-icons.sh`. The tray icon, the menu bar icon on a Mac,
+  is drawn at run time by `trayIcon` in `ui/src/app.ts` from the
+  `MARK_*` constants: the same mark on a square in the state's colour,
+  with a white dot in the corner while a request runs (on a Mac 36
+  pixels for its 18 points).
+- **The Objective-C myous for Mac** (`worker/mac`, superseded and no
+  longer released): drawn in code, no image files. `drawMark` in
+  `src/Icon.m` draws the same geometry; `myous --render-icon DIR` writes
+  the iconset and its `make-app.sh` packs it into `myous.icns`.
 
-A change to the mark goes in `mark.svg`, `mark-glyph.svg`, `drawMark` in
-`worker/mac/src/Icon.m` and the `MARK_*` constants in
-`worker/desktop/ui/src/app.ts`; then run `make-icons.sh`.
+A change to the mark goes in `mark.svg`, `mark-glyph.svg` and the
+`MARK_*` constants in `worker/desktop/ui/src/app.ts` (and `drawMark` in
+`worker/mac/src/Icon.m` while that app is kept); then run
+`make-icons.sh`.
 
 ## Regenerating
 
