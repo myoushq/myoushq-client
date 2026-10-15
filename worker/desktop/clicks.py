@@ -411,10 +411,20 @@ def main() -> int:
         page.wait_for_selector("#dlg[open]")
         page.click("#dlg label:has-text('All, running ones too') input")
         page.click("#dlg label:has-text('Also remove') input")
-        # A minute on; the second worker still writes its status.
-        page.evaluate("(() => { const m = window.myous.model, t = m.now() + 60; m.now = () => t; m.workers[1].statusModified = t; })()")
+        # The runtime stops each running container before removing it (ten seconds or so each): the
+        # removal is held while the window looks every two seconds for a minute, the first worker's
+        # status unwritten (its container stopping), the second's written.
+        page.evaluate("(b => { const remove = b.removeContainers.bind(b); "
+                      "b.removeContainers = (s, r) => new Promise((done) => { window.releaseRemove = () => done(remove(s, r)); }); })(window.myous.backend)")
         page.click("#dlg button:has-text('Remove')")
         page.wait_for_selector("#dlg", state="hidden")
+        page.wait_for_function("typeof window.releaseRemove === 'function'")
+        page.evaluate("""(() => { const m = window.myous.model; let t = m.now(); m.now = () => t;
+            for (let i = 0; i < 30; i++) { t += 2; m.workers[1].statusModified = t; m.workers.forEach((w) => m.evaluate(w)); } })()""")
+        meanwhile = page.evaluate("(({screen, attention}) => ({screen, attention}))(window.myous.model.workers[0])")
+        check(meanwhile == {"screen": "stopped", "attention": ""}, f"while its container is removed: stopping, then Stopped, not on its own {meanwhile}")
+        page.evaluate("window.releaseRemove()")
+        page.wait_for_function("window.myous.backend.calls.some(c => c[0] === 'removeContainers')")
         check(removed() == [[[ids["myous-worker-3-worker-1"], ids["myous-worker"]],
                              [ids["myous-desktop-e2e-1791700000-worker-1"], ids["myous-worker-worker-1"]]]],
               "All with the older worker ticked: the others and it, with force")

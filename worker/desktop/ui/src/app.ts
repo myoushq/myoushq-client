@@ -3,7 +3,7 @@
 // decides each worker's screen again (the model), then draws the current
 // one. The same screens and words as myous for Mac.
 
-import { Backend, makeBackend, PreviewBackend, TrayItem } from "./backend.js";
+import { Backend, makeBackend, PreviewBackend, Removal, TrayItem } from "./backend.js";
 import { applyFake } from "./fake.js";
 import { appMenu, buildMenu, MenuActions, moreMenu } from "./menu.js";
 import { Advance, Agent, agentContacts, agentName, classifyContainers, Container, isUrgent, Kind, MAC_BROWSER_LINKS, Model, notifyKinds, RuntimeStep, shortNpub, Staleness, staleChoice, verb, what, Worker } from "./model.js";
@@ -213,11 +213,7 @@ async function start(w: Worker) {
 
 async function stop(w: Worker) {
   if (m.fake) return;
-  w.stopping = true;
-  w.stoppedAt = m.now();
-  w.stopDoneAt = 0;
-  w.launchedAt = 0;
-  w.launchStage = "";
+  w.beginStop(m.now());
   if (w.config.isDirect) {
     // Ours: its exit arrives as an event. Started outside this app: ended by the pid in
     // worker.json while that is still the worker, then a "stop" event (Stopping until then).
@@ -1260,10 +1256,26 @@ async function removeContainers() {
   // A made-up state removes nothing, except in a plain browser's preview, whose backend only records.
   if (m.fake && !be.preview) return;
   const { stopped, running } = choice();
-  const r = await be.removeContainers(stopped, running);
+  // This app's workers whose running containers go stop from now, as with Stop: the runtime stops
+  // each container (ten seconds or so) before removing it, and one that goes quiet meanwhile is
+  // stopped by the owner, not on its own.
+  const own = list.filter((e) => e.worker && running.includes(e.container));
+  for (const e of own) e.worker!.beginStop(m.now());
+  let r: Removal;
+  try {
+    r = await be.removeContainers(stopped, running);
+  } catch (e) {
+    r = { log: `couldn't remove the containers: ${e}`, removed: [] };
+  }
   appendLog(r.log);
-  // This app's worker whose running container went is stopped by the owner, not on its own.
-  for (const e of list) if (e.worker && e.container.running && r.removed.includes(e.container.id)) e.worker.removedByOwner(m.now());
+  for (const e of own) {
+    if (r.removed.includes(e.container.id)) e.worker!.removedByOwner(m.now());
+    else {
+      // Still there: running as before.
+      e.worker!.stopping = false;
+      e.worker!.stoppedAt = 0;
+    }
+  }
   void refresh();
 }
 

@@ -351,14 +351,21 @@ export class Worker {
   get version() { return str(this.status?.version); }
   fresh(now: number) { return this.statusModified > 0 && now - Math.max(this.statusModified, this.wokeAt) < STALE_AFTER; }
 
+  /** Stop pressed, or its container about to be removed: Stopping until it is gone, and then
+   * Stopped, not "stopped on its own". */
+  beginStop(now: number) {
+    this.stopping = true;
+    this.stoppedAt = now;
+    this.stopDoneAt = 0;
+    this.launchedAt = 0;
+    this.launchStage = "";
+  }
+
   /** The owner removed its running container (Remove stale containers): it is gone as after Stop,
    * so it shows Stopped with Start, not "stopped on its own". */
   removedByOwner(now: number) {
-    this.stopping = true;
-    this.stoppedAt = now;
+    this.beginStop(now);
     this.stopDoneAt = now;
-    this.launchedAt = 0;
-    this.launchStage = "";
   }
 
   /** The one word the menu and the header show. */
