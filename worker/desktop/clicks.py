@@ -287,6 +287,31 @@ def main() -> int:
         check({k: saved.get(k) for k in want} == want and names().count("writeConfig") == writes + 1 and ["setDock", [True]] in calls(),
               f"Settings saved after a reread: every app-wide setting and the Dock, one write {saved}")
 
+        # The window as it runs, with two workers (the first just paired, the second running).
+        def two_workers(os_name: str, first: str = "{}", second: str = "{}") -> list[str]:
+            go("", os_name)
+            page.evaluate(f"""(b => {{
+                const f = b.files[0], now = Date.now() / 1000;
+                b.files = [{{...f, status: {{...f.status, paired: {{alias: "Max's Muse", verify: "4821", at: now}}}}, ...{first}}},
+                    {{...f, home: f.home + "-2", folder: ".myous-worker-2", is_default: false, project: "myous-worker-2",
+                     config: {{name: "Codex's worker"}}, status: {{phase: "running", alias: "Codex's worker", contacts: 1}}, ...{second}}}];
+            }})(window.myous.backend)""")
+            page.wait_for_function("window.myous.model.workers.length === 2 && window.myous.model.workers.every(w => w.evaluated)")
+            return page.evaluate("window.myous.backend.files.map(f => f.home)")
+
+        # Unpair, answered after the window moved on to the other worker (one that came to need
+        # attention), unpairs the worker it was pressed on.
+        homes = two_workers("linux")
+        page.wait_for_selector("#card-paired:not([hidden])")
+        page.click("#unpair")
+        page.wait_for_selector("#dlg[open]")
+        page.evaluate("(m => { m.current = m.workers[1]; })(window.myous.model)")
+        page.click("#dlg button:has-text('Unpair')")
+        page.wait_for_selector("#dlg", state="hidden")
+        page.wait_for_function("window.myous.backend.calls.some(c => c[0] === 'sendCommand')")
+        sent = [c[1] for c in calls() if c[0] == "sendCommand"]
+        check(sent == [[homes[0], "unpair"]], f"Unpair unpairs the worker it was pressed on, not the one shown by then {sent}")
+
         # A Mac's worker in a container: Set up asks where its browser runs, as myous for Mac does.
         def env_of_start() -> dict:
             return next(c[1][4] for c in reversed(calls()) if c[0] == "composeRun")

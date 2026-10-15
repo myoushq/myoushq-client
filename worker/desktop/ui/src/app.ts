@@ -1424,7 +1424,8 @@ async function removeWorker(w: Worker = m.current) {
     } catch (e) {
       appendLog(`could not remove ${w.home}: ${e}`);
     }
-    m.current = m.workers[0];
+    // The first worker shows instead, unless the owner went to another meanwhile.
+    if (m.current === w) m.current = m.workers[0];
     void refresh();
   }, 3000);
 }
@@ -1756,13 +1757,16 @@ function wire() {
   $("pair-which").onchange = pairWhichChanged;
   $("pair-local").onclick = () => void acceptAsLocalAgent();
   $("paired-continue").onclick = async () => {
-    m.current.config.seenPairedAt = m.now();
-    await saveConfig(m.current);
+    const w = m.current;
+    w.config.seenPairedAt = m.now();
+    await saveConfig(w);
     void refresh();
   };
   $("unpair").onclick = async () => {
-    if (!(await confirmBox("Unpair this worker?", "The agent loses access, and a new pairing code appears. Use this if the verification numbers differ.", "Unpair", true))) return;
+    // The worker shown now: by the owner's answer the window may show another (one that came to need attention).
     const w = m.current;
+    if (!(await confirmBox("Unpair this worker?", "The agent loses access, and a new pairing code appears. Use this if the verification numbers differ.", "Unpair", true))) return;
+    if (!m.workers.includes(w)) return;
     if (!m.fake) await be.sendCommand(w.home, "unpair");
     w.config.seenPairedAt = m.now();
     await saveConfig(w);
