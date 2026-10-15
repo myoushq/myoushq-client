@@ -161,24 +161,26 @@ jobs:
       - run: cd worker/desktop/src-tauri && cargo test -- --nocapture
       - run: cd worker/desktop && npx tauri build --bundles nsis
   mac-app:
-    # myous for Mac: the same app (worker/desktop) built on macOS, for
-    # this runner's architecture only (the release builds it universal),
-    # signed ad hoc, and packed into a disk image with worker/mac's script.
+    # myous for Mac: the same app (worker/desktop) built on macOS as the
+    # release builds it, universal (both Rust targets, the worker for each
+    # joined with lipo), so a push of main proves that build before a tag
+    # does; signed ad hoc instead of with the Developer ID, and packed into
+    # a disk image with worker/mac's script. About 30 minutes.
     runs-on: macos-15
-    timeout-minutes: 40
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with: { node-version: "22" }
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
-        with: { components: "clippy, rustfmt" }
+        with: { targets: "aarch64-apple-darwin,x86_64-apple-darwin", components: "clippy, rustfmt" }
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with: { go-version-file: go/go.mod, cache-dependency-path: go/go.sum }
       - run: sh worker/build-worker.sh host worker/desktop/src-tauri/binaries "$(node -p 'require("./worker/desktop/package.json").version')"
       - run: cd worker/desktop && npm ci && npm test && npm run build:ui
       - run: cd worker/desktop/src-tauri && cargo fmt --check && cargo clippy --all-targets -- -D warnings
       - run: cd worker/desktop/src-tauri && cargo test -- --nocapture
-      - run: cd worker/desktop && ./make-mac.sh
+      - run: cd worker/desktop && ./make-mac.sh --universal
   audit:
     runs-on: ubuntu-24.04
     steps:
