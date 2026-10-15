@@ -13,6 +13,7 @@ exists, and logs every request; tightening is a matter of giving
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import importlib.util
 import json
 import math
@@ -195,8 +196,9 @@ class Worker:
                 while not self.stopping.is_set():
                     await asyncio.sleep(0.25)
                     if quit_file.exists():
-                        quit_file.unlink(missing_ok=True)
                         on_signal(None, None, "the owner's app asked (commands/quit)")
+                        with contextlib.suppress(OSError):   # on Windows the app may still have it open
+                            quit_file.unlink(missing_ok=True)
             watcher = loop.create_task(watch_quit())
 
         installed = {}
@@ -221,7 +223,8 @@ class Worker:
         finally:
             if watcher:
                 watcher.cancel()
-                quit_file.unlink(missing_ok=True)   # left by an app that also sent SIGTERM
+                with contextlib.suppress(OSError):
+                    quit_file.unlink(missing_ok=True)   # left by an app that also sent SIGTERM
             for sig, old in installed.items():
                 try:
                     signal.signal(sig, old)

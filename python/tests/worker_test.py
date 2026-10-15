@@ -307,6 +307,25 @@ class WorkerTest(WorkerFixture):
         self.assertFalse((self.work / "ran").exists() or (self.work / "in.txt").exists())
         self.assertEqual(self.agent.files, [])
 
+    def test_a_quit_file_that_cant_be_removed_still_stops_the_worker(self):
+        # On Windows the owner's app may still have it open: removing it fails.
+        real_unlink = Path.unlink
+
+        def unlink(path, missing_ok=False):
+            if path.name == "quit":
+                raise PermissionError(13, "in use", str(path))
+            return real_unlink(path, missing_ok=missing_ok)
+
+        async def listen(on_new, on_tick, tick):
+            await asyncio.sleep(3600)
+
+        self.agent.listen = listen
+        (self.home / "commands").mkdir(exist_ok=True)
+        threading.Timer(0.5, (self.home / "commands" / "quit").touch).start()
+        with mock.patch.object(Path, "unlink", unlink):
+            self.run_(asyncio.wait_for(self.w.run(), 10))
+        self.assertTrue(self.w.stopping.is_set())
+
     def test_review_hook_refuses(self):
         hook = Path(self.tmp.name) / "review.py"
         hook.write_text("import json,sys\nr=json.load(sys.stdin)\n"
