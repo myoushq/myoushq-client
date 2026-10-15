@@ -169,17 +169,27 @@ class FileStorage(Storage):
         return [f"{directory}/{n}" if directory else n for n in found]
 
     def append_history(self, entry: dict) -> None:
-        fd = os.open(self.path("messages.jsonl"), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-        with os.fdopen(fd, "a") as f:
-            f.write(json.dumps(entry, sort_keys=True) + "\n")
-            f.flush()
-            os.fsync(f.fileno())
+        line = (json.dumps(entry, sort_keys=True) + "\n").encode()
+        flags = os.O_RDWR | os.O_CREAT | os.O_APPEND | getattr(os, "O_BINARY", 0)
+        fd = os.open(self.path("messages.jsonl"), flags, 0o600)
+        try:
+            _mend_tail(fd)
+            while line:
+                line = line[os.write(fd, line):]
+            os.fsync(fd)
+        finally:
+            os.close(fd)
 
     def read_history(self) -> list[dict]:
         try:
-            lines = self.path("messages.jsonl").read_text().splitlines()
+            text = self.path("messages.jsonl").read_text(encoding="utf-8")
         except FileNotFoundError:
             return []
+        # Lines end with "\n" only: splitlines() would also split a line
+        # another client wrote with U+2028 or U+0085 left unescaped.
+        lines = text.split("\n")
+        if _torn(lines[-1]):
+            lines.pop()   # a write cut short (a crash, a full disk): append_history mends it
         return [json.loads(line) for line in lines if line.strip()]
 
     HISTORY_BLOCK = 64 * 1024  # bytes read at a time from the end (tests lower it)
@@ -204,6 +214,7 @@ class FileStorage(Storage):
         except FileNotFoundError:
             return
         head = b""  # the start of a line whose beginning is in an earlier block
+        last = True  # the first line met is the last one, which a cut-short write leaves torn
         while pos > 0:
             step = min(self.HISTORY_BLOCK, pos)
             pos -= step
@@ -213,9 +224,13 @@ class FileStorage(Storage):
             lines = (block + head).split(b"\n")
             head = lines.pop(0)
             for line in reversed(lines):
+                if last:
+                    last = False
+                    if _torn(line):
+                        continue
                 if line.strip():
                     yield json.loads(line)
-        if head.strip():
+        if head.strip() and not (last and _torn(head)):
             yield json.loads(head)
 
     def last_used(self) -> int | None:
@@ -259,6 +274,44 @@ class FileStorage(Storage):
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp, p)
+
+
+def _torn(last_line: str | bytes) -> bool:
+    """Whether what follows the history's last newline is a write cut
+    short: anything but blank or a whole JSON object."""
+    if not last_line.strip():
+        return False
+    try:
+        return not isinstance(json.loads(last_line), dict)
+    except ValueError:
+        return True
+
+
+def _mend_tail(fd: int) -> None:
+    """Before an append: if the history doesn't end with a newline (a
+    write was cut short), end its last line, or drop that line if it isn't
+    a whole entry, so the new entry gets a line of its own instead of
+    being glued to the fragment. Callers hold the state lock: no other
+    append is under way."""
+    size = os.lseek(fd, 0, os.SEEK_END)
+    if size == 0:
+        return
+    os.lseek(fd, size - 1, os.SEEK_SET)
+    if os.read(fd, 1) == b"\n":
+        return
+    start = max(0, size - (1 << 20))
+    os.lseek(fd, start, os.SEEK_SET)
+    tail = b""
+    while len(tail) < size - start:
+        chunk = os.read(fd, size - start - len(tail))
+        if not chunk:
+            break
+        tail += chunk
+    cut = tail.rfind(b"\n") + 1   # 0: the whole tail is the last line
+    if _torn(tail[cut:]):
+        os.ftruncate(fd, start + cut)
+    else:
+        os.write(fd, b"\n")
 
 
 def _lock(fd: int, wait: bool) -> bool:

@@ -143,5 +143,55 @@ class HistoryFromTheEnd(unittest.TestCase):
         self.assertEqual(seen["since"], 2)   # the request itself is seq 2: anything from there on counts
 
 
+class TornHistory(unittest.TestCase):
+    """A write cut short (a crash, a full disk) leaves the history's last
+    line torn: it is skipped, and the next append mends the file, instead
+    of every read failing from then on."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.st = FileStorage(Path(self.tmp.name))
+        self.file = Path(self.tmp.name) / "messages.jsonl"
+        self.st.append_history({"seq": 1, "type": "message", "text": "whole"})
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def seqs(self):
+        return [e["seq"] for e in self.st.read_history()], [e["seq"] for e in self.st.history_reversed()]
+
+    def test_a_torn_last_line_is_skipped_and_mended(self):
+        with open(self.file, "a") as f:
+            f.write('{"seq": 2, "type": "mess')
+        self.assertEqual(self.seqs(), ([1], [1]))
+        for block in (1, 5, 64 * 1024):
+            self.st.HISTORY_BLOCK = block
+            self.assertEqual([e["seq"] for e in self.st.history_reversed()], [1])
+        self.st.append_history({"seq": 2, "type": "message", "text": "next"})
+        self.assertEqual(self.seqs(), ([1, 2], [2, 1]))
+        self.assertTrue(self.file.read_text().endswith('"text": "next", "type": "message"}\n'))
+
+    def test_a_whole_entry_without_its_newline_is_kept(self):
+        with open(self.file, "a") as f:
+            f.write('{"seq": 2, "type": "message"}')
+        self.assertEqual(self.seqs(), ([1, 2], [2, 1]))
+        self.st.append_history({"seq": 3, "type": "message"})
+        self.assertEqual(self.seqs(), ([1, 2, 3], [3, 2, 1]))
+
+    def test_only_a_fragment(self):
+        self.file.write_text('{"seq": 1, "ty')
+        self.assertEqual(self.seqs(), ([], []))
+        self.st.append_history({"seq": 1, "type": "message"})
+        self.assertEqual(self.seqs(), ([1], [1]))
+
+    def test_lines_end_with_newline_only(self):
+        # Go and TypeScript leave U+0085 (and TypeScript U+2028) unescaped;
+        # splitlines() would cut such a line in two.
+        with open(self.file, "a", encoding="utf-8") as f:
+            f.write(json.dumps({"seq": 2, "type": "message", "text": "a b\u0085c d"}, ensure_ascii=False) + "\n")
+        self.assertEqual(self.seqs(), ([1, 2], [2, 1]))
+        self.assertEqual(self.st.read_history()[-1]["text"], "a b\u0085c d")
+
+
 if __name__ == "__main__":
     unittest.main()
