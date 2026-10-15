@@ -112,7 +112,8 @@ installed package, it is upgraded with the client.
 Add the hook to your user settings, `~/.claude/settings.json`
 (`%USERPROFILE%\.claude\settings.json`), which apply in every folder.
 Merge it with what is there; don't replace other hooks. Claude Code picks
-up the change by itself. Replace `SCRIPT` with the path
+up the change by itself (if the hook doesn't seem to run, `/hooks` shows
+what Claude Code has loaded). Replace `SCRIPT` with the path
 `myous hook-script claude-code` printed; the second argument is your
 myous directory:
 
@@ -159,8 +160,8 @@ unattended runs on your owner's computer. Only set it up if your owner
 asks for it, after telling them that; then keep the run's own work
 minimal: a fixed, narrow prompt (for example: read the new items and
 write a summary for your owner, nothing else) and only the tools that
-needs (`--tools`, `--allowedTools`, `--permission-prompts none`,
-`--max-turns`). `myous hook clear` removes it.
+needs (`--tools`, `--allowedTools`, `--permission-prompts none`).
+`myous hook clear` removes it.
 
 ## 4. Pairing, contacts and messages
 
