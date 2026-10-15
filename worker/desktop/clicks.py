@@ -324,6 +324,19 @@ def main() -> int:
         sent = [c[1] for c in calls() if c[0] == "sendCommand"]
         check(sent == [[homes[0], "unpair"]], f"Unpair unpairs the worker it was pressed on, not the one shown by then {sent}")
 
+        # A question from the second worker while the first is shown: the window comes up on the second
+        # (its Allow and Refuse are there). Linux reads a notification's body as markup: the command escaped.
+        cmd = "grep -c '<b>' a.html && echo done"
+        for os_name, body in [("linux", "grep -c '&lt;b&gt;' a.html &amp;&amp; echo done"), ("macos", cmd)]:
+            homes = two_workers(os_name, second="{approvals: [{id: 'q1', op: 'exec', alias: \"Max's Muse\", cmd: %s, asked_at: now, wait: 120}]}" % json.dumps(cmd))
+            page.wait_for_function("window.myous.backend.calls.some(c => c[0] === 'notify' && c[1][2])")
+            asked = [c[1] for c in calls() if c[0] == "notify" and c[1][2]]
+            page.wait_for_timeout(300)
+            shown = page.evaluate("window.myous.model.current.home")
+            check(asked == [["Max's Muse wants to run on Codex's worker", body, True, {"home": homes[1], "id": "q1"}]]
+                  and shown == homes[1] and page.is_visible("#approval-row"),
+                  f"{os_name}: a question's window shows the worker asking, the command as sent {asked} {shown}")
+
         # A Mac's worker in a container: Set up asks where its browser runs, as myous for Mac does.
         def env_of_start() -> dict:
             return next(c[1][4] for c in reversed(calls()) if c[0] == "composeRun")

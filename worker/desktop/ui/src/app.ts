@@ -1903,7 +1903,9 @@ async function main() {
   m.notify = (kind, title, body, ask) => {
     // Linux: the body is read as markup there, and an agent's command may hold some.
     const sent = be.notify(title, info.os === "linux" ? escapeMarkup(body) : body, isUrgent(kind), ask ?? null);
-    const up = () => void showWindow();
+    // A question's window shows the worker asking (its Allow and Refuse are there), while the window has it.
+    const asking = ask ? m.workers.find((w) => w.home === ask.home) : undefined;
+    const up = () => void showWindow(asking && m.workers.includes(asking) ? asking : undefined);
     if (isUrgent(kind) && info.os === "macos") {
       // A Mac answers a question from its notification (Allow, Refuse); the window comes up only when that can't.
       sent.then(
