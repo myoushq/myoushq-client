@@ -2,7 +2,7 @@
 // screenshotted, and tested) without a worker: MYOUS_FAKE_STATE in the
 // app, ?state= in a browser preview of ui/dist.
 
-import { Agent, BrowserCheck, MacBrowsers, Model, RuntimeOptions, Worker, WorkerFiles } from "./model.js";
+import { Agent, BrowserCheck, Container, MacBrowsers, Model, RuntimeOptions, Worker, WorkerFiles } from "./model.js";
 import { advanceWords } from "./setup.js";
 
 export const fakeStates = ["checking", "couldntcheck", "setup", "hubdown", "noruntime", "installing", "stoppedruntime", "stoppedengine",
@@ -261,6 +261,22 @@ export function fakeAgents(now: number): Agent[] {
       ],
       pending_pairings: [] },
   }];
+}
+
+/** The worker containers in the previews (Remove stale containers): the first worker's on an older
+ * image, the second worker's on this app's `version`, a test's left running, and two stopped. With the
+ * made-up "workers" (two workers) that is one of each kind; with one worker the second's is another's. */
+export function previewContainers(version: string): Container[] {
+  const c = (id: string, name: string, state: string, project: string, image: string, version = ""): Container =>
+    ({ id, name, state, running: state === "running", image, project, version });
+  const published = (v: string) => `ghcr.io/myoushq/worker:${v}`;
+  return [
+    c("ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb", "myous-worker-worker-1", "running", "myous-worker", published("0.6.0"), "0.6.0"),
+    c("3e23e8160039594a33894f6564e1b1348bbd7a0088d42c4acb73eeaed59c009d", "myous-worker-2-worker-1", "running", "myous-worker-2", published(version), version),
+    c("2e7d2c03a9507ae265ecf5b5356885a53393a2029d241394997265a1a25aefc6", "myous-desktop-e2e-1791700000-worker-1", "running", "myous-desktop-e2e-1791700000", "myous-desktop-e2e-1791700000-worker"),
+    c("18ac3e7343f016890c510e93f935261169d9e3f565436429830faf0934f4f8e4", "myous-worker-3-worker-1", "exited", "myous-worker-3", published("0.5.2"), "0.5.2"),
+    c("3f79bb7b435b05321651daefd374cdc681dc06faa65e374e38337b88ca046dea", "myous-worker", "created", "", published("0.4.3"), "0.4.3"),
+  ];
 }
 
 /** What browser.rs finds: everything ("ready"), or one thing missing. */

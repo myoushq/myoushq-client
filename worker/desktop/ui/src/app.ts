@@ -6,7 +6,7 @@
 import { Backend, makeBackend, PreviewBackend, TrayItem } from "./backend.js";
 import { applyFake } from "./fake.js";
 import { appMenu, buildMenu, MenuActions, moreMenu } from "./menu.js";
-import { Advance, Agent, agentContacts, agentName, isUrgent, Kind, MAC_BROWSER_LINKS, Model, notifyKinds, RuntimeStep, shortNpub, verb, what, Worker } from "./model.js";
+import { Advance, Agent, agentContacts, agentName, classifyContainers, Container, isUrgent, Kind, MAC_BROWSER_LINKS, Model, notifyKinds, RuntimeStep, shortNpub, Staleness, staleChoice, verb, what, Worker } from "./model.js";
 import { attentionCard, browserAdvance, browserCard, BrowserRow, browserRow, checkAdvance, CheckName, checklist, hubLine, installLine, macBrowserHint, macBrowserName, macBrowserQuestion, Row, runtimeCard } from "./setup.js";
 import { byteCount, capitalize, clockTime, countdown, dayLabel, defaultDescription, dict, isDefaultDescription, newer, num, pairingMessage, plural, setHostOs, str, timeAgo } from "./text.js";
 
@@ -85,7 +85,7 @@ function appendLog(line: string) {
 
 // --- dialogs ----------------------------------------------------------------
 
-interface DialogButton { label: string; value: string; primary?: boolean; danger?: boolean }
+interface DialogButton { label: string; value: string; primary?: boolean; danger?: boolean; id?: string }
 interface DialogOpts { title: string; text?: string; pre?: string; liveLog?: boolean; img?: string; input?: { placeholder?: string; value?: string }; buttons?: DialogButton[]; body?: HTMLElement }
 
 let closeCurrent: ((v: { value: string; input: string } | null) => void) | null = null;
@@ -121,6 +121,7 @@ function dialog(o: DialogOpts): Promise<{ value: string; input: string } | null>
     closeCurrent = done;
     for (const b of buttons) {
       const btn = el<HTMLButtonElement>("button", { textContent: b.label, className: b.primary ? "primary" : b.danger ? "danger" : "" });
+      if (b.id) btn.id = b.id;
       btn.onclick = () => done({ value: b.value, input: input?.value ?? "" });
       row.append(btn);
     }
@@ -1168,7 +1169,7 @@ function fitWindow() {
   const d = $<HTMLDialogElement>("dlg");
   if (d.open) {
     // What its scrolled parts (the settings, a log) would need, within the 86% of the window a dialog takes.
-    const extra = [...d.querySelectorAll<HTMLElement>(".settings, pre")].reduce((n, e) => n + e.scrollHeight - e.clientHeight, 0);
+    const extra = [...d.querySelectorAll<HTMLElement>(".settings, .stale, pre")].reduce((n, e) => n + e.scrollHeight - e.clientHeight, 0);
     height = Math.max(height, Math.ceil((d.offsetHeight + extra) / 0.86) + 8);
   }
   height = Math.min(Math.max(Math.ceil(height), FIT_MIN), FIT_MAX);
@@ -1195,8 +1196,64 @@ async function containerLog() {
   await dialog({ title: "Container log", pre: text || "No output (the worker may not be running)." });
 }
 
+/** Advanced › Remove stale containers…: the worker containers, and which go. The stopped ones by
+ * default; with All the running ones that aren't this app's workers too; a worker of this app on an
+ * older version only when the owner ticks it (it stops, and Start runs it on this app's version); one
+ * on this app's version never. */
 async function removeContainers() {
-  appendLog(await be.removeStaleContainers());
+  const title = "Remove stale containers";
+  let containers: Container[];
+  try {
+    containers = await be.listContainers();
+  } catch (e) {
+    appendLog(`containers: ${e}`);
+    await alertBox(title, `Couldn't list the worker containers: ${e}`);
+    return;
+  }
+  if (containers.length === 0) {
+    appendLog("no worker containers found");
+    await alertBox(title, "No worker containers found.");
+    return;
+  }
+  const list = classifyContainers(containers, m.workers, m.version);
+  const count = (...kinds: Staleness[]) => list.filter((e) => kinds.includes(e.kind)).length;
+  const runs = (v: string) => (v ? `myous ${v.replace(/^v/, "")}` : "version unknown");
+  const body = el("div", { className: "stale" });
+  body.append(el("p", { textContent: `The worker containers on ${sys}:` }), el("ul", {}, ...list.map((e) => el("li", {},
+    el("span", { className: "name", textContent: e.container.name || e.container.id.slice(0, 12) }),
+    el("span", { className: "muted", textContent: ` · ${e.container.running ? "running" : "stopped"} · ${runs(e.version)}${e.worker ? ` · ${e.worker.name}` : ""}` })))));
+  const radio = (label: string, on: boolean) => {
+    const box = el<HTMLInputElement>("input", { type: "radio", name: "stale-which", checked: on });
+    return [el("label", { className: "check" }, box, label), box] as const;
+  };
+  const [justRow] = radio(`Just the stopped ones (${count("stopped")})`, true);
+  const [allRow, all] = radio(`All, running ones too (${count("stopped", "other")})`, false);
+  body.append(justRow, allRow);
+  // This app's own workers are never in All: each older one is asked about on its own.
+  const ticks = list.filter((e) => e.kind === "older").map((e) => {
+    const box = el<HTMLInputElement>("input", { type: "checkbox" });
+    const older = e.version ? runs(e.version) : "an older version";
+    body.append(el("label", { className: "check wrap" }, box,
+      `Also remove ${e.worker!.name}'s container: it runs ${older}, this app is ${m.version}. The worker stops; Start runs it on ${m.version}.`));
+    return [e.container.id, box] as const;
+  });
+  for (const e of list.filter((x) => x.kind === "current")) {
+    body.append(el("p", { className: "hint", textContent: `${e.worker!.name}'s container is kept: it runs this app's version.` }));
+  }
+  const choice = () => staleChoice(list, all.checked, new Set(ticks.filter(([, box]) => box.checked).map(([id]) => id)));
+  const none = () => { const c = choice(); return c.stopped.length + c.running.length === 0; };
+  const asked = dialog({ title, body, buttons: [{ label: "Cancel", value: "no" }, { label: "Remove", value: "yes", danger: true, id: "stale-remove" }] });
+  const remove = $<HTMLButtonElement>("stale-remove");
+  body.onchange = () => { remove.disabled = none(); };
+  remove.disabled = none();
+  if ((await asked)?.value !== "yes" || none()) return;
+  // A made-up state removes nothing, except in a plain browser's preview, whose backend only records.
+  if (m.fake && !be.preview) return;
+  const { stopped, running } = choice();
+  const r = await be.removeContainers(stopped, running);
+  appendLog(r.log);
+  // This app's worker whose running container went is stopped by the owner, not on its own.
+  for (const e of list) if (e.worker && e.container.running && r.removed.includes(e.container.id)) e.worker.removedByOwner(m.now());
   void refresh();
 }
 

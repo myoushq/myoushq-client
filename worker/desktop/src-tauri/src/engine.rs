@@ -1,7 +1,7 @@
 //! The container runtime: find it (Docker, Podman, Docker Desktop,
 //! Rancher Desktop), run compose for a worker, stream a command's output,
-//! ask for the browser view's port, remove stale containers. Commands are
-//! argument lists, never shell strings.
+//! ask for the browser view's port, list the worker containers and remove
+//! the stale ones. Commands are argument lists, never shell strings.
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read};
@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Keeps child processes from flashing a console window on Windows.
 pub fn hide(cmd: &mut Command) -> &mut Command {
@@ -713,25 +713,167 @@ pub fn browser_port(compose: &[String], legacy: bool) -> String {
     ))
 }
 
-/// Removes every container labelled as a myous worker, whatever project
-/// started it (the sledgehammer behind Advanced).
-pub fn remove_all() -> String {
+/// A container labelled as a myous worker (`com.myoushq.worker`), whatever
+/// project started it, as the runtime's `inspect` describes it.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+pub struct Container {
+    pub id: String,
+    /// Without Docker's leading `/`.
+    pub name: String,
+    /// The runtime's word: running, restarting, paused, created, exited,
+    /// dead (Podman's own too: stopped, configured, stopping…).
+    pub state: String,
+    /// Running, restarting or paused: removing it stops a worker.
+    pub running: bool,
+    pub image: String,
+    /// Its compose project (the `com.docker.compose.project` label), "" if none.
+    pub project: String,
+    /// The tag of the published image (`ghcr.io/myoushq/worker:<version>`),
+    /// "" for any other image (a checkout's, built here).
+    pub version: String,
+}
+
+/// The published image; its tag is the version of the app that ran it.
+const PUBLISHED_IMAGE: &str = "ghcr.io/myoushq/worker:";
+
+/// Every worker container, running or not, for Remove stale containers;
+/// an error (the runtime's line) when the runtime doesn't answer.
+pub fn containers() -> Result<Vec<Container>, String> {
     let b = bin();
-    let ids = output(
-        &b,
-        &["ps", "-aq", "--filter", "label=com.myoushq.worker"],
-        Duration::from_secs(15),
-    );
-    let ids: Vec<&str> = ids.split_whitespace().collect();
-    if ids.is_empty() {
-        return "no worker containers found".into();
+    let mut cmd = command(&b);
+    cmd.args(["ps", "-aq", "--filter", "label=com.myoushq.worker"]);
+    let (status, out) = run_capture(cmd, Duration::from_secs(15));
+    if status != 0 {
+        return Err(error_line(&out));
     }
-    let mut args = vec!["rm", "-f"];
+    // The ids alone: a warning the runtime printed alongside isn't one.
+    let ids: Vec<&str> = out.split_whitespace().filter(|w| is_id(w)).collect();
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut args = vec!["container", "inspect"];
     args.extend(ids);
-    format!(
-        "removed: {}",
-        output(&b, &args, Duration::from_secs(60)).replace('\n', " ")
-    )
+    Ok(parse_containers(&output(
+        &b,
+        &args,
+        Duration::from_secs(15),
+    )))
+}
+
+fn is_id(word: &str) -> bool {
+    word.len() >= 12 && word.bytes().all(|c| c.is_ascii_hexdigit())
+}
+
+/// The containers in `container inspect`'s JSON, Docker's or Podman's:
+/// both have `Id`, `Name`, `State.Status` and `State.Running`, and
+/// `Config.Image` and `Config.Labels` (Podman also `ImageName`).
+pub fn parse_containers(json: &str) -> Vec<Container> {
+    let list: Vec<serde_json::Value> = serde_json::from_str(json).unwrap_or_default();
+    list.iter()
+        .map(|v| {
+            let s = |p: &str| v.pointer(p).and_then(|x| x.as_str()).unwrap_or("");
+            let on = |p: &str| v.pointer(p).and_then(|x| x.as_bool()).unwrap_or(false);
+            let state = s("/State/Status").to_lowercase();
+            let running = ["running", "restarting", "paused", "stopping"].contains(&state.as_str())
+                || on("/State/Running")
+                || on("/State/Restarting")
+                || on("/State/Paused");
+            let image = match s("/Config/Image") {
+                "" => s("/ImageName"),
+                i => i,
+            };
+            let project = v
+                .pointer("/Config/Labels")
+                .and_then(|l| l.get("com.docker.compose.project"))
+                .and_then(|x| x.as_str())
+                .unwrap_or("");
+            Container {
+                id: s("/Id").into(),
+                name: s("/Name").trim_start_matches('/').into(),
+                state,
+                running,
+                image: image.into(),
+                project: project.into(),
+                version: image_version(image),
+            }
+        })
+        .filter(|c| !c.id.is_empty())
+        .collect()
+}
+
+/// The version in the published image's tag (`0.7.5` in
+/// `ghcr.io/myoushq/worker:0.7.5`); "" for another image or a tag that
+/// isn't a version (`latest`).
+pub fn image_version(image: &str) -> String {
+    let Some(tag) = image.strip_prefix(PUBLISHED_IMAGE) else {
+        return String::new();
+    };
+    let tag = tag.split('@').next().unwrap_or("");
+    let digits = tag.strip_prefix('v').unwrap_or(tag);
+    if digits.starts_with(|c: char| c.is_ascii_digit()) {
+        tag.to_string()
+    } else {
+        String::new()
+    }
+}
+
+/// What Remove did: the line for the app's log, and the ids it removed.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct Removal {
+    pub log: String,
+    pub removed: Vec<String>,
+}
+
+/// Removes the containers the owner picked: the stopped ones with a plain
+/// `rm`, so one that started in the meantime is refused rather than
+/// stopped; the running ones (each chosen as such) with `rm -f`.
+pub fn remove(stopped: &[Container], running: &[Container]) -> Removal {
+    let b = bin();
+    let (mut removed, mut names, mut refused) = (Vec::new(), Vec::new(), Vec::new());
+    let picked = stopped.iter().map(|c| (c, false));
+    for (c, force) in picked.chain(running.iter().map(|c| (c, true))) {
+        let mut cmd = command(&b);
+        cmd.arg("rm");
+        if force {
+            cmd.arg("-f");
+        }
+        cmd.arg(&c.id);
+        let (status, out) = run_capture(cmd, Duration::from_secs(60));
+        if status == 0 {
+            removed.push(c.id.clone());
+            names.push(label(c));
+        } else {
+            refused.push(format!("{} ({})", label(c), error_line(&out)));
+        }
+    }
+    Removal {
+        log: removal_log(&names, &refused),
+        removed,
+    }
+}
+
+/// A container's name, else the start of its id.
+fn label(c: &Container) -> String {
+    if c.name.is_empty() {
+        c.id.chars().take(12).collect()
+    } else {
+        c.name.clone()
+    }
+}
+
+/// "removed: a b; not removed: c (why)", for the app's log.
+fn removal_log(removed: &[String], refused: &[String]) -> String {
+    let mut parts = Vec::new();
+    if !removed.is_empty() {
+        parts.push(format!("removed: {}", removed.join(" ")));
+    }
+    if !refused.is_empty() {
+        parts.push(format!("not removed: {}", refused.join("; ")));
+    }
+    if parts.is_empty() {
+        return "no containers removed".into();
+    }
+    parts.join("; ")
 }
 
 /// The container's recent output.
@@ -975,6 +1117,262 @@ mod tests {
             "unknown"
         ]
         .contains(&c.state.as_str()));
+    }
+
+    /// Docker's `container inspect` (the fields read, as Docker Desktop
+    /// 4.x prints them): running, exited, created, paused, restarting.
+    #[test]
+    fn reads_dockers_containers() {
+        let json = r#"[
+          {"Id": "16cc18df9eacbacee2d78fbf4633403311bf7e42a103cc293f416278a3165362", "Name": "/myous-worker-worker-1",
+           "State": {"Status": "running", "Running": true, "Paused": false, "Restarting": false, "Dead": false, "ExitCode": 0},
+           "Image": "sha256:256077a3463d44144fc5c8dfe88fe9da5d67bfd48f77f24a6a8f0202004119a1",
+           "Config": {"Image": "ghcr.io/myoushq/worker:0.7.5",
+             "Labels": {"com.docker.compose.project": "myous-worker", "com.docker.compose.service": "worker", "com.myoushq.worker": "1"}}},
+          {"Id": "2b1d7c3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c", "Name": "/myous-worker-2-worker-1",
+           "State": {"Status": "exited", "Running": false, "Paused": false, "Restarting": false, "ExitCode": 137},
+           "Config": {"Image": "ghcr.io/myoushq/worker:0.6.1", "Labels": {"com.docker.compose.project": "myous-worker-2", "com.myoushq.worker": "1"}}},
+          {"Id": "3c2e8d4f5a6b", "Name": "/myous-worker",
+           "State": {"Status": "created", "Running": false, "Paused": false, "Restarting": false},
+           "Config": {"Image": "myous-worker_worker", "Labels": {"com.myoushq.worker": "1"}}},
+          {"Id": "4d3f9e5a6b7c", "Name": "/worker-worker-1",
+           "State": {"Status": "paused", "Running": true, "Paused": true, "Restarting": false},
+           "Config": {"Image": "worker-worker", "Labels": {"com.docker.compose.project": "worker", "com.myoushq.worker": "1"}}},
+          {"Id": "5e4a0f6b7c8d", "Name": "/myous-worker-3-worker-1",
+           "State": {"Status": "restarting", "Running": true, "Paused": false, "Restarting": true},
+           "Config": {"Image": "ghcr.io/myoushq/worker:0.7.4", "Labels": null}}
+        ]"#;
+        let got = parse_containers(json);
+        let brief: Vec<(&str, &str, bool, &str, &str)> = got
+            .iter()
+            .map(|c| {
+                (
+                    c.name.as_str(),
+                    c.state.as_str(),
+                    c.running,
+                    c.project.as_str(),
+                    c.version.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            brief,
+            vec![
+                (
+                    "myous-worker-worker-1",
+                    "running",
+                    true,
+                    "myous-worker",
+                    "0.7.5"
+                ),
+                (
+                    "myous-worker-2-worker-1",
+                    "exited",
+                    false,
+                    "myous-worker-2",
+                    "0.6.1"
+                ),
+                ("myous-worker", "created", false, "", ""),
+                ("worker-worker-1", "paused", true, "worker", ""),
+                ("myous-worker-3-worker-1", "restarting", true, "", "0.7.4"),
+            ]
+        );
+        assert_eq!(
+            got[0].id,
+            "16cc18df9eacbacee2d78fbf4633403311bf7e42a103cc293f416278a3165362"
+        );
+        assert_eq!(got[0].image, "ghcr.io/myoushq/worker:0.7.5");
+        assert_eq!(got[2].image, "myous-worker_worker");
+        // Nothing readable: no containers, no panic.
+        assert!(parse_containers("").is_empty());
+        assert!(parse_containers("Error: no such container").is_empty());
+        assert!(parse_containers(r#"[{"Name": "/no-id"}]"#).is_empty());
+    }
+
+    /// Podman's `container inspect` (its documented format): the name
+    /// without a `/`, its own states (configured: created, not started),
+    /// `ImageName` beside or instead of `Config.Image`, podman-compose's
+    /// labels.
+    #[test]
+    fn reads_podmans_containers() {
+        let json = r#"[
+          {"Id": "99f66530fe9c7249f7cf29f78e8661669d5831cbe4ee80ea757d5e922dd6a8a6", "Created": "2026-10-15T06:09:08.936623325-04:00",
+           "Path": "/opt/worker/entrypoint.sh", "Args": [],
+           "State": {"OciVersion": "1.2.0", "Status": "running", "Running": true, "Paused": false, "Restarting": false,
+             "OOMKilled": false, "Dead": false, "Pid": 4242, "ExitCode": 0, "StartedAt": "2026-10-15T06:09:09.1-04:00"},
+           "Image": "d13f40ccb4ac7a8b9a5ae3cb4c1b2e5b5d1c0b3c8e5e2a6f1b3c4d5e6f7a8b9c",
+           "ImageName": "ghcr.io/myoushq/worker:0.7.4",
+           "Name": "myous-worker_worker_1",
+           "Config": {"Hostname": "99f66530fe9c", "Image": "ghcr.io/myoushq/worker:0.7.4",
+             "Labels": {"com.docker.compose.project": "myous-worker", "io.podman.compose.project": "myous-worker",
+               "com.docker.compose.service": "worker", "com.myoushq.worker": "1"}}},
+          {"Id": "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90",
+           "State": {"Status": "configured", "Running": false, "Paused": false, "Restarting": false, "Dead": false},
+           "ImageName": "ghcr.io/myoushq/worker:0.6.0",
+           "Name": "myous-worker-2_worker_1",
+           "Config": {"Labels": {"com.docker.compose.project": "myous-worker-2", "com.myoushq.worker": "1"}}},
+          {"Id": "b2c3d4e5f6071829", "Name": "myous-old",
+           "State": {"Status": "Exited", "Running": false},
+           "ImageName": "localhost/worker-worker:latest", "Config": {"Image": "localhost/worker-worker:latest", "Labels": {}}}
+        ]"#;
+        let got = parse_containers(json);
+        assert_eq!(got.len(), 3);
+        assert_eq!(
+            got[0],
+            Container {
+                id: "99f66530fe9c7249f7cf29f78e8661669d5831cbe4ee80ea757d5e922dd6a8a6".into(),
+                name: "myous-worker_worker_1".into(),
+                state: "running".into(),
+                running: true,
+                image: "ghcr.io/myoushq/worker:0.7.4".into(),
+                project: "myous-worker".into(),
+                version: "0.7.4".into(),
+            }
+        );
+        assert_eq!(
+            (
+                got[1].state.as_str(),
+                got[1].running,
+                got[1].image.as_str(),
+                got[1].version.as_str(),
+                got[1].project.as_str()
+            ),
+            (
+                "configured",
+                false,
+                "ghcr.io/myoushq/worker:0.6.0",
+                "0.6.0",
+                "myous-worker-2"
+            )
+        );
+        assert_eq!(
+            (
+                got[2].state.as_str(),
+                got[2].running,
+                got[2].project.as_str(),
+                got[2].version.as_str()
+            ),
+            ("exited", false, "", "")
+        );
+    }
+
+    #[test]
+    fn versions_from_the_published_image_only() {
+        assert_eq!(image_version("ghcr.io/myoushq/worker:0.7.5"), "0.7.5");
+        assert_eq!(image_version("ghcr.io/myoushq/worker:v0.8.0"), "v0.8.0");
+        assert_eq!(
+            image_version("ghcr.io/myoushq/worker:0.7.5@sha256:0123abcd"),
+            "0.7.5"
+        );
+        assert_eq!(image_version("ghcr.io/myoushq/worker:latest"), "");
+        assert_eq!(image_version("ghcr.io/myoushq/worker"), "");
+        assert_eq!(image_version("myous-worker_worker"), "");
+        assert_eq!(image_version("ghcr.io/someone/worker:0.7.5"), "");
+        assert_eq!(image_version(""), "");
+    }
+
+    #[test]
+    fn ids_and_the_log_line() {
+        assert!(is_id("16cc18df9eac"));
+        assert!(is_id(
+            "16cc18df9eacbacee2d78fbf4633403311bf7e42a103cc293f416278a3165362"
+        ));
+        assert!(!is_id("WARN[0000]"));
+        assert!(!is_id("abc"));
+        let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        assert_eq!(removal_log(&s(&["a", "b"]), &[]), "removed: a b");
+        assert_eq!(
+            removal_log(
+                &s(&["a"]),
+                &s(&["c (Error response from daemon: container is running)"])
+            ),
+            "removed: a; not removed: c (Error response from daemon: container is running)"
+        );
+        assert_eq!(removal_log(&[], &[]), "no containers removed");
+        let unnamed = Container {
+            id: "16cc18df9eacbacee2d78fbf4633403311bf7e42a103cc293f416278a3165362".into(),
+            ..Default::default()
+        };
+        assert_eq!(label(&unnamed), "16cc18df9eac");
+    }
+
+    /// The real runtime, with two containers of its own from an image
+    /// already here (`MYOUS_TEST_IMAGE`, e.g. alpine; nothing is pulled),
+    /// labelled as workers of a project of their own: one created and never
+    /// started, one running. A plain `rm` refuses the running one; `rm -f`
+    /// removes it. Only its own two containers are touched.
+    #[test]
+    #[ignore]
+    fn real_engine_lists_and_removes() {
+        let Ok(image) = std::env::var("MYOUS_TEST_IMAGE") else {
+            panic!("set MYOUS_TEST_IMAGE to an image already pulled (alpine:3.22)");
+        };
+        let b = bin();
+        let project = format!("myous-buildtest-{}", std::process::id());
+        let make = |name: &str, run: bool| {
+            let mut args = vec![if run { "run" } else { "create" }];
+            if run {
+                args.push("-d");
+            }
+            let label = format!("com.docker.compose.project={project}");
+            let full = format!("{project}-{name}");
+            args.extend([
+                "--label",
+                "com.myoushq.worker=1",
+                "--label",
+                &label,
+                "--name",
+                &full,
+            ]);
+            args.extend(["--entrypoint", "sleep", &image, "600"]);
+            let id = output(&b, &args, Duration::from_secs(60));
+            assert!(is_id(&id), "{args:?}: {id}");
+            id
+        };
+        let created = make("created", false);
+        let running = make("running", true);
+        let cleanup = || {
+            for id in [&created, &running] {
+                let _ = output(&b, &["rm", "-f", id], Duration::from_secs(60));
+            }
+        };
+        let mine = |list: &[Container]| -> Vec<Container> {
+            list.iter()
+                .filter(|c| c.project == project)
+                .cloned()
+                .collect()
+        };
+        let found = mine(&containers().unwrap_or_default());
+        let get = |id: &str| found.iter().find(|c| c.id == id).cloned();
+        let (c, r) = (get(&created), get(&running));
+        if c.is_none() || r.is_none() {
+            cleanup();
+            panic!("not listed: {found:?}");
+        }
+        let (c, r) = (c.unwrap(), r.unwrap());
+        println!("listed: {c:?}\n{r:?}");
+        let ok = c.name == format!("{project}-created")
+            && !c.running
+            && c.state == "created"
+            && r.running
+            && r.state == "running"
+            && r.image == image
+            && r.version.is_empty();
+        // Both as stopped: the running one is refused, not stopped.
+        let first = remove(&[c.clone(), r.clone()], &[]);
+        println!("{}", first.log);
+        let refused = first.removed == vec![c.id.clone()] && first.log.contains("not removed");
+        let still = mine(&containers().unwrap_or_default());
+        let kept = still.len() == 1 && still[0].id == r.id && still[0].running;
+        // Picked as running: removed.
+        let second = remove(&[], std::slice::from_ref(&r));
+        println!("{}", second.log);
+        let gone = mine(&containers().unwrap_or_default()).is_empty();
+        cleanup();
+        assert!(ok, "listed wrongly");
+        assert!(refused && kept, "a plain rm stopped a running one");
+        assert_eq!(second.removed, vec![r.id.clone()]);
+        assert!(gone);
     }
 
     #[test]

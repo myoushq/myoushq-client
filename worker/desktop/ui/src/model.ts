@@ -3,7 +3,7 @@
 // tests drive it with made-up files. A port of myous for Mac's
 // `evaluate`, so the three apps show the same screen for the same files.
 
-import { defaultDescription, dict, num, str } from "./text.js";
+import { defaultDescription, dict, newer, num, str } from "./text.js";
 
 export type Screen = "setup" | "noruntime" | "starting" | "pair" | "paired" | "running" | "stopping" | "stopped";
 export type Kind = "grey" | "blue" | "green" | "orange" | "red";
@@ -137,6 +137,60 @@ export interface Capability {
   state: "ok" | "wsl-off" | "unsupported" | string;
   reason: string;
   machine: string;
+}
+
+/** A worker container, as the runtime describes it (engine.rs's `containers`). */
+export interface Container {
+  id: string;
+  name: string;
+  /** The runtime's word: running, restarting, paused, created, exited, dead. */
+  state: string;
+  /** Running, restarting or paused: removing it stops a worker. */
+  running: boolean;
+  image: string;
+  /** Its compose project ("" none). */
+  project: string;
+  /** The published image's tag (ghcr.io/myoushq/worker:<version>), "" for another image. */
+  version: string;
+}
+
+/** What Remove stale containers makes of a container: "stopped" (removed by default), "other"
+ * (running, none of this app's workers: removed with All), "older" (running, one of this app's
+ * workers on an older version or one that doesn't say: removed only when the owner ticks it),
+ * "current" (one of this app's workers on its version: kept). */
+export type Staleness = "stopped" | "other" | "older" | "current";
+
+export interface StaleContainer {
+  container: Container;
+  kind: Staleness;
+  /** The app's worker it belongs to (its compose project), if any. */
+  worker: Worker | null;
+  /** The version it runs: a running worker's own word, else the image tag ("" unknown). */
+  version: string;
+}
+
+/** Sorts the worker containers for Remove stale containers. A container is the app's worker's when
+ * its compose project is that worker's and the worker runs in a container. A running one's version
+ * is what the worker reports while it is alive (worker.json may be an earlier run's otherwise), else
+ * its image tag; unknown counts as older: a worker that doesn't say predates the version in worker.json. */
+export function classifyContainers(containers: Container[], workers: Worker[], appVersion: string): StaleContainer[] {
+  return containers.map((c) => {
+    const worker = workers.find((w) => c.project !== "" && w.project === c.project && w.config.usesDocker) ?? null;
+    const version = (c.running && worker?.alive ? worker.version : "") || c.version;
+    let kind: Staleness = "stopped";
+    if (c.running) kind = !worker ? "other" : !version || newer(appVersion, version) ? "older" : "current";
+    return { container: c, kind, worker, version };
+  });
+}
+
+/** What Remove removes: the stopped ones; with `all` the other running ones too; and the app's own
+ * older workers whose container ids the owner ticked. Never a worker on the app's version. */
+export function staleChoice(list: StaleContainer[], all: boolean, ticked: Set<string>): { stopped: Container[]; running: Container[] } {
+  const pick = (k: Staleness, on: (e: StaleContainer) => boolean) => list.filter((e) => e.kind === k && on(e)).map((e) => e.container);
+  return {
+    stopped: pick("stopped", () => true),
+    running: [...pick("other", () => all), ...pick("older", (e) => ticked.has(e.container.id))],
+  };
 }
 
 export const agentName = (a: Agent) => str(a.status?.alias) || a.home.split(/[\\/]/).pop() || a.home;
@@ -273,7 +327,19 @@ export class Worker {
   get invite() { return dict(this.status?.invite); }
   get paired() { return dict(this.status?.paired); }
   get contacts() { return num(this.status?.contacts); }
+  /** The version the worker reports in worker.json ("" from a worker older than that). */
+  get version() { return str(this.status?.version); }
   fresh(now: number) { return this.statusModified > 0 && now - this.statusModified < STALE_AFTER; }
+
+  /** The owner removed its running container (Remove stale containers): it is gone as after Stop,
+   * so it shows Stopped with Start, not "stopped on its own". */
+  removedByOwner(now: number) {
+    this.stopping = true;
+    this.stoppedAt = now;
+    this.stopDoneAt = now;
+    this.launchedAt = 0;
+    this.launchStage = "";
+  }
 
   /** The one word the menu and the header show. */
   get stateWord(): string {
