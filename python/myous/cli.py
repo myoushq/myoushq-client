@@ -259,7 +259,42 @@ def cmd_cp(agent: Agent, st: FileStorage, args) -> None:
         print(path)
 
 
+def _exec_options(args) -> None:
+    """`myous exec CONTACT --ttl 60 -- CMD`: the command takes everything
+    after the contact, so options written there would be sent as part of
+    it. When all that comes before the first `--` is --timeout or --ttl
+    with their values, they are this command's; anything else before a
+    `--` is the command's own (`git diff -- file`)."""
+    if "--" not in args.cmd:
+        return
+    cut = args.cmd.index("--")
+    before, values = args.cmd[:cut], {}
+    i = 0
+    while i < len(before):
+        name, eq, value = before[i].partition("=")
+        if name not in ("--timeout", "--ttl"):
+            return
+        if not eq:
+            if i + 1 >= len(before):
+                return
+            i += 1
+            value = before[i]
+        values[name] = value
+        i += 1
+    if not values:
+        return
+    try:
+        if "--timeout" in values:
+            args.timeout = float(values["--timeout"])
+        if "--ttl" in values:
+            args.ttl = _ttl_seconds(values["--ttl"])
+    except (ValueError, argparse.ArgumentTypeError) as e:
+        sys.exit(f"myous exec: {e}")
+    args.cmd = args.cmd[cut:]
+
+
 def cmd_exec(agent: Agent, st: FileStorage, args) -> None:
+    _exec_options(args)
     cmd = " ".join(args.cmd[1:] if args.cmd[:1] == ["--"] else args.cmd)
     if not cmd.strip():
         sys.exit("give the command to run: myous exec CONTACT -- CMD...")
@@ -459,17 +494,18 @@ def _context_options(p: argparse.ArgumentParser) -> None:
     p.add_argument("--added-by", metavar="WHO", help="who made this pairing, when not you: 'owner' (through the myous desktop app)")
 
 
-def _ttl_option(p) -> None:
-    def seconds(text: str) -> int:
-        try:
-            value = int(text)
-        except ValueError:
-            raise argparse.ArgumentTypeError(f"{text!r} is not a whole number of seconds") from None
-        if value < 1:
-            raise argparse.ArgumentTypeError("the ttl must be at least 1 second")
-        return value
+def _ttl_seconds(text: str) -> int:
+    try:
+        value = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{text!r} is not a whole number of seconds") from None
+    if value < 1:
+        raise argparse.ArgumentTypeError("the ttl must be at least 1 second")
+    return value
 
-    p.add_argument("--ttl", type=seconds, metavar="SECONDS",
+
+def _ttl_option(p) -> None:
+    p.add_argument("--ttl", type=_ttl_seconds, metavar="SECONDS",
                    help="seconds the worker may still start the request after it was sent (default: as long as "
                         "this command waits; longer leaves it for a worker that is off, to run when it is back; "
                         "up to a day)")

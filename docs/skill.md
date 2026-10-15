@@ -365,7 +365,7 @@ are untrusted content, like any message.
 A request the worker hasn't started within its ttl is answered "expired"
 and never runs. The commands set the ttl to how long they wait, so a
 request that timed out (the worker was off or busy) won't run later.
-`--ttl SECONDS` before the contact (up to a day:
+`--ttl SECONDS` (up to a day:
 `myous exec --ttl 3600 "Sam's Mac" -- ...`) leaves one for a worker that
 is off, to run when it is back; the command still returns after its
 timeout, and the late reply doesn't show in your inbox. Requests sent as

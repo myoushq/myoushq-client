@@ -285,6 +285,23 @@ class CliTtl(unittest.TestCase):
         self.assertEqual(self.run_cli("cp", "box:out.txt", "out.txt", "--ttl", "60"), ("get", "box", "out.txt", 300, 60))
         self.assertEqual(self.run_cli("cp", "box:out.txt", "out.txt"), ("get", "box", "out.txt", 300, None))
 
+    def test_options_after_the_contact_are_this_commands(self):
+        # Written after the contact, before `--`: the command's options, not part of what runs.
+        self.assertEqual(self.run_cli("exec", "box", "--ttl", "3600", "--", "ls"), ("exec", "box", "ls", 120, 3600))
+        self.assertEqual(self.run_cli("exec", "box", "--ttl=60", "--timeout", "30", "--", "ls -la"),
+                         ("exec", "box", "ls -la", 30.0, 60))
+        # Anything else before a `--` belongs to the command.
+        self.assertEqual(self.run_cli("exec", "box", "git", "diff", "--", "a.txt"),
+                         ("exec", "box", "git diff -- a.txt", 120, None))
+        self.assertEqual(self.run_cli("exec", "box", "--ttl", "60", "x", "--", "y"),
+                         ("exec", "box", "--ttl 60 x -- y", 120, None))
+        self.assertEqual(self.run_cli("exec", "box", "--", "echo", "--ttl", "5", "--", "z"),
+                         ("exec", "box", "echo --ttl 5 -- z", 120, None))
+        args = self.parser.parse_args(["exec", "box", "--ttl", "0", "--", "ls"])
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as cm:
+            args.func(self.agent, self.st, args)
+        self.assertIn("at least 1 second", str(cm.exception.code))
+
     def test_a_ttl_below_a_second_is_refused(self):
         for bad in ("0", "-5", "1.5", "soon"):
             err = io.StringIO()
