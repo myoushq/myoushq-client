@@ -266,6 +266,26 @@ def main() -> int:
         page.click("#dlg label:has-text('Dock') input")
         page.click("#dlg button:has-text('Save')")
         check(["setDock", [True]] in calls(), "a Mac: the Dock setting applies at once")
+        # The window as it runs (no made-up state): it rereads the worker folder every two seconds, also
+        # while Settings is open; Save keeps every app-wide setting, the Dock too, in one write of app.json.
+        go("", "macos")
+        emit("tray", "m:Settings…")
+        page.wait_for_selector("#dlg[open]")
+        reads = names().count("readWorkers")
+        page.wait_for_function(f"window.myous.backend.calls.filter(c => c[0] === 'readWorkers').length > {reads}")
+        page.fill("#dlg input:not([type])", "Max's Mac mini")
+        for label in ["when a worker pairs", "waits for my answer", "when a request is refused", "stops on its own",
+                      "a new version is available", "Notify me", "Check for a new version daily", "Show the agents", "Dock"]:
+            page.click(f"#dlg label:has-text({json.dumps(label)}) input")
+        writes = names().count("writeConfig")
+        page.click("#dlg button:has-text('Save')")
+        page.wait_for_selector("#dlg", state="hidden")
+        page.wait_for_timeout(300)
+        saved = page.evaluate("window.myous.backend.files[0].config")
+        want = {"name": "Max's Mac mini", "notifications": False, "auto_update": False, "show_agents": False, "dock": True,
+                "notify": {k: False for k in ["paired", "approval", "refused", "stopped", "update"]}}
+        check({k: saved.get(k) for k in want} == want and names().count("writeConfig") == writes + 1 and ["setDock", [True]] in calls(),
+              f"Settings saved after a reread: every app-wide setting and the Dock, one write {saved}")
 
         # A Mac's worker in a container: Set up asks where its browser runs, as myous for Mac does.
         def env_of_start() -> dict:

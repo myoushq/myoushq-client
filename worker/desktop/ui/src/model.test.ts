@@ -220,6 +220,46 @@ test("app.json keeps keys this app doesn't know", () => {
   assert.equal(c.dock, false);
 });
 
+test("a reread while Settings is open keeps its edits, and a read older than a write doesn't undo it", async () => {
+  const m = model();
+  const files = (config: Record<string, unknown>, home = "/h"): WorkerFiles => ({ home, folder: home.slice(1), is_default: home === "/h", project: "p",
+    config, status: null, status_modified: 0, requests: [], approvals: [], paused: false, review: "trust" });
+  m.load([files({ name: "Max's PC", dock: false }), files({ name: "second" }, "/h-2")]);
+  // Settings opens on the second worker: it holds that worker's config and the app's (the first worker's).
+  const w = m.workers[1], app = m.appConfig, mine = w.config;
+  // The window rereads the folders every two seconds meanwhile.
+  m.load([files({ name: "Max's PC", dock: false, seen_requests_at: 5 }), files({ name: "second" }, "/h-2")]);
+  assert.equal(m.appConfig, app, "the same app settings");
+  assert.equal(w.config, mine, "the same worker config");
+  assert.equal(app.seenRequestsAt, 5, "with what was read");
+  // Save: the edits land in what the window holds, so they are what is written.
+  app.dock = true;
+  app.notifications = false;
+  app.setNotifies("refused", false);
+  app.autoUpdate = false;
+  app.showAgents = false;
+  mine.name = "Codex's worker";
+  assert.deepEqual(m.appConfig.data, { name: "Max's PC", dock: true, seen_requests_at: 5, notifications: false, notify: { refused: false }, auto_update: false, show_agents: false });
+  assert.equal(m.workers[1].config.name, "Codex's worker");
+  // A write, and a read that began before it ended: what the app holds stays (while it is written, and after).
+  let ended!: () => void;
+  const from = m.writesEnded;
+  const write = m.writing(w, () => new Promise<void>((r) => (ended = r)));
+  m.load([files({ name: "Max's PC" }), files({ name: "second" }, "/h-2")], from);
+  assert.equal(w.config.name, "Codex's worker", "not while it is written");
+  ended();
+  await write;
+  m.load([files({ name: "Max's PC" }), files({ name: "second" }, "/h-2")], from);
+  assert.equal(w.config.name, "Codex's worker", "not from a read that began before the write ended");
+  assert.equal(m.appConfig.dock, false, "the other worker's file is read as it is");
+  // A read that began after the write ended: the file, which now holds the write (or what changed it since).
+  m.load([files({ name: "Max's PC" }), files({ name: "renamed by hand" }, "/h-2")], m.writesEnded);
+  assert.equal(w.config.name, "renamed by hand");
+  // A write that failed ends too.
+  await m.writing(w, () => Promise.reject(new Error("disk full"))).catch(() => {});
+  assert.equal(w.writesInFlight, 0);
+});
+
 const noop = new Proxy({}, { get: () => () => {} }) as MenuActions;
 const labels = (items: { label?: string; separator?: boolean; children?: unknown[] }[]): string[] =>
   items.map((i) => (i.separator ? "----" : i.label ?? ""));

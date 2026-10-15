@@ -302,11 +302,18 @@ export class Worker {
   attentionButton = "";
   /** Evaluated at least once: a line that appears later is news, one there from the start is not. */
   evaluated = false;
+  /** Its app.json writes in flight, and Model.writesEnded when the last one ended (see Model.load). */
+  writesInFlight = 0;
+  wroteAt = 0;
 
   constructor(public home: string, public folder: string, public isDefault: boolean, public project: string) {}
 
-  apply(f: WorkerFiles) {
-    this.config = new Config(f.config ?? {});
+  /** Takes what was read. app.json goes into the same Config, so a reference to it (Settings, the
+   * app's settings in the first worker's) stays this worker's; and not while the app writes it, or
+   * when the read began before the last write ended (`readFrom`, see Model.load): what the app holds
+   * then is newer than what was read. */
+  apply(f: WorkerFiles, readFrom = Infinity) {
+    if (this.writesInFlight === 0 && this.wroteAt <= readFrom) this.config.data = f.config ?? {};
     this.status = f.status;
     this.statusModified = f.status_modified;
     this.requests = f.requests;
@@ -460,7 +467,22 @@ export class Model {
   windowVisible: () => boolean = () => false;
   writeConfig: (w: Worker) => void = () => {};
 
+  /** app.json writes ended so far (each worker's wroteAt is one of these). */
+  writesEnded = 0;
+
   constructor(public version: string, public productName = "myous") {}
+
+  /** One write of a worker's app.json (`write` does it): while it runs and after it ends, a read that
+   * began earlier doesn't replace what the app holds (see load). */
+  async writing(w: Worker, write: () => Promise<void>) {
+    w.writesInFlight++;
+    try {
+      await write();
+    } finally {
+      w.writesInFlight--;
+      w.wroteAt = ++this.writesEnded;
+    }
+  }
 
   /** The runtime's last definite state (engine.rs: ok, missing, stopped, permission, nocompose, error). */
   get runtimeState() { return this.checks.runtime.state; }
@@ -534,12 +556,14 @@ export class Model {
     return a;
   }
 
-  /** Takes what the backend read: new folders join, known ones keep their launch state. */
-  load(files: WorkerFiles[]) {
+  /** Takes what the backend read: new folders join, known ones keep their launch state. `readFrom`
+   * is writesEnded when the read began: a worker's app.json written after that (or being written)
+   * stays as the app holds it, as the read may be older than the write. */
+  load(files: WorkerFiles[], readFrom = Infinity) {
     const known = new Map(this.workers.map((w) => [w.home, w]));
     this.workers = files.map((f) => {
       const w = known.get(f.home) ?? new Worker(f.home, f.folder, f.is_default, f.project);
-      w.apply(f);
+      w.apply(f, readFrom);
       return w;
     });
     if (!this.current || !this.workers.includes(this.current)) this.current = this.workers[0];

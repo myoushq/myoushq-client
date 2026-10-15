@@ -339,7 +339,11 @@ app itself takes the same names in `MYOUS_FAKE_STATE`. In a plain
 browser the page's backend only records what the buttons ask for
 (`window.myous.backend.calls`), and `window.myous.backend.emit(event,
 payload)` plays what Rust would send (an install's end, a log line), so
-the buttons can be clicked in tests.
+the buttons can be clicked in tests. With `state=` empty there is no
+made-up state: the window runs as in the app, rereading every two seconds
+the worker folders the page's backend keeps (`window.myous.backend.files`,
+one worker running in a container, which a test can change), and its
+`app.json` writes land there.
 
 Other environment variables, for tests: `MYOUS_WORKER_HOME` (another
 worker folder), `MYOUS_COMPOSE_PROJECT` (the first worker's compose

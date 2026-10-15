@@ -158,7 +158,7 @@ function composeEnv(w: Worker): Record<string, string> {
 async function saveConfig(w: Worker) {
   if (m.fake) return;
   try {
-    await be.writeConfig(w.home, w.config.data);
+    await m.writing(w, () => be.writeConfig(w.home, w.config.data));
   } catch (e) {
     appendLog(`could not save settings: ${e}`);
   }
@@ -1399,7 +1399,8 @@ async function chooseRepo() {
 async function addWorker() {
   if (m.fake) return;
   const home = await be.newWorker();
-  m.load(await be.readWorkers());
+  const from = m.writesEnded;
+  m.load(await be.readWorkers(), from);
   const w = m.workers.find((x) => x.home === home);
   if (w) {
     m.current = w;
@@ -1497,7 +1498,8 @@ async function checkForUpdates(manual: boolean) {
 const REVIEW: [string, string][] = [["trust", "Trust my agent: everything it asks runs"], ["changes", "Ask me before anything that changes things"], ["all", "Ask me before every request"]];
 
 async function openSettings() {
-  const w = m.current, app = m.appConfig;
+  // The worker it is for, and the app's settings as they are when it opens (Save takes them as they are then).
+  const w = m.current, shown = m.appConfig;
   const body = el("div", { className: "settings" });
   const name = el<HTMLInputElement>("input", { value: w.config.name });
   const desc = el<HTMLTextAreaElement>("textarea", { rows: 4, value: w.config.effectiveDescription });
@@ -1508,15 +1510,15 @@ async function openSettings() {
     return [el("label", { className: `check ${cls}` }, box, label), box] as const;
   };
   const mac = info.os === "macos";
-  const [dockRow, dock] = check("Show an icon in the Dock as well as the menu bar", app.dock);
+  const [dockRow, dock] = check("Show an icon in the Dock as well as the menu bar", shown.dock);
   const [loginRow, login] = check("Open myous at login", m.fake ? false : await be.autostartGet());
-  const [notifyRow, notify] = check("Notify me", app.notifications);
-  const kinds = notifyKinds.map(([k, label]) => check(label, app.notifies(k), "indent"));
+  const [notifyRow, notify] = check("Notify me", shown.notifications);
+  const kinds = notifyKinds.map(([k, label]) => check(label, shown.notifies(k), "indent"));
   const sync = () => kinds.forEach(([, b]) => (b.disabled = !notify.checked));
   notify.onchange = sync;
   sync();
-  const [updateRow, update] = check("Check for a new version daily", app.autoUpdate);
-  const [agentsRow, agents] = check(`Show the agents on ${sys} (their myous folders)`, app.showAgents);
+  const [updateRow, update] = check("Check for a new version daily", shown.autoUpdate);
+  const [agentsRow, agents] = check(`Show the agents on ${sys} (their myous folders)`, shown.showAgents);
   const [browserCheckEl, browserBox] = check(`A worker browser on ${sys} (it needs Python; it starts with the worker)`, w.config.hostBrowser);
   const browserRowEl = el("div", {}, browserCheckEl);
   if (w.alive) browserRowEl.append(el("p", { className: "hint indent", textContent: "A change takes effect at the worker's next start; a browser that is open stays until the worker stops." }));
@@ -1545,28 +1547,33 @@ async function openSettings() {
   );
   const r = await dialog({ title: "myous settings", body, buttons: [{ label: "Cancel", value: "no" }, { label: "Save", value: "yes", primary: true }] });
   if (r?.value !== "yes") return;
-  if (name.value.trim()) w.config.name = name.value.trim();
-  const d = desc.value.trim();
-  w.config.description = isDefaultDescription(d, w.config.name, w.config.isDirect) ? "" : d;
+  // The window rereads the folders every two seconds while the dialog is open: what is saved goes
+  // into the workers as they are now (the worker may even be gone), each file written once.
+  const app = m.appConfig, kept = m.workers.includes(w);
   let switchBrowser = false;
-  if (macWhere) {
-    const id = where.options[whereBox.selectedIndex]?.id ?? "";
-    const which = id && !m.macBrowsers?.why ? "mac" : "container";
-    if (which !== (w.config.macBrowser ? "mac" : "container") || (id && id !== w.config.browserApp)) {
-      w.config.data.browser = which;
-      if (id) w.config.browserApp = id;
-      appendLog(`browser: ${which === "mac" ? `on this Mac, in ${macBrowserName(m, w)}` : "in the container"}`);
-      switchBrowser = w.screen === "running" || w.screen === "pair" || w.screen === "paired" || w.screen === "starting";
+  if (kept) {
+    if (name.value.trim()) w.config.name = name.value.trim();
+    const d = desc.value.trim();
+    w.config.description = isDefaultDescription(d, w.config.name, w.config.isDirect) ? "" : d;
+    if (macWhere) {
+      const id = where.options[whereBox.selectedIndex]?.id ?? "";
+      const which = id && !m.macBrowsers?.why ? "mac" : "container";
+      if (which !== (w.config.macBrowser ? "mac" : "container") || (id && id !== w.config.browserApp)) {
+        w.config.data.browser = which;
+        if (id) w.config.browserApp = id;
+        appendLog(`browser: ${which === "mac" ? `on this Mac, in ${macBrowserName(m, w)}` : "in the container"}`);
+        switchBrowser = w.screen === "running" || w.screen === "pair" || w.screen === "paired" || w.screen === "starting";
+      }
+      if (hiddenBox.checked !== w.config.browserHidden) {
+        w.config.browserHidden = hiddenBox.checked;
+        if (!m.fake || be.preview) void be.macBrowserHidden(w.home, hiddenBox.checked);
+      }
     }
-    if (hiddenBox.checked !== w.config.browserHidden) {
-      w.config.browserHidden = hiddenBox.checked;
-      if (!m.fake || be.preview) void be.macBrowserHidden(w.home, hiddenBox.checked);
+    if (w.config.isDirect && browserBox.checked === w.config.browserOff) {
+      w.config.browserOff = !browserBox.checked;
+      appendLog(w.config.browserOff ? `${w.name}: no worker browser` : `${w.name}: worker browser on ${sys}`);
+      if (!w.config.browserOff) void checkBrowser(true);
     }
-  }
-  if (w.config.isDirect && browserBox.checked === w.config.browserOff) {
-    w.config.browserOff = !browserBox.checked;
-    appendLog(w.config.browserOff ? `${w.name}: no worker browser` : `${w.name}: worker browser on ${sys}`);
-    if (!w.config.browserOff) void checkBrowser(true);
   }
   app.notifications = notify.checked;
   notifyKinds.forEach(([k], i) => app.setNotifies(k, kinds[i][1].checked));
@@ -1577,9 +1584,10 @@ async function openSettings() {
   app.showAgents = agents.checked;
   if (dockChanged) void be.setDock(app.dock).catch((e) => appendLog(`Dock icon: ${e}`));
   if (m.fake) return render();
-  await saveConfig(w);
-  if (app !== w.config) await saveConfig(m.workers[0]);
-  if (review.value !== w.review) {
+  // Both writes start before either is awaited, so neither waits on a read that could undo the other.
+  const first = m.workers[0];
+  await Promise.all([...(kept ? [saveConfig(w)] : []), ...(first !== w ? [saveConfig(first)] : [])]);
+  if (kept && review.value !== w.review) {
     await be.setReview(w.home, review.value);
     appendLog(`review level: ${review.value}`);
   }
@@ -1592,7 +1600,7 @@ async function openSettings() {
   }
   const restart = switchBrowser && await dialog({ title: "Restart the worker to switch its browser?", text: "The browser choice applies when the worker starts. Each browser keeps its own logins, so sites may ask you to log in again.",
     buttons: [{ label: "Later", value: "no" }, { label: "Restart now", value: "yes", primary: true }] });
-  if (restart && restart.value === "yes") {
+  if (restart && restart.value === "yes" && m.workers.includes(w)) {
     w.restartAfterStop = true;
     await stop(w);
   }
@@ -1649,7 +1657,8 @@ async function refresh() {
   try {
     if (!m.fake) {
       m.ticks++;
-      m.load(await be.readWorkers());
+      const from = m.writesEnded;
+      m.load(await be.readWorkers(), from);
       // While a Set up card is up the runtime is asked every tick (2 s), so installing or starting one shows at once.
       const setupUp = m.current.screen === "setup" || m.current.screen === "noruntime";
       if (m.current.config.usesDocker && !m.appConfig.containersOff && (setupUp || m.ticks % 5 === 0)) void probeRuntime();
