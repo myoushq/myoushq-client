@@ -109,22 +109,34 @@ are behind `cfg(target_os = "macos")` or the window's
   with the container's browser. The browser lives with the worker:
   started while it starts and runs (one the owner quits comes back),
   ended when it stops or the app quits, a browser left from a run before
-  taken over. Hidden after launch when `browser_hidden` says so (again
+  taken over (only the one the app started: the pid in `browser.json`
+  must be a process with this worker's profile folder and port, as the
+  app's own record says, never just any pid the container wrote there).
+  Hidden after launch when `browser_hidden` says so (again
   every half second for six seconds, as myous for Mac does); Show browser
   unhides and activates it through AppKit. The Browser card, the start
   rows and the menu item say what myous for Mac says; when it can't run,
   the red line says why (no browser: "Get a browser…"; no sandbox: the
   log).
 - **The sandbox**: that browser, and the one of a worker without a
-  container, runs under `/usr/bin/sandbox-exec -f <worker
-  folder>/browser.sb` with myous for Mac's seatbelt profile (word for
-  word; a test compares it, the probe and the start page with
-  `Browser.m`), `--no-sandbox` inside it and myous for Mac's start page
-  that explains Chrome's bar about it. The probe (`sandbox-exec` with a
+  container, runs under `/usr/bin/sandbox-exec -p <profile>` with myous
+  for Mac's seatbelt profile (word for word; a test compares it, the
+  probe and the start page with `Browser.m`), `--no-sandbox` inside it
+  and myous for Mac's start page that explains Chrome's bar about it.
+  Unlike myous for Mac, the profile is passed as text, not as
+  `browser.sb` in the worker folder, which an agent's command in the
+  container could swap between its writing and its use; its folders are
+  the worker folder (resolved once) joined with `browser` and the
+  downloads folder's name, never resolved through anything in the
+  worker folder, and a link in their place is refused with a line in the
+  log (a link to `..` there would otherwise have the sandbox allow the
+  owner's whole home folder). The probe (`sandbox-exec` with a
   small profile) decides: without a sandbox a container worker gets the
   container's browser, with myous for Mac's message; a worker without a
   container runs its browser unconfined, as on Linux and Windows, and the
-  log says so. `cargo test -- --ignored real_browser` runs it for real.
+  log says so. `cargo test -- --ignored real_browser` runs it for real,
+  and `cargo test -- --ignored real_sandbox` runs the sandbox against
+  that link (with `/bin/cat` for the browser).
   Not yet run end to end with a real container worker (no Docker on the
   test Mac): the app side is tested (the browser, `browser.json`, the
   port, hide and show, the sandbox), and `forward.py` is myous for Mac's,

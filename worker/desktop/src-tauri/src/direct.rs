@@ -7,7 +7,6 @@
 
 use std::collections::HashMap;
 use std::ffi::OsString;
-use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
 use std::sync::Mutex;
@@ -71,9 +70,7 @@ pub fn worker_args(
     description: &str,
     notes: &[String],
 ) -> Vec<String> {
-    let current = std::fs::read_to_string(home.join("settings.json"))
-        .ok()
-        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+    let current = crate::files::read_json(&home.join("settings.json"))
         .and_then(|v| v.get("alias").and_then(|a| a.as_str()).map(String::from))
         .unwrap_or_default();
     let mut args = vec![bin.to_string_lossy().to_string(), "worker".into()];
@@ -109,19 +106,18 @@ pub fn start(
     let dir = PathBuf::from(home);
     paths::ensure(&dir).map_err(|e| e.to_string())?;
     std::fs::create_dir_all(dir.join("work")).map_err(|e| e.to_string())?;
-    if children().lock().unwrap().contains_key(home) {
+    // Held until the worker is in the map: two starts at once run one worker.
+    let mut map = children().lock().unwrap();
+    if map.contains_key(home) {
         return Err("this worker is already running".into());
     }
     // A quit file the last worker didn't take (killed first) would stop this one.
     let _ = std::fs::remove_file(paths::quit_file(&dir));
-    let log = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(paths::worker_log(&dir))
-        .map_err(|e| e.to_string())?;
+    let log = crate::files::open_append(&paths::worker_log(&dir)).map_err(|e| e.to_string())?;
     let mut cmd = crate::engine::command(&args[0]);
     cmd.args(&args[1..])
         .current_dir(&dir)
+        .env("PATH", crate::engine::worker_path())
         .env("MYOUS_HOME", &dir)
         .stdin(Stdio::null())
         .stdout(log.try_clone().map_err(|e| e.to_string())?)
@@ -131,7 +127,8 @@ pub fn start(
         .spawn()
         .map_err(|e| format!("could not start {}: {e}", args[0]))?;
     let pid = child.id();
-    children().lock().unwrap().insert(home.to_string(), child);
+    map.insert(home.to_string(), child);
+    drop(map);
     let key = home.to_string();
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_millis(500));
@@ -163,7 +160,7 @@ const STOP_GRACE: Duration = Duration::from_secs(10);
 /// How much later than a worker's recorded start its process may seem to
 /// have begun and still be it: the recorded time is whole seconds, `ps`
 /// counts whole seconds too, and the clock may have been set meanwhile.
-const START_SLACK: i64 = 5;
+pub(crate) const START_SLACK: i64 = 5;
 
 /// A worker being stopped: `pid`, this app's child for `home` if `ours`;
 /// else one started outside this app, whose worker.json says it started
@@ -198,9 +195,12 @@ impl Stopping {
         }
     }
 
-    /// Ends it now, with what it started: SIGKILL, or taskkill /T /F. One
-    /// this app didn't start, only while its pid is still that worker.
-    /// True if it was ended.
+    /// Ends it now, with what it started: taskkill /T /F on Windows;
+    /// elsewhere SIGKILL to it and to every process it started and theirs
+    /// (as `ps` lists them just before), and to the process groups those
+    /// lead: the worker runs each command in a session of its own, which
+    /// a hung worker can no longer end. One this app didn't start, only
+    /// while its pid is still that worker. True if it was ended.
     fn kill(&self) -> bool {
         if !self.ours && check(self.pid, self.started) != Check::Worker {
             return false;
@@ -210,10 +210,63 @@ impl Stopping {
             cmd.args(["/T", "/F", "/PID", &self.pid.to_string()]);
             let _ = run_capture(cmd, Duration::from_secs(15));
         } else {
+            let started = descendants(self.pid);
+            // The worker first, so it starts nothing more.
             signal(self.pid, "-KILL");
+            for (pid, group) in started {
+                if group == pid {
+                    signal_group(group);
+                }
+                signal(pid, "-KILL");
+            }
         }
         true
     }
+}
+
+/// The processes `root` started and theirs, as (pid, process group), from
+/// `ps -A -o pid= -o ppid= -o pgid=` now (none if it can't be asked).
+fn descendants(root: u32) -> Vec<(u32, u32)> {
+    let mut cmd = crate::engine::command("ps");
+    cmd.args(["-A", "-o", "pid=", "-o", "ppid=", "-o", "pgid="]);
+    let (status, out) = run_capture(cmd, Duration::from_secs(15));
+    if status != 0 {
+        return Vec::new();
+    }
+    descendants_in(&out, root)
+}
+
+/// `descendants` from `ps`'s lines: `<pid> <ppid> <pgid>`.
+fn descendants_in(ps: &str, root: u32) -> Vec<(u32, u32)> {
+    let table: Vec<(u32, u32, u32)> = ps
+        .lines()
+        .filter_map(|l| {
+            let mut n = l.split_whitespace().map(|w| w.parse::<u32>().ok());
+            Some((n.next()??, n.next()??, n.next()??))
+        })
+        .collect();
+    let mut out: Vec<(u32, u32)> = Vec::new();
+    let mut parents = vec![root];
+    while let Some(parent) = parents.pop() {
+        for &(pid, ppid, pgid) in &table {
+            if ppid == parent && pid != root && pid != 0 && !out.iter().any(|(p, _)| *p == pid) {
+                out.push((pid, pgid));
+                parents.push(pid);
+            }
+        }
+    }
+    out
+}
+
+/// SIGKILL to the process group `group` (one a process the worker
+/// started leads: never this app's own).
+fn signal_group(group: u32) {
+    if group <= 1 || group == std::process::id() {
+        return;
+    }
+    let mut cmd = crate::engine::command("kill");
+    cmd.args(["-KILL", "--", &format!("-{group}")]);
+    let _ = run_capture(cmd, Duration::from_secs(15));
 }
 
 /// Asks the workers to stop, waits up to STOP_GRACE for them to exit,
@@ -243,13 +296,13 @@ fn signal(pid: u32, sig: &str) -> bool {
 
 /// What the system says about a process.
 #[derive(Debug, Clone)]
-struct Proc {
+pub(crate) struct Proc {
     /// Its program's file name, in lower case, without `.exe`.
-    name: String,
+    pub(crate) name: String,
     /// When it started (Unix seconds).
-    started: i64,
+    pub(crate) started: i64,
     /// Exited but not yet waited for by its parent.
-    zombie: bool,
+    pub(crate) zombie: bool,
 }
 
 /// Whether a pid from worker.json is still that worker.
@@ -303,7 +356,7 @@ fn worker_program(name: &str) -> bool {
     n.starts_with("myous") || n.starts_with("python")
 }
 
-fn unix_now() -> i64 {
+pub(crate) fn unix_now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
@@ -314,7 +367,7 @@ fn unix_now() -> i64 {
 /// error if the system can't be asked. `ps` on a Mac and Linux; on
 /// Windows PowerShell's Get-Process (the start time the Python client's
 /// pid-reuse guard reads through GetProcessTimes).
-fn process(pid: u32) -> Result<Option<Proc>, String> {
+pub(crate) fn process(pid: u32) -> Result<Option<Proc>, String> {
     if cfg!(windows) {
         let script = format!(
             "$p = Get-Process -Id {pid} -ErrorAction SilentlyContinue; if (-not $p) {{ exit 0 }}; \
@@ -369,6 +422,48 @@ fn parse_ps(status: i32, out: &str, now: i64) -> Result<Option<Proc>, String> {
         started: now - elapsed,
         zombie: stat.starts_with('Z'),
     }))
+}
+
+/// The command line the process `pid` was started with, as one line (its
+/// arguments joined with spaces; on Windows as Windows keeps it, quotes
+/// and all): None if there is no such process, an error if the system
+/// can't be asked. `ps -ww -o args=` on a Mac and Linux, CIM's
+/// Win32_Process on Windows.
+pub(crate) fn command_line(pid: u32) -> Result<Option<String>, String> {
+    if cfg!(windows) {
+        let script = format!(
+            "$p = Get-CimInstance Win32_Process -Filter 'ProcessId = {pid}' -ErrorAction SilentlyContinue; \
+             if (-not $p) {{ exit 0 }}; Write-Output ('cmd ' + $p.CommandLine)"
+        );
+        let mut cmd = crate::engine::command("powershell.exe");
+        cmd.args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            &script,
+        ]);
+        let (st, out) = run_capture(cmd, Duration::from_secs(30));
+        if st != 0 {
+            return Err(format!("PowerShell's Get-CimInstance: {out}"));
+        }
+        let line = out
+            .lines()
+            .map(str::trim)
+            .find_map(|l| l.strip_prefix("cmd "));
+        return Ok(line.map(String::from));
+    }
+    let mut cmd = crate::engine::command("ps");
+    cmd.args(["-ww", "-o", "args=", "-p"]).arg(pid.to_string());
+    let (st, out) = run_capture(cmd, Duration::from_secs(15));
+    let out = out.trim();
+    match st {
+        0 if !out.is_empty() => Ok(Some(out.to_string())),
+        0 => Err("ps said nothing".into()),
+        127 => Err(format!("ps didn't run: {out}")),
+        _ if out.is_empty() => Ok(None),
+        _ => Err(format!("ps: {out}")),
+    }
 }
 
 /// `ps`'s elapsed time, `[[dd-]hh:]mm:ss`, in seconds.
@@ -437,10 +532,7 @@ pub fn stop(
         done();
         return false;
     }
-    let status: serde_json::Value = std::fs::read_to_string(paths::status_file(Path::new(home)))
-        .ok()
-        .and_then(|t| serde_json::from_str(&t).ok())
-        .unwrap_or_default();
+    let status = crate::files::read_json(&paths::status_file(Path::new(home))).unwrap_or_default();
     if status["pid"].as_u64() != Some(pid as u64) {
         log(format!(
             "worker.json no longer names pid {pid}; nothing to stop"
@@ -503,15 +595,14 @@ pub fn stop_all() {
     end(workers);
 }
 
-#[cfg(test)]
-#[allow(dead_code)] // the tests that use it don't run on Windows
-fn running(home: &str) -> bool {
+/// Whether this app runs the worker for `home` now.
+pub fn running(home: &str) -> bool {
     children().lock().unwrap().contains_key(home)
 }
 
 /// The end of worker.log.
 pub fn log_tail(home: &str, max: usize) -> String {
-    let bytes = std::fs::read(paths::worker_log(Path::new(home))).unwrap_or_default();
+    let bytes = crate::files::read_file(&paths::worker_log(Path::new(home))).unwrap_or_default();
     let start = bytes.len().saturating_sub(max);
     String::from_utf8_lossy(&bytes[start..]).to_string()
 }
@@ -639,14 +730,20 @@ mod tests {
         crate::paths::send_command(&home, crate::paths::QUIT_COMMAND).unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
         let args = script(
-            "echo started; sleep 30",
-            "Write-Output started; Start-Sleep 30",
+            "echo \"PATH=$PATH\"; echo started; sleep 30",
+            "Write-Output \"PATH=$env:PATH\"; Write-Output started; Start-Sleep 30",
         );
         start(&h, &args, move |st| tx.send(st).unwrap()).unwrap();
         assert!(!quit.exists());
         assert!(running(&h));
         assert!(start(&h, &args, |_| {}).is_err());
         wait_for_log(&h, "started");
+        // The worker's PATH (on a Mac the login shell's first).
+        let path = format!("PATH={}", crate::engine::worker_path().to_string_lossy());
+        assert!(
+            log_tail(&h, 64 * 1024).lines().any(|l| l.trim() == path),
+            "{path}"
+        );
         // SIGTERM ends it; on Windows, where only the quit file asks (and
         // this one doesn't take it), it is killed after STOP_GRACE.
         assert!(stop(&h, 0, quiet(), || {}));
@@ -654,6 +751,44 @@ mod tests {
         assert!(!running(&h));
         assert!(quit.exists(), "the quit file was not written");
         assert!(home.join("work").is_dir());
+        std::fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn two_starts_at_once_run_one_worker() {
+        let home = std::env::temp_dir().join(format!("myous-direct-twice-{}", std::process::id()));
+        let h = home.to_string_lossy().to_string();
+        let args = script(
+            "echo started; sleep 30",
+            "Write-Output started; Start-Sleep 30",
+        );
+        let all = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let starts: Vec<_> = (0..8)
+            .map(|_| {
+                let (h, args, all, tx) = (h.clone(), args.clone(), all.clone(), tx.clone());
+                std::thread::spawn(move || {
+                    all.wait();
+                    start(&h, &args, move |st| {
+                        let _ = tx.send(st);
+                    })
+                })
+            })
+            .collect();
+        let results: Vec<_> = starts.into_iter().map(|t| t.join().unwrap()).collect();
+        assert_eq!(
+            results.iter().filter(|r| r.is_ok()).count(),
+            1,
+            "{results:?}"
+        );
+        assert!(results
+            .iter()
+            .filter_map(|r| r.as_ref().err())
+            .all(|e| e.contains("already running")));
+        wait_for_log(&h, "started");
+        assert!(stop(&h, 0, quiet(), || {}));
+        rx.recv_timeout(Duration::from_secs(30)).unwrap();
+        assert_eq!(log_tail(&h, 1000).matches("started").count(), 1);
         std::fs::remove_dir_all(&home).unwrap();
     }
 
@@ -678,31 +813,73 @@ mod tests {
         std::fs::remove_dir_all(&home).unwrap();
     }
 
+    /// A hung worker is killed after STOP_GRACE, and so are the commands
+    /// it runs: on a Mac and Linux a child of its own, and one in a
+    /// session of its own as the Go worker runs commands (Python's
+    /// os.setsid, when there is a python3).
     #[test]
     fn a_worker_that_doesnt_stop_is_killed() {
         let home = std::env::temp_dir().join(format!("myous-direct-kill-{}", std::process::id()));
         let h = home.to_string_lossy().to_string();
         let (tx, rx) = std::sync::mpsc::channel();
         let args = script(
-            "trap '' TERM; echo started; while :; do sleep 1; done",
+            "trap '' TERM; sleep 300 & echo $! > child.pid; \
+             if command -v python3 >/dev/null; then python3 -c 'import os, signal, time\n\
+signal.signal(signal.SIGTERM, signal.SIG_IGN); os.setsid(); open(\"session.pid\", \"w\").write(str(os.getpid())); time.sleep(300)' & fi; \
+             echo started; while :; do sleep 1; done",
             "Write-Output started; while ($true) { Start-Sleep 1 }",
         );
         start(&h, &args, move |st| tx.send(st).unwrap()).unwrap();
         wait_for_log(&h, "started");
+        let pids = || -> Vec<u32> {
+            ["child.pid", "session.pid"]
+                .iter()
+                .filter_map(|f| std::fs::read_to_string(home.join(f)).ok())
+                .filter_map(|t| t.trim().parse().ok())
+                .collect()
+        };
+        if cfg!(unix) {
+            let begun = std::time::Instant::now();
+            while pids().len() < 2 && begun.elapsed() < Duration::from_secs(5) {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            assert!(!pids().is_empty());
+        }
         let begun = std::time::Instant::now();
         assert!(stop(&h, 0, quiet(), || {}));
         assert_ne!(rx.recv_timeout(Duration::from_secs(30)).unwrap(), 0);
         assert!(begun.elapsed() >= STOP_GRACE, "took {:?}", begun.elapsed());
         assert!(!running(&h));
+        // Its commands ended with it (reaped by the system once killed).
+        for pid in pids() {
+            let begun = std::time::Instant::now();
+            let alive = || matches!(process(pid), Ok(Some(p)) if !p.zombie);
+            while alive() && begun.elapsed() < Duration::from_secs(5) {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            assert!(!alive(), "pid {pid} outlived the worker");
+        }
         std::fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn a_workers_commands_from_ps() {
+        let ps = "    1     0     1\n  500     1   500\n  501   500   500\n  502   501   502\n  503   502   502\n  600     1   600\n  504   500   500\n garbage\n";
+        let mut d = descendants_in(ps, 500);
+        d.sort();
+        assert_eq!(d, [(501, 500), (502, 502), (503, 502), (504, 500)]);
+        assert!(descendants_in(ps, 600).is_empty());
+        assert!(descendants_in("", 500).is_empty());
     }
 
     fn quiet() -> crate::browser::Log {
         std::sync::Arc::new(|_| {})
     }
 
-    /// A log that keeps its lines.
+    /// A log that keeps its lines (for the tests that don't run on Windows).
+    #[cfg(unix)]
     type Lines = std::sync::Arc<Mutex<Vec<String>>>;
+    #[cfg(unix)]
     fn recorder() -> (crate::browser::Log, Lines) {
         let lines: Lines = std::sync::Arc::new(Mutex::new(Vec::new()));
         let keep = lines.clone();

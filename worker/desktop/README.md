@@ -138,7 +138,14 @@ the app remembers it (`"containers": false` in the first worker's
 `app.json`), goes straight to Set up, every worker then runs directly on
 the computer, as the Objective-C Mac app's direct mode does, and the ⋯ menu offers
 the way back. Without a container, commands run as the owner
-(PowerShell on Windows, `/bin/sh` elsewhere), and the review starts at
+(PowerShell on Windows, `/bin/sh` elsewhere), with the worker's PATH:
+on a Mac the owner's login PATH, as the Objective-C app gave its
+worker: the login shell's (`$SHELL -l -c`, never interactive, asked once per run of
+the app and given 5 s: `/etc/paths` and `/etc/paths.d` through
+path_helper, the profile's Homebrew, pyenv and the like), else
+path_helper's, then the folders of the search path (above) it lacks (the
+app log says which, at each start); on Linux and Windows the search
+path. The review starts at
 "Ask me before anything that changes things". The agents on the
 computer are found and paired the same way.
 
@@ -172,7 +179,14 @@ reads at each `help`: a line with the address for Playwright's
 Playwright was installed, say) gets one from "Open browser" on the
 Browser card, no restart: its next `help` names it. The browser stops
 with the worker and when the app quits (asked to close first, ended
-after 8 s); "Show browser" (the Browser card, the tray, the ⋯ menu)
+after 8 s). One left running by an earlier run of the app is taken over
+(and ended or shown) only if it is the one the app started: the app
+keeps its pid, port and start in its own folder (`browsers.json` next
+to `browser-python` above), and the process must have been started with
+this worker's profile folder and that port and no later than that;
+`browser.json`, in the worker folder, is never trusted alone (in a
+container worker's folder an agent's command can write any pid there).
+"Show browser" (the Browser card, the tray, the ⋯ menu)
 brings its page to the front, or starts it again on the same port if
 the owner closed it. "Continue
 without a browser" on the Set up card, or the checkbox in Settings,
@@ -197,7 +211,10 @@ is in `worker.log` (Show worker log, in the ⋯ menu). Stop writes a
 `commands/quit` file in the worker folder (and sends SIGTERM outside
 Windows): the worker ends the command it runs with everything it
 started, answers that request "stopped by the owner" and exits; after
-ten seconds the app kills it. When the app quits it waits for its
+ten seconds the app kills it, and the command it runs with it (on
+Windows its process tree; elsewhere every process it started, as `ps`
+lists them, and the process groups those lead, since the worker runs
+each command in a session of its own). When the app quits it waits for its
 workers the same way. A worker the app didn't start (found through the
 pid in `worker.json`) is stopped the same way only while that pid is
 still the worker: a myous worker program (`myous-worker`, `myous` or
@@ -224,7 +241,7 @@ machines; a web view has no such need.
 | `ui/src/fake.ts` | Made-up data for every screen. |
 | `ui/src/text.ts` | The words and numbers: times, sizes, the pairing message, the default description. |
 | `src-tauri/src/lib.rs` | The commands the window calls; the tray; notifications, dialogs, clipboard, open at login. |
-| `src-tauri/src/files.rs`, `paths.rs` | The worker folders and the files in them (`worker.json`, `requests/`, `approvals/`, `app.json`, `review.json`, command files). |
+| `src-tauri/src/files.rs`, `paths.rs` | The worker folders and the files in them (`worker.json`, `requests/`, `approvals/`, `app.json`, `review.json`, command files). A container worker's folder is mounted into the container, so an agent's command can put a symbolic link or a named pipe anywhere in it: the app never writes, appends, reads or changes the mode of a file there through one (a file is written under a temporary name and renamed into place, a log opened with `O_NOFOLLOW`, a folder that is a link refused). |
 | `ui/src/setup.ts` | The first launch's words: the checklist, the runtime cards, the hub's red line, Needs attention. |
 | `src-tauri/src/engine.rs` | Finding programs (`which`, `search_path`) and starting them with that PATH (`command`). Docker or Podman: the runtime check (ok, missing, not running, no permission, no compose, its own error), `compose up` and `down` with the output streamed to the log, the browser view's port, the worker containers (`inspect`, Docker's and Podman's) and removing the stale ones. |
 | `src-tauri/src/install.rs` | Which runtimes this system can have and whether the app can install each (winget, Homebrew, apt/dnf/pacman through pkexec), starting Docker Engine, compose's package. |
@@ -307,7 +324,9 @@ on PATH, so it never stands in for the client's `myous`), with
   Objective-C app.
 - The default worker name is the Computer Name.
 - The worker's browser runs on the Mac under the sandbox
-  (`sandbox-exec` with the Objective-C app's profile): Chrome, Edge,
+  (`sandbox-exec -p` with the Objective-C app's profile, its folders
+  the worker folder's `browser` and downloads folders by name; a link
+  in their place is refused, `MAC-PORT.md`): Chrome, Edge,
   Brave or Chromium, with its profile in `<worker folder>/browser/<bundle
   id>` (where the Objective-C app kept it, so its logins carry over).
   For a worker in a container Set up asks where its browser should run,
@@ -378,6 +397,17 @@ does, and checks it ends with the worker. `cargo test -- --ignored
 playwright_install` makes the Python environment and installs Playwright
 for real in a temporary folder (`MYOUS_E2E_SYSTEM_PYTHON` names the
 Python 3.10+ to make it with).
+
+On a Mac, `cargo test -- --ignored real_sandbox` runs the browser's
+sandbox for real against an agent's link: a made-up owner's home folder
+in a temporary folder with a key in it, the worker folder's `browser`
+replaced by a link to `..`, and `/bin/cat` standing in for the browser
+under `sandbox-exec -p` as the app runs it; the key can't be read
+through the link or directly, and the app refuses to make a profile
+from the link (a profile resolved through it, as an earlier version
+made, is shown to read the key). `cargo test -- --ignored real_browser`
+runs a real Chrome, Edge, Brave or Chromium under the sandbox for a
+temporary worker folder.
 
 `MYOUS_TEST_IMAGE=alpine:3.22 cargo test -- --ignored real_engine` lists
 and removes two containers of its own on the real runtime (one created,
