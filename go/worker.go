@@ -7,7 +7,9 @@ package myous
 // exec`.
 //
 // The worker does what it's asked, one request at a time, after its review
-// allows it (review.go). It is a port of the Python worker
+// allows it (review.go); a request it only gets to after its ttl (the
+// requester stopped waiting) is answered "expired" and never runs. It is a
+// port of the Python worker
 // (python/myous/worker.py) and behaves the same: the same replies, and the
 // same files for the owner's app (worker.json, worker.log,
 // requests/<id>.json, commands/, approvals/), so either can serve the same
@@ -26,6 +28,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -57,6 +60,11 @@ const (
 	// (requests/<id>.json, approvals/<id>.json and .answer,
 	// commands/stop-<id>), so they must be plain names (validID).
 	badID = "bad request: the id must be 1 to 64 characters from A-Z, a-z, 0-9, - and _"
+	// A request is good for its ttl from when it was sent (protocol.md
+	// 7.1): it must not run after its requester stopped waiting for it.
+	requestTTL    = 600   // seconds, for a request without a ttl; also how long a help or other text gets a reply
+	requestMaxTTL = 86400 // a longer ttl counts as this: the relay keeps messages a day
+	badTTL        = "bad request: the ttl must be a number of seconds, at least 1"
 	// Stopping the worker (Run's context ending: SIGTERM, SIGINT) ends the
 	// command it is running and answers that request, then Run returns.
 	stoppingWhy       = "stopped by the owner (the worker is shutting down)"
@@ -617,6 +625,14 @@ func (w *Worker) handle(ctx context.Context, e Entry) {
 				if !validID(rid) {
 					return w.refuse(ctx, e, rid, badID)
 				}
+				// Before the download: an expired put isn't fetched (its size is the file message's).
+				ttl, ok := tagTTL(e.W)
+				if !ok {
+					return w.refuse(ctx, e, rid, badTTL)
+				}
+				if expired, err := w.expire(ctx, e, rid, ttl, "put", pyKV{"path", e.W[2]}, pyKV{"size", e.Size}); expired {
+					return err
+				}
 				return w.doPut(ctx, e, e.W[1], e.W[2])
 			}
 			return nil
@@ -628,6 +644,18 @@ func (w *Worker) handle(ctx context.Context, e Entry) {
 			rid = obj["id"].(string)
 			if !validID(rid) {
 				return w.refuse(ctx, e, rid, badID)
+			}
+			v, present := req["ttl"]
+			ttl, ok := jsonTTL(v, present)
+			if !ok {
+				return w.refuse(ctx, e, rid, badTTL)
+			}
+			op, key := req["myous"].(string), "cmd"
+			if op == "get" {
+				key = "path"
+			}
+			if expired, err := w.expire(ctx, e, rid, ttl, op, pyKV{key, req[key]}); expired {
+				return err
 			}
 		}
 		switch {
@@ -644,6 +672,104 @@ func (w *Worker) handle(ctx context.Context, e Entry) {
 		var bad badRequest
 		failed(err, errors.As(err, &bad))
 	}
+}
+
+// jsonTTL is the ttl of an exec or get (its "ttl"; none, or null, is
+// requestTTL) in whole seconds, at most requestMaxTTL; ok is false when it
+// isn't a number of seconds of at least 1 (a bool, a string, NaN,
+// ±Infinity). An integer too long for a float is still a number: above
+// the maximum.
+func jsonTTL(v any, present bool) (int64, bool) {
+	if !present || v == nil {
+		return requestTTL, true
+	}
+	f, ok := pyNumber(v)
+	if !ok || math.IsNaN(f) || (math.IsInf(f, 0) && strings.ContainsAny(v.(json.Number).String(), ".eE")) {
+		return 0, false
+	}
+	return clampTTL(f)
+}
+
+// tagTTL is the ttl of a put, the w tag's fifth value: a decimal string,
+// digits only; without one, requestTTL.
+func tagTTL(w []string) (int64, bool) {
+	if len(w) < 4 {
+		return requestTTL, true
+	}
+	if !asciiDigits(w[3]) {
+		return 0, false
+	}
+	f, err := strconv.ParseFloat(w[3], 64)
+	if err != nil && !math.IsInf(f, 0) {
+		return 0, false
+	}
+	return clampTTL(f)
+}
+
+func clampTTL(f float64) (int64, bool) {
+	if !(f >= 1) {
+		return 0, false
+	}
+	return int64(math.Floor(min(f, requestMaxTTL))), true
+}
+
+func asciiDigits(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return s != ""
+}
+
+// requestAge is how long ago an entry was sent, in whole seconds by the
+// worker's clock: 0 when the sender's clock is ahead.
+func requestAge(sentAt int64, now time.Time) int64 {
+	return max(now.Unix()-sentAt, 0)
+}
+
+// expiredWhy is the refusal of a request sent age seconds ago whose ttl
+// had passed (protocol.md 7.1); the Python worker says the same.
+func expiredWhy(age, ttl int64) string {
+	ago := fmt.Sprintf("%d seconds", age)
+	switch {
+	case age >= 7200:
+		ago = fmt.Sprintf("%d hours", age/3600)
+	case age >= 120:
+		ago = fmt.Sprintf("%d minutes", age/60)
+	}
+	return fmt.Sprintf("expired: sent %s ago, its ttl is %d seconds; not run", ago, ttl)
+}
+
+// expire answers a request that was sent longer ago than its ttl, before
+// it reaches the review hook or runs: its requester has stopped waiting
+// (the worker was off, or busy with earlier requests), so it must not run
+// now. expired is false for a request still good (or one without a send
+// time); err is the answer's. fields are the request's, as the review
+// would get them. It is recorded as "expired", not as a refusal: the
+// owner's app notifies each recent refusal, and a worker that comes back
+// to a backlog would flood its owner.
+func (w *Worker) expire(ctx context.Context, e Entry, rid string, ttl int64, op string, fields ...pyKV) (expired bool, err error) {
+	if e.SentAt == 0 {
+		return false, nil
+	}
+	now := time.Now()
+	age := requestAge(e.SentAt, now)
+	if age <= ttl {
+		return false, nil
+	}
+	why := expiredWhy(age, ttl)
+	request := append(pyObj{{"op", op}, {"id", rid}, {"sender", e.Peer}, {"alias", e.Alias}}, fields...)
+	w.log(request.with("decision", "expired").with("reason", why))
+	alias := e.Alias
+	if alias == "" {
+		alias = "?"
+	}
+	w.say(fmt.Sprintf("%s request %s from %s %s", op, rid, alias, why))
+	w.note(e, "expired", false)
+	w.record(rid, append(request, pyKV{"at", now.Unix()}, pyKV{"done_at", now.Unix()}, pyKV{"decision", "expired"},
+		pyKV{"reason", why}))
+	return true, w.reply(ctx, e, pyObj{{"myous", "ack"}, {"id", rid}, {"ok", false}, {"error", why}})
 }
 
 // parseRequest is the JSON object of a worker request or reply
@@ -832,6 +958,9 @@ func (w *Worker) reply(ctx context.Context, e Entry, obj pyObj) error {
 }
 
 func (w *Worker) sendHelp(ctx context.Context, e Entry) error {
+	if e.SentAt != 0 && requestAge(e.SentAt, time.Now()) > requestTTL {
+		return nil // from before the worker came back: whoever asked has moved on
+	}
 	w.mu.Lock()
 	if last, ok := w.helpSent[e.Peer]; ok && time.Since(last) < helpInterval {
 		w.mu.Unlock()
