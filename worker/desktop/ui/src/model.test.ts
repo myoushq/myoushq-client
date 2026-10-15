@@ -121,6 +121,26 @@ test("only a request waiting for an answer is urgent", () => {
   assert.deepEqual(sent, [["approval", true], ["refused", false], ["paired", false], ["update", false], ["stopped", false]]);
 });
 
+test("an expired request is neither a refusal to notify nor running", () => {
+  // A worker back after a while answers what its agents sent meanwhile "expired", all at once: no notification each.
+  const m = model();
+  const sent: string[] = [];
+  m.notify = (kind, _title, body) => sent.push(`${kind}: ${body}`);
+  const reason = "expired: sent 3 hours ago, its ttl is 150 seconds; not run";
+  m.load([{ home: "/h/.myous-worker", folder: ".myous-worker", is_default: true, project: "myous-worker", config: { name: "Max's PC" },
+    status: { phase: "running", contacts: 1 }, status_modified: T, approvals: [], paused: false, review: "trust", requests: [
+      { id: "x3", op: "exec", alias: "Max's Muse", cmd: "ls", at: T - 2, done_at: T - 2, decision: "expired", reason },
+      { id: "x2", op: "put", alias: "Max's Muse", path: "a.txt", at: T - 2, done_at: T - 2, decision: "expired", reason },
+      { id: "x1", op: "exec", alias: "Max's Muse", cmd: "rm x", at: T - 3, done_at: T - 3, decision: "refuse", reason: "no" },
+    ] }]);
+  m.ticks = 5;
+  evaluate(m);
+  assert.deepEqual(sent, ["refused: rm x: no"]);
+  assert.equal(m.current.runningRequest(T), null);
+  assert.equal(m.current.requestInProgress(T), false);
+  assert.equal(m.current.screen, "running");
+});
+
 test("a question's notification names its worker and request (a Mac answers it from there)", () => {
   const m = model();
   const sent: [string, string, unknown][] = [];

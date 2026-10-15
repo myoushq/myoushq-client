@@ -32,13 +32,18 @@ func TestGoWorkerWithPythonAgent(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer log.Close()
-	w := exec.Command(e.goCLI, "worker", "--alias", "go-wrk", "--hub", e.hubURL, "--work", work,
-		"--description", "a test worker", "--note", "Browser: none")
-	w.Env = append(os.Environ(), "MYOUS_HOME="+home)
-	w.Stdout, w.Stderr = log, log
-	if err := w.Start(); err != nil {
-		t.Fatal(err)
+	var w *exec.Cmd
+	startWorker := func() {
+		t.Helper()
+		w = exec.Command(e.goCLI, "worker", "--alias", "go-wrk", "--hub", e.hubURL, "--work", work,
+			"--description", "a test worker", "--note", "Browser: none")
+		w.Env = append(os.Environ(), "MYOUS_HOME="+home)
+		w.Stdout, w.Stderr = log, log
+		if err := w.Start(); err != nil {
+			t.Fatal(err)
+		}
 	}
+	startWorker()
 	defer func() { w.Process.Kill(); w.Wait() }()
 	logText := func() string { b, _ := os.ReadFile(filepath.Join(e.dir, "go-wrk.log")); return string(b) }
 
@@ -139,6 +144,31 @@ func TestGoWorkerWithPythonAgent(t *testing.T) {
 	json.Unmarshal(raw, &settings)
 	if settings["about"] != WorkerAbout || settings["card"] != "a test worker" {
 		t.Fatalf("settings: %v", settings)
+	}
+
+	// A request sent while the worker is off, with a ttl shorter than the
+	// time until it's back: answered "expired" when it comes back, not run.
+	w.Process.Signal(os.Interrupt)
+	w.Wait()
+	stale := "5a1e5a1e5a1e5a1e5a1e5a1e5a1e5a1e"
+	e.ok("py-boss", "send", "go-wrk", `{"myous": "exec", "id": "`+stale+`", "cmd": "touch stale.txt", "ttl": 1}`)
+	time.Sleep(2500 * time.Millisecond)
+	startWorker()
+	var rec map[string]any
+	for i := 0; i < 200 && rec["decision"] == nil; i++ {
+		time.Sleep(100 * time.Millisecond)
+		raw, _ := os.ReadFile(filepath.Join(home, "requests", stale+".json"))
+		json.Unmarshal(raw, &rec)
+	}
+	if rec["decision"] != "expired" || !strings.HasPrefix(fmt.Sprint(rec["reason"]), "expired: sent ") ||
+		!strings.HasSuffix(fmt.Sprint(rec["reason"]), " ago, its ttl is 1 seconds; not run") {
+		t.Fatalf("the stale request's record: %v\n%s", rec, logText())
+	}
+	if exists(filepath.Join(work, "stale.txt")) {
+		t.Fatal("the stale request ran")
+	}
+	if out := e.ok("py-boss", "exec", "go-wrk", "--", "echo", "back"); out != "back\n" {
+		t.Fatalf("exec after the restart: %q", out)
 	}
 
 	// The built-in review at the "changes" level, answered as the desktop

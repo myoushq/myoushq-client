@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -42,6 +43,7 @@ type fakeAgent struct {
 	contacts map[string]Contact
 	invites  int
 	failSend map[string]error // Send to these fails
+	fetches  int              // FetchBytes calls
 	listen   func(ctx context.Context, onNew func([]Entry)) error
 }
 
@@ -91,6 +93,9 @@ func (f *fakeAgent) SendFile(ctx context.Context, name, path string, tags nostr.
 	return Entry{}, nil
 }
 func (f *fakeAgent) FetchBytes(ctx context.Context, e Entry) ([]byte, error) {
+	f.mu.Lock()
+	f.fetches++
+	f.mu.Unlock()
 	b, ok := f.blobs[e.X]
 	if !ok {
 		return nil, errors.New("no such blob")
@@ -962,9 +967,16 @@ func TestPyJSON(t *testing.T) {
 			t.Errorf("parseRequest(%s) = %v", text, got)
 		}
 	}
-	obj, _ := parseRequest(`{"myous": "exec", "id": "x", "s": "Infinity NaN", "t": Infinity}`)
-	if obj["s"] != "Infinity NaN" || obj["t"] != nil {
+	// NaN and ±Infinity are numbers, as json.loads reads them (a ttl of NaN is refused, a null one isn't).
+	obj, _ := parseRequest(`{"myous": "exec", "id": "x", "s": "Infinity NaN", "t": Infinity, "u": -Infinity, "v": NaN, "w": 1e400, "n": null}`)
+	tf, _ := pyNumber(obj["t"])
+	uf, _ := pyNumber(obj["u"])
+	vf, vok := pyNumber(obj["v"])
+	if obj["s"] != "Infinity NaN" || !math.IsInf(tf, 1) || !math.IsInf(uf, -1) || !vok || !math.IsNaN(vf) || obj["n"] != nil {
 		t.Fatalf("%v", obj)
+	}
+	if got := pyDumps(pyObj{{"t", obj["t"]}, {"u", obj["u"]}, {"v", obj["v"]}, {"w", obj["w"]}}, false); got != `{"t": Infinity, "u": -Infinity, "v": NaN, "w": Infinity}` {
+		t.Fatal(got)
 	}
 	// bytes.decode("utf-8", "replace"), by Python: one U+FFFD per maximal invalid sequence.
 	for in, want := range map[string]string{
