@@ -186,6 +186,9 @@ func (s *FileStorage) AppendHistory(e Entry) error {
 	if err != nil {
 		return err
 	}
+	if err := mendHistoryTail(s.Path("messages.jsonl")); err != nil {
+		return err
+	}
 	f, err := os.OpenFile(s.Path("messages.jsonl"), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
 	if err != nil {
 		return err
@@ -210,6 +213,7 @@ func (s *FileStorage) ReadHistory() ([]Entry, error) {
 		return nil, err
 	}
 	defer f.Close()
+	endsWithNewline := lastByteIs(f, '\n')
 	var entries []Entry
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 1024*1024), 16*1024*1024)
@@ -220,11 +224,76 @@ func (s *FileStorage) ReadHistory() ([]Entry, error) {
 		}
 		var e Entry
 		if err := json.Unmarshal([]byte(line), &e); err != nil {
+			if !endsWithNewline && !scanner.Scan() && scanner.Err() == nil && tornLine([]byte(line)) {
+				break // the last line, a write cut short: the next AppendHistory mends it
+			}
 			return nil, fmt.Errorf("messages.jsonl: %w", err)
 		}
 		entries = append(entries, e)
 	}
 	return entries, scanner.Err()
+}
+
+// tornLine is whether what follows the history's last newline is a write
+// cut short (a crash, a full disk): anything but blank or a whole JSON
+// object. The Python client tells it the same way.
+func tornLine(line []byte) bool {
+	var obj map[string]json.RawMessage
+	return len(bytes.TrimSpace(line)) > 0 && json.Unmarshal(line, &obj) != nil
+}
+
+// lastByteIs is whether f's last byte is b.
+func lastByteIs(f *os.File, b byte) bool {
+	info, err := f.Stat()
+	if err != nil || info.Size() == 0 {
+		return err == nil // an empty file ends no line
+	}
+	var last [1]byte
+	_, err = f.ReadAt(last[:], info.Size()-1)
+	return err == nil && last[0] == b
+}
+
+// mendHistoryTail runs before an append: if the history doesn't end with
+// a newline (a write was cut short), it ends the last line, or drops that
+// line if it isn't a whole entry, so the new entry gets a line of its own
+// instead of being glued to the fragment (which would make every read of
+// the history fail from then on). Callers hold the state lock: no other
+// append is under way. As the Python client's _mend_tail.
+func mendHistoryTail(path string) error {
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if lastByteIs(f, '\n') {
+		return nil
+	}
+	info, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	// The last line: back from the end, a block at a time, to the newline
+	// before it.
+	size := info.Size()
+	start, tail := size, []byte(nil)
+	for start > 0 && bytes.IndexByte(tail, '\n') < 0 {
+		step := min(int64(historyChunk), start)
+		start -= step
+		block := make([]byte, step, step+int64(len(tail)))
+		if _, err := f.ReadAt(block, start); err != nil {
+			return err
+		}
+		tail = append(block, tail...)
+	}
+	cut := int64(bytes.LastIndexByte(tail, '\n') + 1) // 0: the file is that one line
+	if tornLine(tail[cut:]) {
+		return f.Truncate(start + cut)
+	}
+	_, err = f.WriteAt([]byte{'\n'}, size)
+	return err
 }
 
 // historyChunk is how much of messages.jsonl ReadHistorySince reads at a
@@ -250,14 +319,20 @@ func (s *FileStorage) ReadHistorySince(seq int) ([]Entry, error) {
 		return nil, err
 	}
 	var newest []Entry // newest first
+	last := true       // the first line met is the last, which a write cut short leaves torn
 	// take decodes one line; done is true once it is older than seq.
 	take := func(line []byte) (done bool, err error) {
+		wasLast := last
+		last = false
 		line = bytes.TrimSpace(line)
 		if len(line) == 0 {
 			return false, nil
 		}
 		var e Entry
 		if err := json.Unmarshal(line, &e); err != nil {
+			if wasLast && tornLine(line) {
+				return false, nil // as ReadHistory: the next AppendHistory mends it
+			}
 			return false, fmt.Errorf("messages.jsonl: %w", err)
 		}
 		if e.Seq < seq {

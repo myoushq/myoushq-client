@@ -153,3 +153,80 @@ func BenchmarkEntriesSince(b *testing.B) {
 		}
 	}
 }
+
+// A write cut short (a crash, a full disk) leaves a fragment after the
+// last newline: both readers go on without it, and the next append drops
+// it (or ends the line, when it is a whole entry), so the new entry gets
+// a line of its own. Until then one torn write failed every read, which
+// a listener ignores: a worker stopped handling requests, silently.
+func TestHistoryTornTail(t *testing.T) {
+	defer func(n int) { historyChunk = n }(historyChunk)
+	historyChunk = 16 // the mend looks back across several blocks
+	st, err := NewFileStorage(filepath.Join(t.TempDir(), "h"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := st.Path("messages.jsonl")
+	whole := `{"seq":1,"type":"message","direction":"in","peer":"npub1a","text":"one","at":1}` + "\n" +
+		`{"seq":2,"type":"message","direction":"in","peer":"npub1a","text":"two","at":2}` + "\n"
+	texts := func() string {
+		t.Helper()
+		all, err := st.ReadHistory()
+		if err != nil {
+			t.Fatal(err)
+		}
+		since, err := st.ReadHistorySince(1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(all, since) {
+			t.Fatalf("ReadHistory %+v, ReadHistorySince %+v", all, since)
+		}
+		var s []string
+		for _, e := range all {
+			s = append(s, e.Text)
+		}
+		return strings.Join(s, ",")
+	}
+	for _, torn := range []string{`{"seq":3,"type":"mess`, `{"seq":3,"type":"message","text":"long line ` + strings.Repeat("x", 100), `[1, 2`} {
+		os.WriteFile(path, []byte(whole+torn), 0o600)
+		if got := texts(); got != "one,two" {
+			t.Fatalf("torn %q: read %q", torn, got)
+		}
+		if err := st.AppendHistory(Entry{Seq: 3, Type: "message", Direction: "in", Text: "three"}); err != nil {
+			t.Fatal(err)
+		}
+		if got := texts(); got != "one,two,three" {
+			t.Fatalf("after the append: %q", got)
+		}
+		if raw, _ := os.ReadFile(path); !strings.HasPrefix(string(raw), whole+`{"seq":3,"type":"message","direction":"in","text":"three"`) {
+			t.Fatalf("not mended:\n%s", raw)
+		}
+	}
+	// A whole entry without its newline (another writer's last line) is
+	// kept: the append ends its line first.
+	os.WriteFile(path, []byte(strings.TrimSuffix(whole, "\n")), 0o600)
+	st.AppendHistory(Entry{Seq: 3, Type: "message", Text: "three"})
+	if got := texts(); got != "one,two,three" {
+		t.Fatalf("whole last line: %q", got)
+	}
+	// The file that is only a fragment, and the empty file.
+	os.WriteFile(path, []byte(`{"seq":1,"ty`), 0o600)
+	if got := texts(); got != "" {
+		t.Fatalf("only a fragment: %q", got)
+	}
+	st.AppendHistory(Entry{Seq: 1, Type: "message", Text: "one"})
+	if got := texts(); got != "one" {
+		t.Fatalf("after mending the only line: %q", got)
+	}
+	os.WriteFile(path, nil, 0o600)
+	st.AppendHistory(Entry{Seq: 1, Type: "message", Text: "one"})
+	if got := texts(); got != "one" {
+		t.Fatalf("empty file: %q", got)
+	}
+	// A bad line that isn't the last is still an error.
+	os.WriteFile(path, []byte(`{"seq":1,"ty`+"\n"+strings.SplitN(whole, "\n", 2)[1]), 0o600)
+	if _, err := st.ReadHistory(); err == nil {
+		t.Fatal("no error for a bad line in the middle")
+	}
+}
