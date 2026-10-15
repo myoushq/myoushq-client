@@ -137,10 +137,18 @@ python3 -m venv ~/.myous-worker/venv
 ~/.myous-worker/venv/bin/pip install --no-deps ./python
 ~/.myous-worker/venv/bin/pip install playwright==1.63.0             # the version the container has
 ~/.myous-worker/venv/bin/playwright install chromium
-MYOUS_HOME=~/.myous-worker ~/.myous-worker/venv/bin/myous init --alias "Max's Mac"
 MYOUS_HOME=~/.myous-worker ~/.myous-worker/venv/bin/python worker/browser.py &   # a Chromium window appears; log in there
-MYOUS_HOME=~/.myous-worker ~/.myous-worker/venv/bin/myous worker --work ~/myous-work --review worker/review.py
+MYOUS_HOME=~/.myous-worker ~/.myous-worker/venv/bin/myous worker --alias "Max's Mac" --work ~/myous-work --review worker/review.py
 ```
+
+`--alias` is needed the first time only: that run creates the worker's
+identity and registers it. Without an app, nothing shows you the
+review's questions (levels `changes` and `all`, `review.json` in
+`~/.myous-worker`): answer one by writing `allow` or `refuse` into
+`~/.myous-worker/approvals/<id>.answer`, next to the request in
+`<id>.json`, within 120 seconds; unanswered, it is refused. Or keep the
+level at `trust` and pause the worker (`touch
+~/.myous-worker/worker.paused`) whenever it shouldn't run anything.
 
 On Windows, use `venv\Scripts\` instead of `venv/bin/`; commands run in
 PowerShell. The myous apps run a worker without a container themselves,
