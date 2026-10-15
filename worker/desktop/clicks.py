@@ -370,6 +370,21 @@ def main() -> int:
         page.click("#dlg label:has-text('Start this worker') input")
         page.click("#dlg button:has-text('Save')")
         check(["macBrowserHidden", [mac_home, False]] in calls(), "not hidden: applied at once")
+        # The window as it runs, a worker with its browser on the Mac: a Stop while that browser is being
+        # started (the start held here) ends it once it has started.
+        go("", "macos")
+        page.evaluate("""(b => {
+            b.files[0].config.browser = "mac";
+            const ensure = b.macBrowserEnsure.bind(b);
+            b.macBrowserEnsure = (...a) => new Promise((done) => { window.releaseEnsure = () => done(ensure(...a)); });
+        })(window.myous.backend)""")
+        page.wait_for_function("typeof window.releaseEnsure === 'function'")
+        emit("tray", f"w:{mac_home}:Stop")
+        page.wait_for_function("window.myous.backend.calls.some(c => c[0] === 'composeRun')")
+        stops = names().count("browserStop")
+        page.evaluate("window.releaseEnsure()")
+        page.wait_for_timeout(500)
+        check(stops == 1 and names().count("browserStop") == 2, "Stop during the browser's start: ended by Stop, and again once it started")
         settings("linux")
         check("Its browser" not in text("#dlg") and "hidden" not in text("#dlg"), "Linux: no browser choice in Settings")
         page.click("#dlg button:has-text('Cancel')")

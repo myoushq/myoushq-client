@@ -291,6 +291,9 @@ async function keepMacBrowser(w: Worker) {
   } finally {
     asked.busy = false;
   }
+  // Stopped while its browser started (Stop ends the browser and forgets the worker here, before
+  // this one was up): the browser that just started ends too.
+  if (!macBrowserAsked.has(w.home) || w.stopping) void be.browserStop(w.home);
 }
 
 /** A Mac: each container worker's browser on the Mac lives and dies with the worker (myous for Mac's
