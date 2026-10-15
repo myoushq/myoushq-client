@@ -307,7 +307,9 @@ on PATH, so it never stands in for the client's `myous`), with
   Objective-C app.
 - The default worker name is the Computer Name.
 - The worker's browser runs on the Mac under the sandbox
-  (`sandbox-exec` with the Objective-C app's profile): Chrome, Edge,
+  (`sandbox-exec -p` with the Objective-C app's profile, its folders
+  the worker folder's `browser` and downloads folders by name; a link
+  in their place is refused, `MAC-PORT.md`): Chrome, Edge,
   Brave or Chromium, with its profile in `<worker folder>/browser/<bundle
   id>` (where the Objective-C app kept it, so its logins carry over).
   For a worker in a container Set up asks where its browser should run,
@@ -374,6 +376,17 @@ does, and checks it ends with the worker. `cargo test -- --ignored
 playwright_install` makes the Python environment and installs Playwright
 for real in a temporary folder (`MYOUS_E2E_SYSTEM_PYTHON` names the
 Python 3.10+ to make it with).
+
+On a Mac, `cargo test -- --ignored real_sandbox` runs the browser's
+sandbox for real against an agent's link: a made-up owner's home folder
+in a temporary folder with a key in it, the worker folder's `browser`
+replaced by a link to `..`, and `/bin/cat` standing in for the browser
+under `sandbox-exec -p` as the app runs it; the key can't be read
+through the link or directly, and the app refuses to make a profile
+from the link (a profile resolved through it, as an earlier version
+made, is shown to read the key). `cargo test -- --ignored real_browser`
+runs a real Chrome, Edge, Brave or Chromium under the sandbox for a
+temporary worker folder.
 
 `MYOUS_TEST_IMAGE=alpine:3.22 cargo test -- --ignored real_engine` lists
 and removes two containers of its own on the real runtime (one created,

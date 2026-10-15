@@ -726,15 +726,17 @@ pub struct Spec {
     pub exe: PathBuf,
     pub app: String,
     pub profile: PathBuf,
+    /// Where its downloads go (a folder in the worker folder).
+    pub downloads: PathBuf,
     pub start_url: String,
     pub port: u16,
     /// The environment's Python, for browser.json.
     pub python: String,
     /// More switches (the tests' `--headless=new`).
     pub extra: Vec<String>,
-    /// A Mac: the seatbelt profile it runs under (`<home>/browser.sb`,
-    /// through sandbox-exec), as myous for Mac runs it.
-    pub sandbox: Option<PathBuf>,
+    /// A Mac: the seatbelt profile it runs under, as myous for Mac runs
+    /// it, its text (`sandbox_profile`; given to sandbox-exec with `-p`).
+    pub sandbox: Option<String>,
     /// A Mac: the browser of a worker in a container (browser.json for
     /// the container's forward.py).
     pub container: bool,
@@ -810,8 +812,56 @@ pub fn prepare(
     prepare_with(home, worker, found, port, python, extra, &How::default())
 }
 
-/// `prepare`, and on a Mac the sandbox's profile (`<home>/browser.sb`)
-/// and a container worker's downloads folder.
+/// The seatbelt profile (`seatbelt`) for a browser whose folders are
+/// `<home>/browser` and `downloads`, a folder in the worker folder `home`.
+/// The sandbox sees resolved paths (/private/tmp, not /tmp), so the
+/// worker folder is resolved, once, and the fixed names joined to it;
+/// nothing inside the worker folder is resolved, as an agent's command in
+/// a container can change anything there: a link put in place of
+/// `browser` would otherwise make the sandbox allow whatever it points
+/// to, such as the owner's home folder. A folder there that is a link is
+/// refused instead (`files::dir_in`). `user_home` is the owner's home
+/// folder.
+pub fn sandbox_profile(
+    user_home: &Path,
+    home: &Path,
+    downloads: &Path,
+    found: &Found,
+) -> Result<String, String> {
+    let dir = paths::browser_dir(home);
+    for d in [&dir, downloads] {
+        files::dir_in(home, d).map_err(|e| refused(&e))?;
+    }
+    let rel = downloads
+        .strip_prefix(home)
+        .map_err(|_| format!("{} is not in the worker folder", downloads.display()))?;
+    let real_home = home
+        .canonicalize()
+        .map_err(|e| format!("{}: {e}", home.display()))?;
+    let real = |p: &Path| {
+        p.canonicalize()
+            .unwrap_or_else(|_| p.to_path_buf())
+            .to_string_lossy()
+            .to_string()
+    };
+    Ok(seatbelt(
+        &real(user_home),
+        &real_home.join("browser").to_string_lossy(),
+        &real_home.join(rel).to_string_lossy(),
+        &found.id,
+        &real(&bundle_of(Path::new(&found.path))),
+    ))
+}
+
+/// Why the browser isn't started: a folder it uses is a link (or can't
+/// be made).
+fn refused(e: &std::io::Error) -> String {
+    format!("{e}; the browser isn't started")
+}
+
+/// `prepare`, and on a Mac the sandbox's profile (passed to sandbox-exec
+/// as text, never through a file in the worker folder, where an agent's
+/// command could swap it) and a container worker's downloads folder.
 pub fn prepare_with(
     home: &Path,
     worker: &str,
@@ -831,7 +881,7 @@ pub fn prepare_with(
         home.join("work").join("downloads")
     };
     for d in [&dir, &profile, &downloads] {
-        files::private_dir_in(home, d).map_err(|e| e.to_string())?;
+        files::private_dir_in(home, d).map_err(|e| refused(&e))?;
     }
     let page = dir.join("start.html");
     let html = if how.sandbox {
@@ -843,23 +893,15 @@ pub fn prepare_with(
     let start_url = file_url(&page);
     seed_preferences(home, &profile, worker, &start_url, &downloads);
     let sandbox = if how.sandbox {
-        // The sandbox sees resolved paths (/private/tmp, not /tmp).
-        let real = |p: &Path| {
-            p.canonicalize()
-                .unwrap_or_else(|_| p.to_path_buf())
-                .to_string_lossy()
-                .to_string()
-        };
-        let text = seatbelt(
-            &real(&paths::user_home()),
-            &real(&dir),
-            &real(&downloads),
-            &found.id,
-            &real(&bundle_of(Path::new(&found.path))),
-        );
-        let sb = home.join("browser.sb");
-        fs::write(&sb, text).map_err(|e| format!("{}: {e}", sb.display()))?;
-        Some(sb)
+        // The file earlier versions (and myous for Mac) ran it from: gone,
+        // so nothing suggests it is used (the link itself if it is one).
+        let _ = fs::remove_file(home.join("browser.sb"));
+        Some(sandbox_profile(
+            &paths::user_home(),
+            home,
+            &downloads,
+            found,
+        )?)
     } else {
         None
     };
@@ -867,6 +909,7 @@ pub fn prepare_with(
         exe: PathBuf::from(&found.path),
         app: found.name.clone(),
         profile,
+        downloads,
         start_url,
         port,
         python: python.into(),
@@ -878,13 +921,14 @@ pub fn prepare_with(
 }
 
 /// The command that runs the browser's program: itself, or on a Mac
-/// sandbox-exec with the profile, which runs it confined (the same
-/// process: sandbox-exec ends in exec, so the pid is the browser's).
+/// sandbox-exec with the profile's text (`-p`), which runs it confined
+/// (the same process: sandbox-exec ends in exec, so the pid is the
+/// browser's).
 fn browser_command(s: &Spec) -> std::process::Command {
     let mut cmd = match &s.sandbox {
-        Some(sb) => {
+        Some(profile) => {
             let mut c = crate::engine::command(SANDBOX_EXEC);
-            c.arg("-f").arg(sb).arg(&s.exe);
+            c.arg("-p").arg(profile).arg(&s.exe);
             c
         }
         None => crate::engine::command(&s.exe),
@@ -999,7 +1043,10 @@ fn adoptable(home: &Path) -> Option<(u16, u32, bool)> {
 /// watches it: browser.json once its port answers, removed when it ends.
 pub fn launch(home: &Path, spec: Spec, log: Log) -> Result<u32, String> {
     let key = home.to_string_lossy().to_string();
-    files::dir_in(home, &spec.profile).map_err(|e| e.to_string())?;
+    // Again, for a browser started again from what it was (Show browser).
+    for d in [&spec.profile, &spec.downloads] {
+        files::dir_in(home, d).map_err(|e| refused(&e))?;
+    }
     let log_file = paths::browser_log(home);
     let out = files::fresh_file(&log_file).map_err(|e| format!("{}: {e}", log_file.display()))?;
     let mut cmd = browser_command(&spec);
@@ -1791,9 +1838,14 @@ pub mod mac {
                 "/json/version: {}",
                 get_text(&format!("http://127.0.0.1:{port}/json/version")).unwrap()
             );
-            assert!(fs::read_to_string(home.join("browser.sb"))
+            assert!(procs()
+                .lock()
+                .unwrap()
+                .get(&home.to_string_lossy().to_string())
+                .and_then(|p| p.spec.sandbox.clone())
                 .unwrap()
                 .contains("(deny process-exec*)"));
+            assert!(!home.join("browser.sb").exists());
             let hidden = || running_app(pid).map(|a| a.isHidden()).unwrap_or(false);
             std::thread::sleep(Duration::from_secs(5));
             assert!(running_app(pid).is_some(), "an app for pid {pid}");
@@ -1847,9 +1899,10 @@ pub mod mac {
                 title
             };
             let own = open(&file_url(&paths::browser_dir(&home).join("start.html")));
-            let sb = file_url(&home.join("browser.sb"));
+            fs::write(home.join("other.txt"), "the worker folder's").unwrap();
+            let other = file_url(&home.join("other.txt"));
             assert_eq!(own, "myous · Real Test");
-            assert_eq!(open(&sb), sb);
+            assert_eq!(open(&other), other);
             crate::browser::stop(&home);
             assert!(!json.exists() && !port_answers(port) && !pid_alive(pid));
             fs::remove_dir_all(&home).unwrap();
@@ -2473,38 +2526,32 @@ mod tests {
             sandbox: true,
             hidden: true,
         };
-        let spec = prepare_with(&home, "Max's Mac", &found, 41234, "", vec![], &how).unwrap();
+        // The file myous for Mac ran it from, left by it: gone.
         let sb = home.join("browser.sb");
-        assert_eq!(spec.sandbox.as_deref(), Some(sb.as_path()));
+        fs::write(&sb, "(version 1)(allow default)").unwrap();
+        let spec = prepare_with(&home, "Max's Mac", &found, 41234, "", vec![], &how).unwrap();
+        assert!(!sb.exists());
         assert!(spec.container && spec.hidden);
         let real = |p: &Path| p.canonicalize().unwrap().to_string_lossy().to_string();
-        assert_eq!(
-            fs::read_to_string(&sb).unwrap(),
-            seatbelt(
-                &paths::user_home()
-                    .canonicalize()
-                    .unwrap_or_else(|_| paths::user_home())
-                    .to_string_lossy(),
-                &real(&home.join("browser")),
-                &real(&home.join("downloads")),
-                "com.google.Chrome",
-                "/Applications/Google Chrome.app"
-            )
+        let text = seatbelt(
+            &paths::user_home()
+                .canonicalize()
+                .unwrap_or_else(|_| paths::user_home())
+                .to_string_lossy(),
+            &real(&home.join("browser")),
+            &real(&home.join("downloads")),
+            "com.google.Chrome",
+            "/Applications/Google Chrome.app",
         );
+        assert_eq!(spec.sandbox.as_deref(), Some(text.as_str()));
+        // Given to sandbox-exec as text: no file an agent could swap.
         let cmd = browser_command(&spec);
         assert_eq!(cmd.get_program(), SANDBOX_EXEC);
         let first: Vec<String> = cmd
             .get_args()
             .map(|a| a.to_string_lossy().to_string())
             .collect();
-        assert_eq!(
-            first,
-            [
-                "-f".to_string(),
-                sb.to_string_lossy().to_string(),
-                found.path.clone()
-            ]
-        );
+        assert_eq!(first, ["-p".to_string(), text, found.path.clone()]);
         let a = args(&spec, "macos");
         for flag in [
             "--no-sandbox".to_string(),
@@ -2543,6 +2590,177 @@ mod tests {
         assert_eq!(browser_command(&plain).get_program(), found.path.as_str());
         assert_eq!(browser_json(&plain, 1)["kind"], "host");
         fs::remove_dir_all(&home).unwrap();
+    }
+
+    /// An agent's command in a container can put a link anywhere in the
+    /// mounted worker folder. The sandbox's profile names the worker
+    /// folder's browser and downloads folders by those names and lets
+    /// the browser change nothing else; a link in their place (to the
+    /// owner's home folder here) is refused, before anything is written
+    /// through it or a browser started.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_in_the_worker_folder_never_widens_the_sandbox() {
+        use std::os::unix::fs::symlink;
+        let owner = temp("links");
+        let home = owner.join(".myous-worker");
+        fs::create_dir_all(&home).unwrap();
+        let found = Found {
+            id: "com.google.Chrome".into(),
+            name: "Google Chrome".into(),
+            path: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome".into(),
+        };
+        let container = How {
+            container: true,
+            sandbox: true,
+            hidden: false,
+        };
+        let direct = How {
+            sandbox: true,
+            ..How::default()
+        };
+        let writable = |profile: &str| -> Vec<String> {
+            profile
+                .lines()
+                .filter(|l| l.starts_with("(allow file-read* file-write*"))
+                .map(|l| l.split('"').nth(1).unwrap().to_string())
+                .collect()
+        };
+        let real_home = home.canonicalize().unwrap();
+        let named = |rel: &str| real_home.join(rel).to_string_lossy().to_string();
+        for (how, downloads) in [(&container, "downloads"), (&direct, "work/downloads")] {
+            let spec = prepare_with(&home, "W", &found, 1, "", vec![], how).unwrap();
+            assert_eq!(
+                writable(spec.sandbox.as_deref().unwrap()),
+                [named("browser"), named(downloads)]
+            );
+        }
+        let listing = || {
+            let mut names: Vec<String> = fs::read_dir(&owner)
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+                .collect();
+            names.sort();
+            names
+        };
+        let before = listing();
+        for (name, how) in [
+            ("browser", &container),
+            ("browser/com.google.Chrome", &container),
+            ("downloads", &container),
+            ("work", &direct),
+            ("work/downloads", &direct),
+        ] {
+            let p = home.join(name);
+            let _ = fs::remove_dir_all(&p);
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            symlink(&owner, &p).unwrap();
+            let e = prepare_with(&home, "W", &found, 1, "", vec![], how).unwrap_err();
+            assert!(
+                e.contains("symbolic link") && e.contains("browser isn't started"),
+                "{name}: {e}"
+            );
+            if name == "browser" || name == "downloads" {
+                let downloads = home.join("downloads");
+                assert!(sandbox_profile(&owner, &home, &downloads, &found).is_err());
+            }
+            assert_eq!(listing(), before, "{name}: written through the link");
+            fs::remove_file(&p).unwrap();
+        }
+        // A browser started again from what it was (Show browser) once a
+        // link is there: refused too, nothing run; its profile still names
+        // only the folders it named.
+        let spec = prepare_with(&home, "W", &found, 1, "", vec![], &container).unwrap();
+        let profile = spec.sandbox.clone().unwrap();
+        fs::remove_dir_all(home.join("browser")).unwrap();
+        symlink(&owner, home.join("browser")).unwrap();
+        let e = launch(&home, spec, Arc::new(|_| {})).unwrap_err();
+        assert!(e.contains("symbolic link"), "{e}");
+        assert!(!running(&home));
+        assert_eq!(writable(&profile), [named("browser"), named("downloads")]);
+        assert_eq!(listing(), before);
+        fs::remove_dir_all(&owner).unwrap();
+    }
+
+    /// The sandbox for real (`cargo test -- --ignored real_sandbox`, a
+    /// Mac): an agent's link in place of the worker folder's browser
+    /// folder, pointing at the owner's home folder, never lets the browser
+    /// read the owner's files. `/bin/cat` stands in for the browser (the
+    /// profile runs only programs in the browser's own folder: `/bin`).
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore]
+    fn real_sandbox_and_a_link_attack() {
+        use std::os::unix::fs::symlink;
+        // A made-up owner's home folder, with a key in it.
+        let owner = temp("sandbox").canonicalize().unwrap();
+        let home = owner.join(".myous-worker");
+        let key = owner.join(".ssh").join("id_test");
+        fs::create_dir_all(key.parent().unwrap()).unwrap();
+        fs::write(&key, "the owner's key\n").unwrap();
+        let cat = Found {
+            id: "com.google.Chrome".into(),
+            name: "cat".into(),
+            path: "/bin/cat".into(),
+        };
+        let downloads = home.join("downloads");
+        let profile = sandbox_profile(&owner, &home, &downloads, &cat).unwrap();
+        fs::write(paths::browser_dir(&home).join("own.txt"), "its own\n").unwrap();
+        // The browser's command line as the app runs it, with a file to read.
+        let read = |profile: &str, file: &Path| -> (i32, String) {
+            let spec = Spec {
+                exe: PathBuf::from(&cat.path),
+                app: cat.name.clone(),
+                profile: paths::browser_dir(&home).join(&cat.id),
+                downloads: downloads.clone(),
+                start_url: String::new(),
+                port: 0,
+                python: String::new(),
+                extra: Vec::new(),
+                sandbox: Some(profile.to_string()),
+                container: true,
+                hidden: false,
+            };
+            let mut cmd = browser_command(&spec);
+            cmd.arg(file);
+            let r = run_capture(cmd, Duration::from_secs(10));
+            println!("{}: {r:?}", file.display());
+            r
+        };
+        assert_eq!(
+            read(&profile, &paths::browser_dir(&home).join("own.txt")),
+            (0, "its own".to_string())
+        );
+        let (status, out) = read(&profile, &key);
+        assert!(
+            status != 0 && out.contains("Operation not permitted"),
+            "{out}"
+        );
+        // The attack: the browser folder replaced by a link to the owner's home.
+        fs::remove_dir_all(paths::browser_dir(&home)).unwrap();
+        symlink("..", paths::browser_dir(&home)).unwrap();
+        let through = paths::browser_dir(&home).join(".ssh").join("id_test");
+        assert_eq!(fs::read_to_string(&through).unwrap(), "the owner's key\n");
+        // No profile is made from it; the one made before (a browser
+        // started again) doesn't follow it.
+        assert!(sandbox_profile(&owner, &home, &downloads, &cat)
+            .unwrap_err()
+            .contains("symbolic link"));
+        assert_ne!(read(&profile, &through).0, 0);
+        assert_ne!(read(&profile, &key).0, 0);
+        // What resolving the link would allow, as the profile once did.
+        let resolved = seatbelt(
+            &owner.to_string_lossy(),
+            &paths::browser_dir(&home)
+                .canonicalize()
+                .unwrap()
+                .to_string_lossy(),
+            &downloads.to_string_lossy(),
+            &cat.id,
+            "/bin",
+        );
+        assert_eq!(read(&resolved, &key), (0, "the owner's key".to_string()));
+        fs::remove_dir_all(&owner).unwrap();
     }
 
     /// Launching, browser.json, Show and Stop, with a stand-in for the
