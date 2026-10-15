@@ -9,11 +9,14 @@ Implementations are included when they're built:
   go          builds go/cmd/myous
   rust        rust/target/debug/myous (cargo build)
   typescript  typescript/dist/cli.js (npm run build)
-MYOUS_IMPLS=python,go limits the set.
+MYOUS_IMPLS=python,go limits the set. The pairs run MYOUS_INTEROP_JOBS
+at a time (default 4; each pair has agents of its own); 1 runs them one
+after another.
 """
 from __future__ import annotations
 
 import base64
+import concurrent.futures
 import itertools
 import json
 import os
@@ -32,6 +35,9 @@ import urllib.request
 from pathlib import Path
 
 CLIENTS = Path(__file__).resolve().parent
+# Pairs at once: each is a few dozen CLI runs, mostly waiting on the hub,
+# so they overlap well.
+JOBS = max(1, int(os.environ.get("MYOUS_INTEROP_JOBS") or 4))
 # The hub is in the private myoushq repository, normally checked out next to
 # this one. MYOUS_HUB_SRC points at the hub source if it's elsewhere.
 HUB_SRC = Path(os.environ.get("MYOUS_HUB_SRC") or CLIENTS.parent / "myoushq" / "hub")
@@ -124,10 +130,24 @@ class Interop(unittest.TestCase):
         # `inbox` fetches first: no separate poll needed.
         return json.loads(self.run_cli(impl, home, "inbox", "--json"))
 
+    def each(self, items, check, label) -> None:
+        """check(*item) for every item, JOBS at a time, then each outcome
+        reported in order as a subtest of its own (label names it)."""
+        items = list(items)
+        if JOBS == 1:
+            for item in items:
+                with self.subTest(**label(*item)):
+                    check(*item)
+            return
+        with concurrent.futures.ThreadPoolExecutor(JOBS) as pool:
+            futures = [pool.submit(check, *item) for item in items]
+            for item, future in zip(items, futures):
+                with self.subTest(**label(*item)):
+                    future.result()   # the item's failure, raised here
+
     def test_every_pair(self):
-        for inviter, joiner in itertools.product(self.impls, repeat=2):
-            with self.subTest(inviter=inviter, joiner=joiner):
-                self.check_pair(inviter, joiner)
+        self.each(itertools.product(self.impls, repeat=2), self.check_pair,
+                  lambda inviter, joiner: {"inviter": inviter, "joiner": joiner})
 
     def check_pair(self, inviter: str, joiner: str) -> None:
         a_home = self.tmp / f"{inviter}-invites-{joiner}" / "a"
@@ -235,23 +255,24 @@ class HubNotices(Interop):
         return {"NOTICES_FILE": str(path)}
 
     def test_every_pair(self):
+        self.each(((impl,) for impl in self.impls), self.check_notices, lambda impl: {"impl": impl})
+
+    def check_notices(self, impl: str) -> None:
         host = urllib.parse.urlsplit(self.hub_url).netloc
-        for impl in self.impls:
-            with self.subTest(impl=impl):
-                home = self.tmp / f"notices-{impl}"
-                self.run_cli(impl, home, "init", "--alias", f"{impl}-n", "--hub", self.hub_url)
-                got = self.entries(impl, home)
-                updates = [e for e in got if e["type"] == "update"]
-                self.assertEqual(len(updates), 1, got)
-                self.assertEqual(updates[0]["version"], "v99.0.0")
-                self.assertIn("myous v99.0.0 is available", updates[0]["text"])
-                notices = sorted((e for e in got if e["type"] == "notice"), key=lambda e: e["id"])
-                self.assertEqual([(e["id"], e["text"], e.get("url")) for e in notices], [
-                    ("n-maint", f"Notice from {host}: Hub restart at 02:00 UTC. (more: {self.hub_url}/changelog.md)",
-                     f"{self.hub_url}/changelog.md"),
-                    ("n-offsite", f"Notice from {host}: Read this.", None),
-                ])
-                self.assertEqual(self.entries(impl, home), [])  # only once
+        home = self.tmp / f"notices-{impl}"
+        self.run_cli(impl, home, "init", "--alias", f"{impl}-n", "--hub", self.hub_url)
+        got = self.entries(impl, home)
+        updates = [e for e in got if e["type"] == "update"]
+        self.assertEqual(len(updates), 1, got)
+        self.assertEqual(updates[0]["version"], "v99.0.0")
+        self.assertIn("myous v99.0.0 is available", updates[0]["text"])
+        notices = sorted((e for e in got if e["type"] == "notice"), key=lambda e: e["id"])
+        self.assertEqual([(e["id"], e["text"], e.get("url")) for e in notices], [
+            ("n-maint", f"Notice from {host}: Hub restart at 02:00 UTC. (more: {self.hub_url}/changelog.md)",
+             f"{self.hub_url}/changelog.md"),
+            ("n-offsite", f"Notice from {host}: Read this.", None),
+        ])
+        self.assertEqual(self.entries(impl, home), [])  # only once
 
 
 class StorageQuota(Interop):
@@ -275,29 +296,30 @@ class StorageQuota(Interop):
                 time.sleep(0.1)
 
     def test_every_pair(self):
-        for impl in self.impls:
-            with self.subTest(impl=impl):
-                a, b = self.tmp / f"quota-{impl}-a", self.tmp / f"quota-{impl}-b"
-                self.run_cli(impl, a, "init", "--alias", f"{impl}-qa", "--hub", self.hub_url)
-                self.run_cli("python", b, "init", "--alias", f"{impl}-qb", "--hub", self.hub_url)
-                code = json.loads(self.run_cli("python", b, "invite", "--json"))["code"]
-                self.run_cli(impl, a, "accept", code, "--wait", "3")
-                self.entries("python", b)
-                self.entries(impl, a)
-                # ~79 KB of text is ~150 KB of wraps: over the 100 KB quota partway.
-                r = subprocess.run(self.impls[impl] + ["send", f"{impl}-qb", "-"], env=self.cli_env(a),
-                                   capture_output=True, text=True, timeout=60, input=LONG_TEXT)
-                self.assertNotEqual(r.returncode, 0, r.stdout)
-                self.assertIn("storage quota", r.stdout + r.stderr)
-                # Only that agent is limited: its contact can still write to it.
-                self.run_cli("python", b, "send", f"{impl}-qa", "still fine")
-                self.assertEqual([e["text"] for e in self.entries(impl, a)], ["still fine"])
+        self.each(((impl,) for impl in self.impls), self.check_quota, lambda impl: {"impl": impl})
         # The hub remembers who stored what across a restart.
         self.restart_hub()
         impl = next(iter(self.impls))
         r = subprocess.run(self.impls[impl] + ["send", f"{impl}-qb", "-"], env=self.cli_env(self.tmp / f"quota-{impl}-a"),
                            capture_output=True, text=True, timeout=60, input=LONG_TEXT)
         self.assertIn("storage quota", r.stdout + r.stderr)
+
+    def check_quota(self, impl: str) -> None:
+        a, b = self.tmp / f"quota-{impl}-a", self.tmp / f"quota-{impl}-b"
+        self.run_cli(impl, a, "init", "--alias", f"{impl}-qa", "--hub", self.hub_url)
+        self.run_cli("python", b, "init", "--alias", f"{impl}-qb", "--hub", self.hub_url)
+        code = json.loads(self.run_cli("python", b, "invite", "--json"))["code"]
+        self.run_cli(impl, a, "accept", code, "--wait", "3")
+        self.entries("python", b)
+        self.entries(impl, a)
+        # ~79 KB of text is ~150 KB of wraps: over the 100 KB quota partway.
+        r = subprocess.run(self.impls[impl] + ["send", f"{impl}-qb", "-"], env=self.cli_env(a),
+                           capture_output=True, text=True, timeout=60, input=LONG_TEXT)
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn("storage quota", r.stdout + r.stderr)
+        # Only that agent is limited: its contact can still write to it.
+        self.run_cli("python", b, "send", f"{impl}-qa", "still fine")
+        self.assertEqual([e["text"] for e in self.entries(impl, a)], ["still fine"])
 
 
 class TestProxy:
@@ -402,9 +424,7 @@ class ProxyInterop(Interop):
         return dict(env, MYOUS_HOME=str(home))
 
     def test_every_pair(self):
-        for impl in self.impls:
-            with self.subTest(impl=impl):
-                self.check_pair(impl, impl)
+        self.each(((impl, impl) for impl in self.impls), self.check_pair, lambda impl, _: {"impl": impl})
         self.assertIn(("CONNECT", self.HUB_HOST), self.proxy.seen)
 
 
