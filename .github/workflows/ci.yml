@@ -154,10 +154,7 @@ jobs:
       - run: sh worker/build-worker.sh x86_64-pc-windows-msvc worker/desktop/src-tauri/binaries "$(node -p 'require("./worker/desktop/package.json").version')"
         shell: bash
       - run: cd worker/desktop && npm ci && npm test && npm run build:ui
-      # Clippy on the app, not yet its tests: two test helpers in direct.rs
-      # (Lines, recorder) are unused on Windows. --all-targets once they're
-      # gated as the tests that use them are.
-      - run: cd worker/desktop/src-tauri && cargo fmt --check && cargo clippy -- -D warnings
+      - run: cd worker/desktop/src-tauri && cargo fmt --check && cargo clippy --all-targets -- -D warnings
       - run: cd worker/desktop/src-tauri && cargo test -- --nocapture
       - run: cd worker/desktop && npx tauri build --bundles nsis
   mac-app:

@@ -318,7 +318,9 @@ on PATH, so it never stands in for the client's `myous`), with
   colours, push buttons, pop-up menus and striped table; dark mode, the
   accent colour and Increase Contrast follow System Settings), fits its
   content and isn't resizable. What the ⋯ menu holds elsewhere is in the
-  app menu (Settings… on ⌘,), and Running has Open log.
+  menu bar icon's menu, and in the app menu (Settings… on ⌘,) while the
+  Dock setting is on (without the Dock icon macOS may show no app menu);
+  Running has Open log.
 - A question's notification has Allow and Refuse (UserNotifications),
   and open at login is a login item (SMAppService), as in the
   Objective-C app.
