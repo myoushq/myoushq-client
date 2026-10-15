@@ -117,6 +117,7 @@ pub fn start(
     let mut cmd = crate::engine::command(&args[0]);
     cmd.args(&args[1..])
         .current_dir(&dir)
+        .env("PATH", crate::engine::worker_path())
         .env("MYOUS_HOME", &dir)
         .stdin(Stdio::null())
         .stdout(log.try_clone().map_err(|e| e.to_string())?)
@@ -729,14 +730,20 @@ mod tests {
         crate::paths::send_command(&home, crate::paths::QUIT_COMMAND).unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
         let args = script(
-            "echo started; sleep 30",
-            "Write-Output started; Start-Sleep 30",
+            "echo \"PATH=$PATH\"; echo started; sleep 30",
+            "Write-Output \"PATH=$env:PATH\"; Write-Output started; Start-Sleep 30",
         );
         start(&h, &args, move |st| tx.send(st).unwrap()).unwrap();
         assert!(!quit.exists());
         assert!(running(&h));
         assert!(start(&h, &args, |_| {}).is_err());
         wait_for_log(&h, "started");
+        // The worker's PATH (on a Mac the login shell's first).
+        let path = format!("PATH={}", crate::engine::worker_path().to_string_lossy());
+        assert!(
+            log_tail(&h, 64 * 1024).lines().any(|l| l.trim() == path),
+            "{path}"
+        );
         // SIGTERM ends it; on Windows, where only the quit file asks (and
         // this one doesn't take it), it is killed after STOP_GRACE.
         assert!(stop(&h, 0, quiet(), || {}));

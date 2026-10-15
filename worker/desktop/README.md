@@ -138,7 +138,14 @@ the app remembers it (`"containers": false` in the first worker's
 `app.json`), goes straight to Set up, every worker then runs directly on
 the computer, as the Objective-C Mac app's direct mode does, and the ⋯ menu offers
 the way back. Without a container, commands run as the owner
-(PowerShell on Windows, `/bin/sh` elsewhere), and the review starts at
+(PowerShell on Windows, `/bin/sh` elsewhere), with the worker's PATH:
+on a Mac the owner's login PATH, as the Objective-C app gave its
+worker: the login shell's (`$SHELL -l -c`, never interactive, asked once per run of
+the app and given 5 s: `/etc/paths` and `/etc/paths.d` through
+path_helper, the profile's Homebrew, pyenv and the like), else
+path_helper's, then the folders of the search path (above) it lacks (the
+app log says which, at each start); on Linux and Windows the search
+path. The review starts at
 "Ask me before anything that changes things". The agents on the
 computer are found and paired the same way.
 

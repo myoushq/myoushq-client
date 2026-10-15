@@ -320,6 +320,10 @@ async fn direct_start<R: Runtime>(
                 // No --note for the browser: the worker reads browser.json at each help.
                 let args = direct::worker_args(Path::new(&home), &bin, &name, &description, &[]);
                 log(format!("start: {} (output in worker.log)", args.join(" ")));
+                log(format!(
+                    "start: its PATH is {}",
+                    engine::worker_path_source()
+                ));
                 direct::start(&home, &args, move |status| {
                     // The browser lives and dies with the worker.
                     browser::stop(Path::new(&h));
@@ -1263,6 +1267,11 @@ pub fn run() {
                     w.set_size(tauri::LogicalSize::new(560.0, 420.0))?;
                     w.center()?;
                 }
+                // The login PATH for workers without a container, asked
+                // now so their first start doesn't wait for the shell.
+                std::thread::spawn(|| {
+                    let _ = engine::login_path();
+                });
                 // Notifications with Allow and Refuse, as myous for Mac's
                 // (none outside an app bundle: the plugin's plain ones).
                 let handle = app.handle().clone();
