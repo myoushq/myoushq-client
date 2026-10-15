@@ -38,6 +38,11 @@ pub trait Storage: Send + Sync {
     fn names(&self, prefix: &str) -> Result<Vec<String>>;
     /// Append one record to the message history.
     fn append_history(&self, entry: &Value) -> Result<()>;
+    /// Append several records, in order. The default appends them one at a
+    /// time; FileStorage writes them at once, with one sync.
+    fn append_history_all(&self, entries: &[Value]) -> Result<()> {
+        entries.iter().try_for_each(|e| self.append_history(e))
+    }
     /// The whole message history, oldest first.
     fn read_history(&self) -> Result<Vec<Value>>;
 
@@ -156,8 +161,21 @@ impl Storage for FileStorage {
     }
 
     fn append_history(&self, entry: &Value) -> Result<()> {
+        self.append_history_all(std::slice::from_ref(entry))
+    }
+
+    fn append_history_all(&self, entries: &[Value]) -> Result<()> {
+        if entries.is_empty() {
+            return Ok(());
+        }
+        let mut text = String::new();
+        for e in entries {
+            text += &serde_json::to_string(e)?;
+            text.push('\n');
+        }
         let mut f = OpenOptions::new().append(true).create(true).mode(0o600).open(self.path("messages.jsonl"))?;
-        f.write_all((serde_json::to_string(entry)? + "\n").as_bytes())?;
+        f.write_all(text.as_bytes())?;
+        // On macOS this is F_FULLFSYNC, some 20 ms: once per batch, not per entry.
         f.sync_all()?;
         Ok(())
     }
