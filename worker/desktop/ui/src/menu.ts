@@ -4,12 +4,12 @@
 // the actions to run when one is clicked.
 
 import type { TrayItem } from "./backend.js";
-import { agentContacts, agentName, Model, Worker } from "./model.js";
+import { Agent, agentContacts, agentName, Model, Worker } from "./model.js";
 import { plural, str } from "./text.js";
 
 export interface MenuActions {
   show(w?: Worker): void;
-  showAgent(index: number): void;
+  showAgent(a: Agent): void;
   openBrowser(w: Worker): void;
   togglePaused(w: Worker): void;
   start(w: Worker): void;
@@ -18,13 +18,13 @@ export interface MenuActions {
   addWorker(): void;
   settings(): void;
   checkUpdates(): void;
-  useImage(): void;
-  chooseRepo(): void;
-  useDirect(): void;
+  useImage(w: Worker): void;
+  chooseRepo(w: Worker): void;
+  useDirect(w: Worker): void;
   useContainers(): void;
   showLog(): void;
-  containerLog(): void;
-  openFolder(): void;
+  containerLog(w: Worker): void;
+  openFolder(w: Worker): void;
   removeContainers(): void;
   addAgentHome(): void;
   quit(): void;
@@ -36,17 +36,21 @@ export interface MenuActions {
  * THIS PC sections, each a grey (disabled) label and a closing separator. */
 export function buildMenu(m: Model, windowShown: boolean, act: MenuActions, sys = "this computer"): { items: TrayItem[]; actions: Map<string, () => void> } {
   const actions = new Map<string, () => void>();
-  // An id names its entry (the label, "#2" for a second entry with the same label), not its
-  // position: the window rebuilds the menu and the actions every two seconds, so the menu the owner
-  // has open may be one build older than the actions, and a position would then run another entry.
+  // An id names its entry, not its position: the window rebuilds the menu and the actions every two
+  // seconds, so the menu the owner has open may be one build older than the actions, and a position
+  // would then run another entry. A worker's entry (`w` given) names its worker too, by its folder:
+  // `w:<folder>:<label>`; a label alone would be another worker's once this one's is gone (Stop of the
+  // second worker, from a menu built before the first stopped). The others are `m:<label>` ("#2" for
+  // a second with the same id), an agent's `a:<folder>`. A click whose id the new actions don't have
+  // does nothing, and a worker's runs only while the window still has that worker.
   const seen = new Map<string, number>();
-  const item = (label: string, run?: () => void, enabled = true, fixedId = ""): TrayItem => {
-    let id = fixedId || `${run ? "m" : "d"}:${label}`;
+  const item = (label: string, run?: () => void, w?: Worker, fixedId = ""): TrayItem => {
+    let id = fixedId || (w ? `w:${w.home}:${label}` : `${run ? "m" : "d"}:${label}`);
     const k = (seen.get(id) ?? 0) + 1;
     seen.set(id, k);
     if (k > 1) id += `#${k}`;
-    if (run) actions.set(id, run);
-    return { id, label, enabled: enabled && !!run };
+    if (run) actions.set(id, w ? onWorker(m, w, run) : run);
+    return { id, label, enabled: !!run };
   };
   const sep: TrayItem = { separator: true };
   const several = m.workers.length > 1;
@@ -62,24 +66,24 @@ export function buildMenu(m: Model, windowShown: boolean, act: MenuActions, sys 
     if (w.newRequests > 0 && !windowShown) label += ` · ${w.newRequests} new`;
     const pairedWith = str(w.paired?.alias);
     if (!several) {
-      items.push(item(label, () => act.show(w)));
-      if (pairedWith) items.push(item(`   paired with ${pairedWith}`));
+      items.push(item(label, () => act.show(w), w, `w:${w.home}`));
+      if (pairedWith) items.push(item(`   paired with ${pairedWith}`, undefined, w));
       continue;
     }
     const sub: TrayItem[] = [];
-    if (pairedWith) sub.push(item(`Paired with ${pairedWith}`));
+    if (pairedWith) sub.push(item(`Paired with ${pairedWith}`, undefined, w));
     sub.push(...workerActions(m, w, act, item));
-    if (!w.isDefault) sub.push(sep, item("Remove…", () => act.removeWorker(w)));
-    items.push({ ...item(label, () => act.show(w)), children: [item("Show…", () => act.show(w)), ...sub] });
+    if (!w.isDefault) sub.push(sep, item("Remove…", () => act.removeWorker(w), w));
+    items.push({ ...item(label, () => act.show(w), w, `w:${w.home}`), children: [item("Show…", () => act.show(w), w), ...sub] });
   }
   if (several) items.push(item("Add a worker…", act.addWorker));
   if (agents.length) {
     close();
     items.push(item(`AGENTS ON ${sys.toUpperCase()}`));
-    agents.forEach((a, i) => {
+    for (const a of agents) {
       const what = a.error ? "not readable" : plural(agentContacts(a).length, "contact");
-      items.push(item(`${agentName(a)} · ${what}`, () => act.showAgent(i)));
-    });
+      items.push(item(`${agentName(a)} · ${what}`, () => act.showAgent(a), undefined, `a:${a.home}`));
+    }
   }
   if (!several) {
     close();
@@ -87,56 +91,65 @@ export function buildMenu(m: Model, windowShown: boolean, act: MenuActions, sys 
   }
   close();
   items.push(item("Settings…", act.settings), item("Check for updates…", act.checkUpdates));
-  const c = m.current.config, off = m.appConfig.containersOff;
+  const cur = m.current, c = cur.config, off = m.appConfig.containersOff;
   const mode = c.isDirect ? "no container" : c.isImage ? "published image" : "checkout";
   items.push({ label: "Advanced", enabled: true, children: [
     item(`Mode: ${mode}`),
-    ...modeEntries(m.current, off, act).map(([label, run]) => item(label, run)),
+    ...modeEntries(m, cur, act).map(([label, run, w]) => item(label, run, w)),
     sep,
     item("Show app log", act.showLog),
-    item(c.isDirect ? "Show worker log" : "Show container log", act.containerLog),
-    item("Open worker folder", act.openFolder),
+    item(c.isDirect ? "Show worker log" : "Show container log", () => act.containerLog(cur), cur),
+    item("Open worker folder", () => act.openFolder(cur), cur),
     ...(off ? [] : [item("Remove stale containers…", act.removeContainers)]),
     sep,
     item("Add a worker…", act.addWorker),
     item("Add an agent's folder…", act.addAgentHome),
   ] });
-  items.push(sep, item("Open myous…", () => act.show(), true, "open"), item("Quit myous", act.quit));
+  items.push(sep, item("Open myous…", () => act.show(), undefined, "open"), item("Quit myous", act.quit));
   return { items, actions };
 }
 
-/** How a worker can run: the published image, a checkout, or no container;
- * on a computer without containers, only the way back to them. */
-export function modeEntries(w: Worker, containersOff: boolean, act: MenuActions): [string, () => void][] {
-  if (containersOff) return [["Use containers (look for a runtime again)", act.useContainers]];
-  const out: [string, () => void][] = [];
-  if (!w.config.isImage) out.push(["Use the published image", act.useImage]);
-  out.push(["Use a checkout…", act.chooseRepo]);
-  if (!w.config.isDirect) out.push(["Run without a container…", act.useDirect]);
+/** A worker's entry runs while the window still has that worker: a menu can be clicked after it went. */
+function onWorker(m: Model, w: Worker, run: () => void): () => void {
+  return () => {
+    if (m.workers.includes(w)) run();
+  };
+}
+
+/** How the worker `w` can run: the published image, a checkout, or no
+ * container; on a computer without containers, only the way back to them
+ * (the whole app's, not the worker's). */
+export function modeEntries(m: Model, w: Worker, act: MenuActions): Action[] {
+  if (m.appConfig.containersOff) return [["Use containers (look for a runtime again)", act.useContainers]];
+  const out: Action[] = [];
+  if (!w.config.isImage) out.push(["Use the published image", () => act.useImage(w), w]);
+  out.push(["Use a checkout…", () => act.chooseRepo(w), w]);
+  if (!w.config.isDirect) out.push(["Run without a container…", () => act.useDirect(w), w]);
   return out;
 }
 
-function workerActions(m: Model, w: Worker, act: MenuActions, item: (l: string, r?: () => void) => TrayItem): TrayItem[] {
+function workerActions(m: Model, w: Worker, act: MenuActions, item: (l: string, r?: () => void, w?: Worker) => TrayItem): TrayItem[] {
   const sep: TrayItem = { separator: true };
+  const its = (label: string, run?: () => void) => item(label, run, w);
   switch (w.screen) {
     case "running":
     case "pair":
     case "paired":
       return [
-        ...browserItems(w, m.macBrowser(w)).map((label) => item(label, () => act.openBrowser(w))),
-        item(w.paused ? "Resume" : "Pause", () => act.togglePaused(w)),
-        item("Show requests…", () => act.show(w)),
+        ...browserItems(w, m.macBrowser(w)).map((label) => its(label, () => act.openBrowser(w))),
+        its(w.paused ? "Resume" : "Pause", () => act.togglePaused(w)),
+        its("Show requests…", () => act.show(w)),
         sep,
-        item("Stop", () => act.stop(w)),
+        its("Stop", () => act.stop(w)),
       ];
     case "stopping":
-      return [item("Stopping…")];
+      return [its("Stopping…")];
     case "starting":
-      return [item("Starting…"), item("Stop", () => act.stop(w))];
+      return [its("Starting…"), its("Stop", () => act.stop(w))];
     case "stopped":
-      return [item("Start", () => act.start(w))];
+      return [its("Start", () => act.start(w))];
   }
-  return [item("Set up…", () => act.show(w))];
+  return [its("Set up…", () => act.show(w))];
 }
 
 /** The browser's item for a running worker: the container's browser
@@ -151,33 +164,38 @@ export function browserItems(w: Worker, onMac = false): string[] {
   return w.browserLaunch === "starting" ? ["Open browser"] : [];
 }
 
-/** One entry of the window's own menu (label and action), or a separator. */
-export type Entry = [string, () => void] | null;
+/** One entry of the window's own menu: its label, its action, and the worker it acts on (none: the whole app's). */
+export type Action = [string, () => void, Worker?];
+/** An entry, or a separator. */
+export type Entry = Action | null;
 
 function browserEntries(m: Model, act: MenuActions): Entry[] {
   const w = m.current;
   const running = w.screen === "running" || w.screen === "pair" || w.screen === "paired";
-  return running ? browserItems(w, m.macBrowser(w)).map((label) => [label, () => act.openBrowser(w)] as Entry) : [];
+  return running ? browserItems(w, m.macBrowser(w)).map((label): Entry => [label, () => act.openBrowser(w), w]) : [];
 }
 
 function toolEntries(m: Model, act: MenuActions): Entry[] {
+  const w = m.current;
   return [
-    ["Show app log", act.showLog], [m.current.config.isDirect ? "Show worker log" : "Show container log", act.containerLog],
-    ["Open worker folder", act.openFolder], ...(m.appConfig.containersOff ? [] : [["Remove stale containers…", act.removeContainers] as Entry]), null,
+    ["Show app log", act.showLog], [w.config.isDirect ? "Show worker log" : "Show container log", () => act.containerLog(w), w],
+    ["Open worker folder", () => act.openFolder(w), w], ...(m.appConfig.containersOff ? [] : [["Remove stale containers…", act.removeContainers] as Entry]), null,
     ["Add a worker…", act.addWorker], ["Add an agent's folder…", act.addAgentHome], null,
-    ...modeEntries(m.current, m.appConfig.containersOff, act),
+    ...modeEntries(m, w, act),
   ];
 }
 
-/** The ⋯ menu in the window (Linux and Windows): the browser, settings, the logs and folders, the modes, Quit. */
+/** The ⋯ menu in the window (Linux and Windows): the browser, settings, the logs and folders, the modes, Quit.
+ * A worker's entry acts on the worker shown when it opened, while the window still has it. */
 export function moreMenu(m: Model, act: MenuActions): Entry[] {
   const browser = browserEntries(m, act);
-  return [
+  const entries: Entry[] = [
     ...browser, ...(browser.length ? [null] : []),
     ["Settings…", act.settings], ["Check for updates…", act.checkUpdates], null,
     ...toolEntries(m, act), null,
     ["Quit myous", act.quit],
   ];
+  return entries.map((e) => (e?.[2] ? [e[0], onWorker(m, e[2], e[1]), e[2]] : e));
 }
 
 /** A Mac has no ⋯: the same entries are the app menu's, Settings… first with ⌘, as on every Mac
@@ -190,11 +208,14 @@ export function appMenu(m: Model, act: MenuActions): { items: TrayItem[]; action
     ...browser, ...(browser.length ? [null] : []),
     ...toolEntries(m, act),
   ];
-  const items = entries.map((e, i): TrayItem => {
+  // Named, as the tray's entries are (see buildMenu), not numbered: entries come and go (the browser's),
+  // which would move every later number onto another entry. A worker's names its folder too.
+  const items = entries.map((e): TrayItem => {
     if (!e) return { separator: true };
-    const id = `app${i}`;
-    actions.set(id, e[1]);
-    return { id, label: e[0], enabled: true, ...(e[0] === "Settings…" ? { accelerator: "CmdOrCtrl+," } : {}) };
+    const [label, run, w] = e;
+    const id = w ? `app:w:${w.home}:${label}` : `app:${label}`;
+    actions.set(id, w ? onWorker(m, w, run) : run);
+    return { id, label, enabled: true, ...(label === "Settings…" ? { accelerator: "CmdOrCtrl+," } : {}) };
   });
   return { items, actions };
 }

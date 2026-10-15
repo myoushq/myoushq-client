@@ -83,6 +83,16 @@ export function isDefaultDescription(text: string, name: string, direct: boolean
   return t === defaultDescription(name, direct, false) || t === defaultDescription(name, direct, true);
 }
 
+/** The description once the name changes from `from` to `to`: a default for the old name becomes
+ * the same default for the new one (with or without the browser, as it was); the owner's own words
+ * stay as they are. */
+export function renamedDescription(text: string, from: string, to: string, direct: boolean): string {
+  for (const browser of [false, true]) {
+    if (text.trim() === defaultDescription(from, direct, browser)) return defaultDescription(to, direct, browser);
+  }
+  return text;
+}
+
 /** What the owner pastes to the agent: the worker's own message when it
  * wrote one, else the same sentence built here. */
 export function pairingMessage(invite: Record<string, unknown> | null, name: string): string {
@@ -105,6 +115,12 @@ export function num(v: unknown): number {
 
 export function dict(v: unknown): Record<string, unknown> | null {
   return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
+}
+
+/** A notification's body for Linux, whose notification servers (GNOME's among them) read it as
+ * markup: &, < and > as entities, so an agent's command shows as it is. */
+export function escapeMarkup(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
 /** Whether `latest` ("v0.6.2") is newer than `mine`; a dev build never is. */

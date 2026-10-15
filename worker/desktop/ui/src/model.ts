@@ -11,6 +11,9 @@ type Json = Record<string, unknown>;
 
 /** How long worker.json may go unwritten before the worker counts as stopped. */
 export const STALE_AFTER = 15;
+/** A worker that ran and went quiet without a Stop counts as stopped once that holds from one look
+ * to another at least this many seconds later: one look isn't news (a late write, a slow read). */
+export const GONE_AFTER = 4;
 
 /** What the backend reads from one worker folder. */
 export interface WorkerFiles {
@@ -286,6 +289,8 @@ export class Worker {
   launchedAt = 0;
   stoppedAt = 0;
   stopDoneAt = 0;
+  /** When a Stop it outlived was pressed (still running 90 s on; 0 none): "didn't stop" until 120 s after. */
+  stopFailedAt = 0;
   stopping = false;
   wasRunning = false;
   stoppedByUs = false;
@@ -302,11 +307,26 @@ export class Worker {
   attentionButton = "";
   /** Evaluated at least once: a line that appears later is news, one there from the start is not. */
   evaluated = false;
+  /** When the app last looked at it (Model.evaluate). */
+  lookedAt = 0;
+  /** When the app looked again after a break longer than STALE_AFTER (the computer slept, or the app
+   * was suspended) while the worker ran and wrote: it couldn't write while the computer slept, so it
+   * has STALE_AFTER seconds from then, as after a write. */
+  wokeAt = 0;
+  /** When it first looked stopped after running, without a Stop (0 not); see GONE_AFTER. */
+  goneSince = 0;
+  /** Its app.json writes in flight, and Model.writesEnded when the last one ended (see Model.load). */
+  writesInFlight = 0;
+  wroteAt = 0;
 
   constructor(public home: string, public folder: string, public isDefault: boolean, public project: string) {}
 
-  apply(f: WorkerFiles) {
-    this.config = new Config(f.config ?? {});
+  /** Takes what was read. app.json goes into the same Config, so a reference to it (Settings, the
+   * app's settings in the first worker's) stays this worker's; and not while the app writes it, or
+   * when the read began before the last write ended (`readFrom`, see Model.load): what the app holds
+   * then is newer than what was read. */
+  apply(f: WorkerFiles, readFrom = Infinity) {
+    if (this.writesInFlight === 0 && this.wroteAt <= readFrom) this.config.data = f.config ?? {};
     this.status = f.status;
     this.statusModified = f.status_modified;
     this.requests = f.requests;
@@ -329,16 +349,23 @@ export class Worker {
   get contacts() { return num(this.status?.contacts); }
   /** The version the worker reports in worker.json ("" from a worker older than that). */
   get version() { return str(this.status?.version); }
-  fresh(now: number) { return this.statusModified > 0 && now - this.statusModified < STALE_AFTER; }
+  fresh(now: number) { return this.statusModified > 0 && now - Math.max(this.statusModified, this.wokeAt) < STALE_AFTER; }
+
+  /** Stop pressed, or its container about to be removed: Stopping until it is gone, and then
+   * Stopped, not "stopped on its own". */
+  beginStop(now: number) {
+    this.stopping = true;
+    this.stoppedAt = now;
+    this.stopDoneAt = 0;
+    this.launchedAt = 0;
+    this.launchStage = "";
+  }
 
   /** The owner removed its running container (Remove stale containers): it is gone as after Stop,
    * so it shows Stopped with Start, not "stopped on its own". */
   removedByOwner(now: number) {
-    this.stopping = true;
-    this.stoppedAt = now;
+    this.beginStop(now);
     this.stopDoneAt = now;
-    this.launchedAt = 0;
-    this.launchStage = "";
   }
 
   /** The one word the menu and the header show. */
@@ -460,7 +487,22 @@ export class Model {
   windowVisible: () => boolean = () => false;
   writeConfig: (w: Worker) => void = () => {};
 
+  /** app.json writes ended so far (each worker's wroteAt is one of these). */
+  writesEnded = 0;
+
   constructor(public version: string, public productName = "myous") {}
+
+  /** One write of a worker's app.json (`write` does it): while it runs and after it ends, a read that
+   * began earlier doesn't replace what the app holds (see load). */
+  async writing(w: Worker, write: () => Promise<void>) {
+    w.writesInFlight++;
+    try {
+      await write();
+    } finally {
+      w.writesInFlight--;
+      w.wroteAt = ++this.writesEnded;
+    }
+  }
 
   /** The runtime's last definite state (engine.rs: ok, missing, stopped, permission, nocompose, error). */
   get runtimeState() { return this.checks.runtime.state; }
@@ -534,12 +576,14 @@ export class Model {
     return a;
   }
 
-  /** Takes what the backend read: new folders join, known ones keep their launch state. */
-  load(files: WorkerFiles[]) {
+  /** Takes what the backend read: new folders join, known ones keep their launch state. `readFrom`
+   * is writesEnded when the read began: a worker's app.json written after that (or being written)
+   * stays as the app holds it, as the read may be older than the write. */
+  load(files: WorkerFiles[], readFrom = Infinity) {
     const known = new Map(this.workers.map((w) => [w.home, w]));
     this.workers = files.map((f) => {
       const w = known.get(f.home) ?? new Worker(f.home, f.folder, f.is_default, f.project);
-      w.apply(f);
+      w.apply(f, readFrom);
       return w;
     });
     if (!this.current || !this.workers.includes(this.current)) this.current = this.workers[0];
@@ -562,8 +606,18 @@ export class Model {
   /** Decides one worker's screen and attention line from its files; notifications for what changed. */
   evaluate(w: Worker) {
     const now = this.now();
+    // A break in the app's own looking: a worker that ran and wrote until then may have been asleep
+    // with the computer, so worker.json's age says nothing yet (see wokeAt). Not one that was quiet
+    // already: a worker that died while the app's timer was slowed is found on the next look.
+    if (w.lookedAt !== 0 && now - w.lookedAt > STALE_AFTER && w.alive && w.lookedAt - w.statusModified < STALE_AFTER) w.wokeAt = now;
+    w.lookedAt = now;
     const phase = w.phase;
     let fresh = w.fresh(now);
+    // A worker that ran and went quiet without a Stop: running until that holds GONE_AFTER seconds on.
+    if (!fresh && w.alive && !w.stopping) {
+      if (w.goneSince === 0) w.goneSince = now;
+      if (now - w.goneSince < GONE_AFTER) fresh = true;
+    } else w.goneSince = 0;
     // Stop finished and the worker has written nothing since: it is gone, until the next start.
     if (fresh && w.stopDoneAt !== 0 && w.statusModified < w.stopDoneAt) fresh = false;
     const alive = fresh && (phase === "running" || phase === "paused" || phase === "");
@@ -575,8 +629,10 @@ export class Model {
     if (alive && !w.stopping) w.launchedAt = 0;
     if (alive && stoppingFor > 90) {
       w.stopping = false;
+      w.stopFailedAt = w.stoppedAt;
       w.stoppedAt = 0;
     }
+    if (!alive) w.stopFailedAt = 0;
     // An install from before names were a setting: take the worker's.
     if (!w.config.name && str(w.status?.alias) && !this.fake) {
       w.config.name = str(w.status?.alias);
@@ -598,7 +654,7 @@ export class Model {
       if (w.contacts === 0 && str(invite?.code)) screen = "pair";
       else if (paired && num(paired.at) > w.config.seenPairedAt) screen = "paired";
       else screen = "running";
-      if (w.stoppedAt !== 0 && now - w.stoppedAt > 90 && now - w.stoppedAt < 120) {
+      if (w.stopFailedAt !== 0 && now - w.stopFailedAt < 120) {
         attention = "The worker didn't stop. The log says why.";
         button = "Show log";
       }

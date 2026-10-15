@@ -3,12 +3,12 @@
 // decides each worker's screen again (the model), then draws the current
 // one. The same screens and words as myous for Mac.
 
-import { Backend, makeBackend, PreviewBackend, TrayItem } from "./backend.js";
+import { Backend, makeBackend, PreviewBackend, Removal, TrayItem } from "./backend.js";
 import { applyFake } from "./fake.js";
 import { appMenu, buildMenu, MenuActions, moreMenu } from "./menu.js";
 import { Advance, Agent, agentContacts, agentName, classifyContainers, Container, isUrgent, Kind, MAC_BROWSER_LINKS, Model, notifyKinds, RuntimeStep, shortNpub, Staleness, staleChoice, verb, what, Worker } from "./model.js";
 import { attentionCard, browserAdvance, browserCard, BrowserRow, browserRow, checkAdvance, CheckName, checklist, hubLine, installLine, macBrowserHint, macBrowserName, macBrowserQuestion, Row, runtimeCard } from "./setup.js";
-import { byteCount, capitalize, clockTime, countdown, dayLabel, defaultDescription, dict, isDefaultDescription, newer, num, pairingMessage, plural, setHostOs, str, timeAgo } from "./text.js";
+import { byteCount, capitalize, clockTime, countdown, dayLabel, defaultDescription, dict, escapeMarkup, isDefaultDescription, newer, num, pairingMessage, plural, renamedDescription, setHostOs, str, timeAgo } from "./text.js";
 
 const INVITE_SECONDS = 900;
 const AGENTS_EVERY = 15; // ticks between reads of the local agents
@@ -125,7 +125,11 @@ function dialog(o: DialogOpts): Promise<{ value: string; input: string } | null>
       btn.onclick = () => done({ value: b.value, input: input?.value ?? "" });
       row.append(btn);
     }
-    d.onclose = () => done(null);
+    // Escape closes it. The close event of a dialog this one replaced comes after this one opened
+    // (closing queues it): it isn't this one's, which is open.
+    d.onclose = () => {
+      if (!d.open) done(null);
+    };
     input?.addEventListener("keydown", (e) => { if (e.key === "Enter") done({ value: buttons[buttons.length - 1].value, input: input!.value }); });
     d.showModal();
     (input ?? row.lastElementChild as HTMLElement)?.focus();
@@ -158,7 +162,7 @@ function composeEnv(w: Worker): Record<string, string> {
 async function saveConfig(w: Worker) {
   if (m.fake) return;
   try {
-    await be.writeConfig(w.home, w.config.data);
+    await m.writing(w, () => be.writeConfig(w.home, w.config.data));
   } catch (e) {
     appendLog(`could not save settings: ${e}`);
   }
@@ -209,11 +213,7 @@ async function start(w: Worker) {
 
 async function stop(w: Worker) {
   if (m.fake) return;
-  w.stopping = true;
-  w.stoppedAt = m.now();
-  w.stopDoneAt = 0;
-  w.launchedAt = 0;
-  w.launchStage = "";
+  w.beginStop(m.now());
   if (w.config.isDirect) {
     // Ours: its exit arrives as an event. Started outside this app: ended by the pid in
     // worker.json while that is still the worker, then a "stop" event (Stopping until then).
@@ -291,6 +291,9 @@ async function keepMacBrowser(w: Worker) {
   } finally {
     asked.busy = false;
   }
+  // Stopped while its browser started (Stop ends the browser and forgets the worker here, before
+  // this one was up): the browser that just started ends too.
+  if (!macBrowserAsked.has(w.home) || w.stopping) void be.browserStop(w.home);
 }
 
 /** A Mac: each container worker's browser on the Mac lives and dies with the worker (myous for Mac's
@@ -1084,22 +1087,28 @@ function trayIcon(kind: Kind, dot: boolean): string {
 
 const menuActions: MenuActions = {
   show: (w) => void showWindow(w),
-  showAgent: (i) => { m.selectedAgent = (m.agents ?? [])[i] ?? null; void showWindow(); },
+  showAgent: (a) => {
+    // The agent as the window has it now, by its folder; none once it is gone.
+    const agent = (m.agents ?? []).find((x) => x.home === a.home);
+    if (!agent) return;
+    m.selectedAgent = agent;
+    void showWindow();
+  },
   openBrowser: (w) => void openBrowserView(w),
   togglePaused: (w) => void togglePaused(w),
   start: (w) => void start(w),
   stop: (w) => void stop(w),
-  removeWorker: (w) => { m.current = w; void removeWorker(); },
+  removeWorker: (w) => { m.current = w; void removeWorker(w); },
   addWorker: () => void addWorker(),
   settings: () => void openSettings(),
   checkUpdates: () => void checkForUpdates(true),
-  useImage: () => void useImage(),
-  chooseRepo: () => void chooseRepo(),
-  useDirect: () => void useDirect(),
+  useImage: (w) => void useImage(w),
+  chooseRepo: (w) => void chooseRepo(w),
+  useDirect: (w) => void useDirect(w),
   useContainers: () => void useContainers(),
   showLog: () => void showLog(),
-  containerLog: () => void containerLog(),
-  openFolder: () => void be.openPath(m.current.home),
+  containerLog: (w) => void containerLog(w),
+  openFolder: (w) => void be.openPath(w.home),
   removeContainers: () => void removeContainers(),
   addAgentHome: () => void addAgentHome(),
   quit: () => void be.quit(),
@@ -1186,13 +1195,13 @@ async function showLog() {
   await dialog({ title: "myous log", pre: logLines.join("\n") || "Nothing yet.", liveLog: true });
 }
 
-async function containerLog() {
-  if (m.current.config.isDirect) {
-    const text = await be.workerLog(m.current.home);
+async function containerLog(w: Worker = m.current) {
+  if (w.config.isDirect) {
+    const text = await be.workerLog(w.home);
     await dialog({ title: "Worker log", pre: text || "Nothing yet." });
     return;
   }
-  const text = await be.containerLogs(composePath(m.current), m.current.project);
+  const text = await be.containerLogs(composePath(w), w.project);
   await dialog({ title: "Container log", pre: text || "No output (the worker may not be running)." });
 }
 
@@ -1250,15 +1259,30 @@ async function removeContainers() {
   // A made-up state removes nothing, except in a plain browser's preview, whose backend only records.
   if (m.fake && !be.preview) return;
   const { stopped, running } = choice();
-  const r = await be.removeContainers(stopped, running);
+  // This app's workers whose running containers go stop from now, as with Stop: the runtime stops
+  // each container (ten seconds or so) before removing it, and one that goes quiet meanwhile is
+  // stopped by the owner, not on its own.
+  const own = list.filter((e) => e.worker && running.includes(e.container));
+  for (const e of own) e.worker!.beginStop(m.now());
+  let r: Removal;
+  try {
+    r = await be.removeContainers(stopped, running);
+  } catch (e) {
+    r = { log: `couldn't remove the containers: ${e}`, removed: [] };
+  }
   appendLog(r.log);
-  // This app's worker whose running container went is stopped by the owner, not on its own.
-  for (const e of list) if (e.worker && e.container.running && r.removed.includes(e.container.id)) e.worker.removedByOwner(m.now());
+  for (const e of own) {
+    if (r.removed.includes(e.container.id)) e.worker!.removedByOwner(m.now());
+    else {
+      // Still there: running as before.
+      e.worker!.stopping = false;
+      e.worker!.stoppedAt = 0;
+    }
+  }
   void refresh();
 }
 
-async function useImage() {
-  const w = m.current;
+async function useImage(w: Worker = m.current) {
   if (w.alive && w.config.isDirect) await stop(w);
   w.config.mode = "image";
   await saveConfig(w);
@@ -1267,8 +1291,7 @@ async function useImage() {
 }
 
 /** One worker without a container (⋯ menu), after a warning. */
-async function useDirect() {
-  const w = m.current;
+async function useDirect(w: Worker = m.current) {
   if (!(await confirmBox("Run without a container?", `Commands your agent sends will run on ${sys} as you, with everything you can reach, and only the review stands in the way (it starts at "Ask me before anything that changes things"). Its browser, if you want one, runs on ${sys} too and needs Python. A running worker restarts.`, "Run without a container", true))) return;
   await goDirect([w]);
   appendLog("mode: no container");
@@ -1380,14 +1403,13 @@ function retryCheck(name: CheckName) {
   void refresh();
 }
 
-async function chooseRepo() {
+async function chooseRepo(w: Worker = m.current) {
   const path = await be.pickFolder();
   if (!path) return;
   if (!(await be.fileExists(`${path}${sep}worker${sep}compose.yml`))) {
     await alertBox("Not a checkout", "That folder has no worker/compose.yml. Pick the myoushq-client checkout.");
     return;
   }
-  const w = m.current;
   if (w.alive && w.config.isDirect) await stop(w);
   w.config.repo = path;
   w.config.mode = "docker";
@@ -1399,7 +1421,8 @@ async function chooseRepo() {
 async function addWorker() {
   if (m.fake) return;
   const home = await be.newWorker();
-  m.load(await be.readWorkers());
+  const from = m.writesEnded;
+  m.load(await be.readWorkers(), from);
   const w = m.workers.find((x) => x.home === home);
   if (w) {
     m.current = w;
@@ -1410,8 +1433,7 @@ async function addWorker() {
   await showWindow();
 }
 
-async function removeWorker() {
-  const w = m.current;
+async function removeWorker(w: Worker = m.current) {
   if (w.isDefault || m.fake) return;
   if (w.isSetUp && !(await confirmBox(`Remove ${w.name}?`, "Its folder with its key, logins and files is moved to the trash, and the agent paired with it loses it.", "Remove", true))) return;
   await stop(w);
@@ -1421,7 +1443,8 @@ async function removeWorker() {
     } catch (e) {
       appendLog(`could not remove ${w.home}: ${e}`);
     }
-    m.current = m.workers[0];
+    // The first worker shows instead, unless the owner went to another meanwhile.
+    if (m.current === w) m.current = m.workers[0];
     void refresh();
   }, 3000);
 }
@@ -1497,10 +1520,21 @@ async function checkForUpdates(manual: boolean) {
 const REVIEW: [string, string][] = [["trust", "Trust my agent: everything it asks runs"], ["changes", "Ask me before anything that changes things"], ["all", "Ask me before every request"]];
 
 async function openSettings() {
-  const w = m.current, app = m.appConfig;
+  // The worker it is for, and the app's settings as they are when it opens (Save takes them as they are then).
+  const w = m.current, shown = m.appConfig;
   const body = el("div", { className: "settings" });
   const name = el<HTMLInputElement>("input", { value: w.config.name });
   const desc = el<HTMLTextAreaElement>("textarea", { rows: 4, value: w.config.effectiveDescription });
+  // The default description follows the name as it is typed (an empty name keeps the old one);
+  // the owner's own words stay.
+  const shownName = w.config.name;
+  let prevName = shownName;
+  name.oninput = () => {
+    const to = name.value.trim() || shownName;
+    const d = renamedDescription(desc.value, prevName, to, w.config.isDirect);
+    if (d !== desc.value) desc.value = d;
+    prevName = to;
+  };
   const review = el<HTMLSelectElement>("select");
   review.append(...REVIEW.map(([v, t]) => el("option", { value: v, text: t, selected: v === w.review })));
   const check = (label: string, on: boolean, cls = "") => {
@@ -1508,15 +1542,15 @@ async function openSettings() {
     return [el("label", { className: `check ${cls}` }, box, label), box] as const;
   };
   const mac = info.os === "macos";
-  const [dockRow, dock] = check("Show an icon in the Dock as well as the menu bar", app.dock);
+  const [dockRow, dock] = check("Show an icon in the Dock as well as the menu bar", shown.dock);
   const [loginRow, login] = check("Open myous at login", m.fake ? false : await be.autostartGet());
-  const [notifyRow, notify] = check("Notify me", app.notifications);
-  const kinds = notifyKinds.map(([k, label]) => check(label, app.notifies(k), "indent"));
+  const [notifyRow, notify] = check("Notify me", shown.notifications);
+  const kinds = notifyKinds.map(([k, label]) => check(label, shown.notifies(k), "indent"));
   const sync = () => kinds.forEach(([, b]) => (b.disabled = !notify.checked));
   notify.onchange = sync;
   sync();
-  const [updateRow, update] = check("Check for a new version daily", app.autoUpdate);
-  const [agentsRow, agents] = check(`Show the agents on ${sys} (their myous folders)`, app.showAgents);
+  const [updateRow, update] = check("Check for a new version daily", shown.autoUpdate);
+  const [agentsRow, agents] = check(`Show the agents on ${sys} (their myous folders)`, shown.showAgents);
   const [browserCheckEl, browserBox] = check(`A worker browser on ${sys} (it needs Python; it starts with the worker)`, w.config.hostBrowser);
   const browserRowEl = el("div", {}, browserCheckEl);
   if (w.alive) browserRowEl.append(el("p", { className: "hint indent", textContent: "A change takes effect at the worker's next start; a browser that is open stays until the worker stops." }));
@@ -1545,28 +1579,34 @@ async function openSettings() {
   );
   const r = await dialog({ title: "myous settings", body, buttons: [{ label: "Cancel", value: "no" }, { label: "Save", value: "yes", primary: true }] });
   if (r?.value !== "yes") return;
-  if (name.value.trim()) w.config.name = name.value.trim();
-  const d = desc.value.trim();
-  w.config.description = isDefaultDescription(d, w.config.name, w.config.isDirect) ? "" : d;
+  // The window rereads the folders every two seconds while the dialog is open: what is saved goes
+  // into the workers as they are now (the worker may even be gone), each file written once.
+  const app = m.appConfig, kept = m.workers.includes(w);
   let switchBrowser = false;
-  if (macWhere) {
-    const id = where.options[whereBox.selectedIndex]?.id ?? "";
-    const which = id && !m.macBrowsers?.why ? "mac" : "container";
-    if (which !== (w.config.macBrowser ? "mac" : "container") || (id && id !== w.config.browserApp)) {
-      w.config.data.browser = which;
-      if (id) w.config.browserApp = id;
-      appendLog(`browser: ${which === "mac" ? `on this Mac, in ${macBrowserName(m, w)}` : "in the container"}`);
-      switchBrowser = w.screen === "running" || w.screen === "pair" || w.screen === "paired" || w.screen === "starting";
+  if (kept) {
+    if (name.value.trim()) w.config.name = name.value.trim();
+    // A default, for the new name or still for the old one, is kept as none: it follows the name.
+    const d = desc.value.trim(), direct = w.config.isDirect;
+    w.config.description = isDefaultDescription(d, w.config.name, direct) || isDefaultDescription(d, shownName, direct) ? "" : d;
+    if (macWhere) {
+      const id = where.options[whereBox.selectedIndex]?.id ?? "";
+      const which = id && !m.macBrowsers?.why ? "mac" : "container";
+      if (which !== (w.config.macBrowser ? "mac" : "container") || (id && id !== w.config.browserApp)) {
+        w.config.data.browser = which;
+        if (id) w.config.browserApp = id;
+        appendLog(`browser: ${which === "mac" ? `on this Mac, in ${macBrowserName(m, w)}` : "in the container"}`);
+        switchBrowser = w.screen === "running" || w.screen === "pair" || w.screen === "paired" || w.screen === "starting";
+      }
+      if (hiddenBox.checked !== w.config.browserHidden) {
+        w.config.browserHidden = hiddenBox.checked;
+        if (!m.fake || be.preview) void be.macBrowserHidden(w.home, hiddenBox.checked);
+      }
     }
-    if (hiddenBox.checked !== w.config.browserHidden) {
-      w.config.browserHidden = hiddenBox.checked;
-      if (!m.fake || be.preview) void be.macBrowserHidden(w.home, hiddenBox.checked);
+    if (w.config.isDirect && browserBox.checked === w.config.browserOff) {
+      w.config.browserOff = !browserBox.checked;
+      appendLog(w.config.browserOff ? `${w.name}: no worker browser` : `${w.name}: worker browser on ${sys}`);
+      if (!w.config.browserOff) void checkBrowser(true);
     }
-  }
-  if (w.config.isDirect && browserBox.checked === w.config.browserOff) {
-    w.config.browserOff = !browserBox.checked;
-    appendLog(w.config.browserOff ? `${w.name}: no worker browser` : `${w.name}: worker browser on ${sys}`);
-    if (!w.config.browserOff) void checkBrowser(true);
   }
   app.notifications = notify.checked;
   notifyKinds.forEach(([k], i) => app.setNotifies(k, kinds[i][1].checked));
@@ -1577,9 +1617,10 @@ async function openSettings() {
   app.showAgents = agents.checked;
   if (dockChanged) void be.setDock(app.dock).catch((e) => appendLog(`Dock icon: ${e}`));
   if (m.fake) return render();
-  await saveConfig(w);
-  if (app !== w.config) await saveConfig(m.workers[0]);
-  if (review.value !== w.review) {
+  // The worker's app.json and the first worker's (the app's settings), each once, both at once.
+  const first = m.workers[0];
+  await Promise.all([...(kept ? [saveConfig(w)] : []), ...(first !== w ? [saveConfig(first)] : [])]);
+  if (kept && review.value !== w.review) {
     await be.setReview(w.home, review.value);
     appendLog(`review level: ${review.value}`);
   }
@@ -1592,7 +1633,7 @@ async function openSettings() {
   }
   const restart = switchBrowser && await dialog({ title: "Restart the worker to switch its browser?", text: "The browser choice applies when the worker starts. Each browser keeps its own logins, so sites may ask you to log in again.",
     buttons: [{ label: "Later", value: "no" }, { label: "Restart now", value: "yes", primary: true }] });
-  if (restart && restart.value === "yes") {
+  if (restart && restart.value === "yes" && m.workers.includes(w)) {
     w.restartAfterStop = true;
     await stop(w);
   }
@@ -1649,7 +1690,8 @@ async function refresh() {
   try {
     if (!m.fake) {
       m.ticks++;
-      m.load(await be.readWorkers());
+      const from = m.writesEnded;
+      m.load(await be.readWorkers(), from);
       // While a Set up card is up the runtime is asked every tick (2 s), so installing or starting one shows at once.
       const setupUp = m.current.screen === "setup" || m.current.screen === "noruntime";
       if (m.current.config.usesDocker && !m.appConfig.containersOff && (setupUp || m.ticks % 5 === 0)) void probeRuntime();
@@ -1745,13 +1787,16 @@ function wire() {
   $("pair-which").onchange = pairWhichChanged;
   $("pair-local").onclick = () => void acceptAsLocalAgent();
   $("paired-continue").onclick = async () => {
-    m.current.config.seenPairedAt = m.now();
-    await saveConfig(m.current);
+    const w = m.current;
+    w.config.seenPairedAt = m.now();
+    await saveConfig(w);
     void refresh();
   };
   $("unpair").onclick = async () => {
-    if (!(await confirmBox("Unpair this worker?", "The agent loses access, and a new pairing code appears. Use this if the verification numbers differ.", "Unpair", true))) return;
+    // The worker shown now: by the owner's answer the window may show another (one that came to need attention).
     const w = m.current;
+    if (!(await confirmBox("Unpair this worker?", "The agent loses access, and a new pairing code appears. Use this if the verification numbers differ.", "Unpair", true))) return;
+    if (!m.workers.includes(w)) return;
     if (!m.fake) await be.sendCommand(w.home, "unpair");
     w.config.seenPairedAt = m.now();
     await saveConfig(w);
@@ -1867,22 +1912,26 @@ async function main() {
   m = new Model(info.version, info.product_name);
   m.os = info.os;
   m.notify = (kind, title, body, ask) => {
-    const sent = be.notify(title, body, isUrgent(kind), ask ?? null);
+    // Linux: the body is read as markup there, and an agent's command may hold some.
+    const sent = be.notify(title, info.os === "linux" ? escapeMarkup(body) : body, isUrgent(kind), ask ?? null);
+    // A question's window shows the worker asking (its Allow and Refuse are there), while the window has it.
+    const asking = ask ? m.workers.find((w) => w.home === ask.home) : undefined;
+    const up = () => void showWindow(asking && m.workers.includes(asking) ? asking : undefined);
     if (isUrgent(kind) && info.os === "macos") {
       // A Mac answers a question from its notification (Allow, Refuse); the window comes up only when that can't.
       sent.then(
         (buttons) => {
-          if (!buttons) void showWindow();
+          if (!buttons) up();
         },
         (e) => {
           appendLog(`notification: ${e}`);
-          void showWindow();
+          up();
         },
       );
       return;
     }
     void sent.catch((e) => appendLog(`notification: ${e}`));
-    if (isUrgent(kind)) void showWindow();
+    if (isUrgent(kind)) up();
   };
   m.start = (w) => void start(w);
   // Needs attention is for the owner to act on: the window comes up and to the front (it may be closed,
