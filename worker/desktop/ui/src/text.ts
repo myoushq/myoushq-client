@@ -107,6 +107,12 @@ export function dict(v: unknown): Record<string, unknown> | null {
   return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
 }
 
+/** A notification's body for Linux, whose notification servers (GNOME's among them) read it as
+ * markup: &, < and > as entities, so an agent's command shows as it is. */
+export function escapeMarkup(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
 /** Whether `latest` ("v0.6.2") is newer than `mine`; a dev build never is. */
 export function newer(latest: string, mine: string): boolean {
   if (!mine || mine === "dev" || !latest) return false;

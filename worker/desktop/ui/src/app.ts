@@ -8,7 +8,7 @@ import { applyFake } from "./fake.js";
 import { appMenu, buildMenu, MenuActions, moreMenu } from "./menu.js";
 import { Advance, Agent, agentContacts, agentName, classifyContainers, Container, isUrgent, Kind, MAC_BROWSER_LINKS, Model, notifyKinds, RuntimeStep, shortNpub, Staleness, staleChoice, verb, what, Worker } from "./model.js";
 import { attentionCard, browserAdvance, browserCard, BrowserRow, browserRow, checkAdvance, CheckName, checklist, hubLine, installLine, macBrowserHint, macBrowserName, macBrowserQuestion, Row, runtimeCard } from "./setup.js";
-import { byteCount, capitalize, clockTime, countdown, dayLabel, defaultDescription, dict, isDefaultDescription, newer, num, pairingMessage, plural, setHostOs, str, timeAgo } from "./text.js";
+import { byteCount, capitalize, clockTime, countdown, dayLabel, defaultDescription, dict, escapeMarkup, isDefaultDescription, newer, num, pairingMessage, plural, setHostOs, str, timeAgo } from "./text.js";
 
 const INVITE_SECONDS = 900;
 const AGENTS_EVERY = 15; // ticks between reads of the local agents
@@ -1901,22 +1901,24 @@ async function main() {
   m = new Model(info.version, info.product_name);
   m.os = info.os;
   m.notify = (kind, title, body, ask) => {
-    const sent = be.notify(title, body, isUrgent(kind), ask ?? null);
+    // Linux: the body is read as markup there, and an agent's command may hold some.
+    const sent = be.notify(title, info.os === "linux" ? escapeMarkup(body) : body, isUrgent(kind), ask ?? null);
+    const up = () => void showWindow();
     if (isUrgent(kind) && info.os === "macos") {
       // A Mac answers a question from its notification (Allow, Refuse); the window comes up only when that can't.
       sent.then(
         (buttons) => {
-          if (!buttons) void showWindow();
+          if (!buttons) up();
         },
         (e) => {
           appendLog(`notification: ${e}`);
-          void showWindow();
+          up();
         },
       );
       return;
     }
     void sent.catch((e) => appendLog(`notification: ${e}`));
-    if (isUrgent(kind)) void showWindow();
+    if (isUrgent(kind)) up();
   };
   m.start = (w) => void start(w);
   // Needs attention is for the owner to act on: the window comes up and to the front (it may be closed,

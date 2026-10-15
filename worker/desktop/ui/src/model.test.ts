@@ -8,7 +8,7 @@ import { applyFake, fakeStates, previewBrowserCheck, previewContainers } from ".
 import { appMenu, browserItems, buildMenu, MenuActions, moreMenu } from "./menu.js";
 import { ADVANCE_SHOWS, Check, classifyContainers, Container, isAdvance, isUrgent, Model, Screen, staleChoice, UNKNOWN_AFTER, Worker, WorkerFiles } from "./model.js";
 import { advanceWords, attentionCard, browserAdvance, browserCard, browserRow, checkAdvance, checklist, hubHost, hubLine, installLine, macBrowserHint, macBrowserQuestion, runtimeCard } from "./setup.js";
-import { byteCount, countdown, dayLabel, defaultDescription, isDefaultDescription, newer, pairingMessage, plural, setHostOs, timeAgo } from "./text.js";
+import { byteCount, countdown, dayLabel, defaultDescription, escapeMarkup, isDefaultDescription, newer, pairingMessage, plural, setHostOs, timeAgo } from "./text.js";
 
 const T = 1_791_700_000;
 
@@ -627,6 +627,7 @@ test("a worker that dies while the app looks only now and then is still found", 
 });
 
 test("words and numbers", () => {
+  assert.equal(escapeMarkup("grep -c '<b>' a.html && echo \"x > 1\""), "grep -c '&lt;b&gt;' a.html &amp;&amp; echo \"x &gt; 1\"");
   assert.equal(timeAgo(T - 5, T), "5 s ago");
   assert.equal(timeAgo(T - 125, T), "2 min ago");
   assert.equal(timeAgo(T - 7200, T), "2 h ago");
