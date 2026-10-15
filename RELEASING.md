@@ -68,7 +68,8 @@ Current release key: `SHA256:PevPZ8ORUnoGw3hg9Febw7KjXxCUv+sMkAXzw+rjQuk` (ED255
    `worker/mac/notarize.sh` and `make-dmg.sh`; signed and notarized when
    the Apple secrets exist), myous for Linux (AppImage and `.deb`) and
    Windows (the installer), the Python wheel and sdist, the hash-pinned
-   lock and `SHA256SUMS`. Each registry waits only for its own language's
+   locks (`requirements-python.lock`, and `requirements-qr-python.lock`
+   with `qrcode` for QR images) and `SHA256SUMS`. Each registry waits only for its own language's
    tests and the audit (PyPI and the image for the Python tests, crates.io
    for Rust's, npm for TypeScript's), so a failure elsewhere doesn't stop
    it; the apps wait for the Python tests, and only the GitHub release

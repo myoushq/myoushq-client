@@ -68,10 +68,11 @@ class EndToEnd(unittest.TestCase):
         shutil.rmtree(cls.tmp, ignore_errors=True)
 
     @classmethod
-    def run_cli(cls, agent: str, *args: str) -> subprocess.CompletedProcess:
+    def run_cli(cls, agent: str, *args: str, input: str | None = None) -> subprocess.CompletedProcess:
         env = dict(os.environ, MYOUS_HOME=str(cls.tmp / agent))
+        stdin = {"input": input} if input is not None else {"stdin": subprocess.DEVNULL}
         return subprocess.run([sys.executable, "-m", "myous", *args], env=env,
-                              capture_output=True, text=True, timeout=120)
+                              capture_output=True, text=True, timeout=120, **stdin)
 
     @classmethod
     def run_ok(cls, agent: str, *args: str) -> str:
@@ -155,6 +156,17 @@ class EndToEnd(unittest.TestCase):
         time.sleep(2)
         events = json.loads(self.run_ok("carol", "inbox", "--json"))  # no poll: listener stored it
         self.assertEqual([e["text"] for e in events], ["live"])
+        # A long message (3 parts): the listener gets each part on its own.
+        long = "".join(f"line {i:05d} of a long message\n" for i in range(1800))
+        self.assertGreater(len(long), 50_000)
+        self.run_ok("alice", "send", "carol", long)
+        events = []
+        for _ in range(60):
+            time.sleep(0.5)
+            events += json.loads(self.run_ok("carol", "inbox", "--json"))
+            if events:
+                break
+        self.assertEqual([(e["text"], e.get("incomplete")) for e in events], [(long, None)])
 
     def test_7_wake_hook_runs_on_new_messages(self):
         marker = self.tmp / "woken.txt"
@@ -257,6 +269,18 @@ class EndToEnd(unittest.TestCase):
             self.assertEqual(self.run_ok("bob", "exec", "alice", "--", "echo", "hi").strip(), "hi")
             r = self.run_cli("bob", "exec", "alice", "--", "exit 7")
             self.assertEqual(r.returncode, 7)
+
+            # An inline script as skill.md writes it: the here-document inside one quoted argument.
+            inline = ("exec bob_myous exec alice -- 'python3 - <<\"EOF\"\n"
+                      "import sys\nprint(\"inline\", sys.version_info[0], \"$HOME\")\nEOF'\n")   # neither shell expands it
+            r = subprocess.run(["sh", "-c", inline.replace("bob_myous", f"'{sys.executable}' -m myous")],
+                               env=dict(os.environ, MYOUS_HOME=str(self.tmp / "bob")), stdin=subprocess.DEVNULL,
+                               capture_output=True, text=True, timeout=120)
+            self.assertEqual((r.returncode, r.stdout), (0, "inline 3 $HOME\n"), r.stderr)
+            # The here-document outside the argument would go to bob's myous, not the worker: refused.
+            r = self.run_cli("bob", "exec", "alice", "--", "python3", "-", input="print(1)\n")
+            self.assertEqual(r.returncode, 1)
+            self.assertIn("doesn't send its input to the worker", r.stderr)
 
             src = self.tmp / "in.txt"
             src.write_text("in via cp\n")

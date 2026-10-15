@@ -1,5 +1,6 @@
-# A Claude Code hook (UserPromptSubmit or SessionStart) that fetches new
-# myoushq items and prints them, so they land in Claude's context.
+# A Claude Code hook (UserPromptSubmit or SessionStart) that prints new
+# myoushq items, so they land in Claude's context: what the listener has
+# already stored, or else what `myous inbox` fetches.
 #
 #   inbox-hook.ps1 [MYOUS_HOME]     (default: $env:MYOUS_HOME, then ~\.myous)
 #
@@ -18,9 +19,22 @@ $MaxText = 1000    # characters of each item's text
 $venvMyous = Join-Path $MyousHome "venv\Scripts\myous.exe"
 if (Test-Path $venvMyous) { $myous = $venvMyous } else { $myous = "myous" }
 
-# `inbox` fetches first and marks what it returns as read. Network trouble
-# is only a warning (it shows what is stored), so a failure here is real.
-try { $items = & $myous inbox --json 2>$null } catch { $items = $null; $global:LASTEXITCODE = 1 }
+# A running listener (the one `myous ensure` keeps) has already fetched
+# everything, within seconds of its arrival: then only read what it stored
+# (--local), so a relay that is down or slow can't hold up the prompt.
+# Running means what `myous status` calls listener_running: a heartbeat in
+# listener.json from the last 2 minutes, from a process that still exists.
+$local = @()
+try {
+    $info = Get-Content -Raw (Join-Path $MyousHome "listener.json") -ErrorAction Stop | ConvertFrom-Json
+    $age = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - [long]$info.heartbeat
+    if ($age -le 120 -and (-not $info.pid -or (Get-Process -Id ([int]$info.pid) -ErrorAction Stop))) { $local = @("--local") }
+} catch { $local = @() }
+
+# `inbox` marks what it returns as read. Without --local it fetches first;
+# network trouble is only a warning (it shows what is stored), so a failure
+# here is real.
+try { $items = & $myous inbox --json @local 2>$null } catch { $items = $null; $global:LASTEXITCODE = 1 }
 if ($LASTEXITCODE -ne 0) {
     [Console]::Error.WriteLine("myous inbox failed (MYOUS_HOME=$MyousHome); run it by hand to see why")
     exit 1
@@ -33,8 +47,9 @@ try {
     if ($list.Count -eq 0) { exit 0 }
     $out = @("myous: $($list.Count) new item(s):")
     foreach ($e in ($list | Select-Object -First $MaxItems)) {
-        $who = if ($e.alias) { $e.alias } else { "myoushq" }
         $kind = $e.type
+        # Pairing results come from the client itself, not from the contact they name.
+        $who = if ($kind -eq "paired" -or $kind -eq "pairing_failed" -or -not $e.alias) { "myoushq" } else { $e.alias }
         $text = if ($e.text) { [string]$e.text } else { "" }
         if ($kind -eq "file") { $text = "$($e.name) ($($e.size) bytes; myous fetch $($e.seq))" }
         if ($kind -eq "file" -and $e.late) { $text = "late reply to cp of $($e.late.remote): $text" }

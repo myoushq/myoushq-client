@@ -246,7 +246,9 @@ of this.
   read-only command such as `ls`, `cat`, `grep`, `find`; anything else
   asks the user), or `all` (every request asks). The apps show the
   question with Allow and Refuse; no answer within 120 seconds refuses
-  the request with a reason the agent sees.
+  the request with a reason the agent sees. Without an app, the question
+  is `approvals/<id>.json` in the worker folder, and writing `allow` or
+  `refuse` into `approvals/<id>.answer` answers it.
 - **Stop:** `docker compose -p myous-worker down` (keeps identity, logins
   and files). A command the worker is running is ended, and the agent
   that sent it gets the answer "stopped by the owner (the worker is

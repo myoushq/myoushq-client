@@ -4,12 +4,15 @@ import argparse
 import io
 import json
 import os
+import sys
 import tempfile
 import time
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
+
+from nostr_sdk import Keys
 
 from myous import __version__, cli, contacts
 from myous.agent import Agent
@@ -62,6 +65,27 @@ class StatusTest(unittest.TestCase):
         self.assertEqual(contacts.context_fields(added_by=" owner "), {"added_by": "owner"})
         self.assertEqual(contacts.context_fields(), {})
 
+    def test_plain_output_is_readable(self):
+        self.agent.create_identity()
+        peer = Keys.generate().public_key()
+        contacts.add(self.st, peer.to_hex(), "Max's Muse")
+        contacts.update(self.st, "Max's Muse", **contacts.context_fields("friend", "anything", "owner"))
+        status, listing = io.StringIO(), io.StringIO()
+        with redirect_stdout(status):
+            cli.cmd_status(self.agent, self.st, argparse.Namespace(json=False))
+        with redirect_stdout(listing):
+            cli.cmd_contacts(self.agent, self.st, argparse.Namespace(json=False))
+        lines = status.getvalue().splitlines()
+        today = time.strftime("%Y-%m-%d")
+        self.assertIn(f"  Max's Muse (approved, friend, added by owner, paired {today})", lines)
+        self.assertIn("wake_hook         (none)", lines)
+        self.assertIn("pending_pairings  (none)", lines)
+        self.assertTrue(any(line.startswith(f"last_used         {today} ") for line in lines), lines)
+        self.assertFalse(any("contact_list" in line or "{" in line for line in lines), lines)
+        self.assertEqual(listing.getvalue().splitlines(), [
+            "name                 status    relation   added by key",
+            f"Max's Muse           approved  friend     owner    {peer.to_bech32()}"])
+
     def test_last_used_is_the_newest_file_outside_installs(self):
         self.assertIsNone(FileStorage(tempfile.mkdtemp()).last_used())
         self.st.put("settings", {"alias": "A"})
@@ -113,6 +137,60 @@ class InitGuardTest(unittest.TestCase):
         self.st.put("settings", {})
         self.init("Codex")
         self.assertEqual(self.registered, "Codex")
+
+
+class QrHintTest(unittest.TestCase):
+    def test_the_hint_installs_the_releases_qr_lock_for_this_version(self):
+        from myous import qr
+        hint = qr.install_hint()
+        self.assertIn(sys.executable, hint)
+        self.assertTrue(hint.endswith(f" -m pip install --require-hashes -r https://github.com/myoushq/myoushq-client"
+                                      f"/releases/download/v{__version__}/requirements-qr-python.lock"), hint)
+        # The release publishes python/requirements-qr.lock under that name.
+        release = (Path(__file__).resolve().parents[2] / ".github" / "workflows" / "release.yml").read_text()
+        self.assertIn("cp python/requirements-qr.lock out/requirements-qr-python.lock", release)
+        self.assertIn("out/requirements-qr-python.lock", release.split("files:", 1)[1])
+
+
+class HomeMismatchTest(unittest.TestCase):
+    """A client installed in a myous directory of its own, run without
+    MYOUS_HOME (a shell that forgets variables between commands), refuses
+    rather than use ~/.myous, which may be another agent's."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(__import__("shutil").rmtree, self.tmp, True)
+        self.own = self.tmp / ".myous-claude"
+        (self.own / "venv").mkdir(parents=True)
+        (self.own / "settings.json").write_text('{"alias": "Sam\'s Claude Code"}')
+        env = {k: v for k, v in os.environ.items() if k != "MYOUS_HOME"}
+        env["HOME"] = env["USERPROFILE"] = str(self.tmp)
+        for patcher in (mock.patch.dict(os.environ, env, clear=True),
+                        mock.patch("sys.prefix", str(self.own / "venv"))):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_refused_without_myous_home(self):
+        with mock.patch("sys.argv", ["myous", "inbox"]), self.assertRaises(SystemExit) as e:
+            cli.main()
+        self.assertIn(f"this would use {self.tmp / '.myous'}, but this myous is installed in {self.own}",
+                      str(e.exception))
+        self.assertFalse((self.tmp / ".myous").exists())   # nothing created there
+
+    def test_fine_with_myous_home_or_when_installed_in_the_default(self):
+        from myous import storage
+        with mock.patch.dict(os.environ, {"MYOUS_HOME": str(self.own)}):
+            self.assertIsNone(storage.home_mismatch())
+        (self.tmp / ".myous" / "venv").mkdir(parents=True)
+        (self.tmp / ".myous" / "key").write_text("nsec1...")
+        with mock.patch("sys.prefix", str(self.tmp / ".myous" / "venv")):
+            self.assertIsNone(storage.home_mismatch())
+        with mock.patch("sys.prefix", str(self.tmp / "elsewhere" / "venv")):   # not a myous directory
+            self.assertIsNone(storage.home_mismatch())
+
+    def test_an_empty_myous_home_counts_as_unset(self):
+        with mock.patch.dict(os.environ, {"MYOUS_HOME": ""}):
+            self.assertEqual(FileStorage().home, self.tmp / ".myous")
 
 
 if __name__ == "__main__":

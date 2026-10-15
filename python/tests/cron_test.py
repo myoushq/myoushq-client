@@ -399,6 +399,44 @@ class ListenerRestartTest(unittest.TestCase):
         self.assertFalse(self.restart(time.time() - 60))       # started after the listener's last heartbeat
 
 
+class StopListenerTest(unittest.TestCase):
+    """`myous listen --stop`: this directory's listener, never a process
+    that got its pid later."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.st = FileStorage(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+
+    def start(self):
+        p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        self.addCleanup(lambda: (p.kill(), p.wait()))
+        reaper = __import__("threading").Thread(target=p.wait, daemon=True)   # no zombie to look alive
+        reaper.start()
+        return p
+
+    def stop(self) -> str:
+        args = cli.build_parser().parse_args(["listen", "--stop"])
+        out = io.StringIO()
+        with redirect_stdout(out):
+            args.func(None, self.st, args)
+        return out.getvalue()
+
+    def test_stops_this_directorys_listener(self):
+        p = self.start()
+        self.st.put("listener", {"pid": p.pid, "heartbeat": int(time.time())})
+        self.assertIn(f"stopped the listener (pid {p.pid})", self.stop())
+        self.assertFalse(processes.alive(p.pid))
+        self.assertIsNone(self.st.get("listener"))
+        self.assertEqual(self.stop(), "no listener was running for this directory\n")
+
+    def test_leaves_a_reused_pid_alone(self):
+        p = self.start()
+        self.st.put("listener", {"pid": p.pid, "heartbeat": int(time.time()) - 600})   # it started after that
+        self.assertEqual(self.stop(), "no listener was running for this directory\n")
+        self.assertTrue(processes.alive(p.pid))
+
+
 class TrimLogsTest(unittest.TestCase):
     def test_trims_bytes_in_any_encoding(self):
         with tempfile.TemporaryDirectory() as d:

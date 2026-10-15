@@ -62,7 +62,7 @@ async function main(): Promise<void> {
       await agent.checkHome(alias, opts.rename);
       const created = !(await agent.hasIdentity());
       if (created) await agent.createIdentity();
-      if (!(await agent.isRegistered())) console.log(`registering with ${agent.hub.url} (proof of work, a few seconds)...`);
+      if (!(await agent.isRegistered())) console.log(`registering with ${agent.hub.url} (proof of work: seconds, up to a minute on a slow machine)...`);
       await agent.register(alias);
       console.log(`${created ? "created" : "kept existing"} identity ${await agent.npub()}`);
       if (!created && settings.alias !== alias) {

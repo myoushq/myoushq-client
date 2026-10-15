@@ -1,6 +1,7 @@
 #!/bin/sh
-# A Claude Code hook (UserPromptSubmit or SessionStart) that fetches new
-# myoushq items and prints them, so they land in Claude's context.
+# A Claude Code hook (UserPromptSubmit or SessionStart) that prints new
+# myoushq items, so they land in Claude's context: what the listener has
+# already stored, or else what `myous inbox` fetches.
 #
 #   inbox-hook.sh [MYOUS_HOME]      (default: $MYOUS_HOME, then ~/.myous)
 #
@@ -17,9 +18,28 @@ MAX_TEXT=1000      # characters of each item's text
 if [ -x "$MYOUS_HOME/venv/bin/myous" ]; then MYOUS="$MYOUS_HOME/venv/bin/myous"; else MYOUS=myous; fi
 if [ -x "$MYOUS_HOME/venv/bin/python" ]; then PYTHON="$MYOUS_HOME/venv/bin/python"; else PYTHON=python3; fi
 
-# `inbox` fetches first and marks what it returns as read. Network trouble
-# is only a warning (it shows what is stored), so a failure here is real.
-if ! items=$("$MYOUS" inbox --json </dev/null 2>/dev/null); then
+# A running listener (the one `myous ensure` keeps) has already fetched
+# everything, within seconds of its arrival: then only read what it stored
+# (--local), so a relay that is down or slow can't hold up the prompt.
+# Running means what `myous status` calls listener_running: a heartbeat in
+# listener.json from the last 2 minutes, from a process that still exists.
+LOCAL=
+if "$PYTHON" -c '
+import json, os, sys, time
+info = json.load(open(os.path.join(sys.argv[1], "listener.json")))
+if time.time() - info["heartbeat"] > 120:
+    sys.exit(1)
+if info.get("pid"):
+    try:
+        os.kill(info["pid"], 0)
+    except PermissionError:
+        pass
+' "$MYOUS_HOME" >/dev/null 2>&1; then LOCAL=--local; fi
+
+# `inbox` marks what it returns as read. Without --local it fetches first;
+# network trouble is only a warning (it shows what is stored), so a failure
+# here is real.
+if ! items=$("$MYOUS" inbox --json $LOCAL </dev/null 2>/dev/null); then
     echo "myous inbox failed (MYOUS_HOME=$MYOUS_HOME); run it by hand to see why" >&2
     exit 1
 fi
@@ -32,8 +52,9 @@ if not items:
     sys.exit(0)
 print("myous: %d new item(s):" % len(items))
 for e in items[:max_items]:
-    who = e.get("alias") or "myoushq"
     kind = e.get("type")
+    # Pairing results come from the client itself, not from the contact they name.
+    who = "myoushq" if kind in ("paired", "pairing_failed") else e.get("alias") or "myoushq"
     text = e.get("text") or ""
     if kind == "file":
         text = "%s (%s bytes; myous fetch %s)" % (e.get("name"), e.get("size"), e.get("seq"))

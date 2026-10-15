@@ -25,6 +25,7 @@ Callers hold `storage.lock()` around `record` and `handle_wraps`.
 """
 from __future__ import annotations
 
+import copy
 import json
 import os
 import re
@@ -52,6 +53,12 @@ _REQUEST_ID = re.compile(r"^[0-9a-f]{32}$")
 # A given-up request is remembered until a day after its ttl ran out: the
 # relay keeps messages a day.
 GAVE_UP_KEEP = 86400
+# A ttl that runs out within this long after a command stopped waiting is as
+# good as over: the clocks of this computer and the worker's, and when each
+# counts from (the wait starts after the send, the ttl when the message was
+# written), differ by a few seconds. The command then says the worker won't
+# run the request (agent.timeout_text), and its "expired" answer stays hidden.
+TTL_MARGIN = 10
 
 
 def record(st: Storage, entry: dict) -> dict:
@@ -102,7 +109,10 @@ def handle_wraps(st: Storage, keys: Keys, wraps: list[Event]) -> list[dict]:
                       key=lambda m: (m.sent_at, m.ms, m.part[1] if m.part else 0))
     blob_api = (st.get("hub") or {}).get("blob_api")
     buffer = st.get("partials", {})
-    before = dict(buffer)
+    # A deep copy: parts.add changes an unfinished message's parts in place,
+    # which a shallow copy would share, so a part arriving on its own (as a
+    # listener gets them) would be marked seen yet never saved.
+    before = copy.deepcopy(buffer)
     stored = []
     for m in messages:
         contact = contacts.approved(st, m.sender)
@@ -229,8 +239,8 @@ def consumed(e: dict, gave_up: dict | None = None) -> bool:
     rather than something to show the agent. A reply to a request whose
     command no longer waits (`gave_up`, the document give_up and waiting
     write) is shown; one that says the request expired only when its ttl
-    was longer than the wait: the agent was then told the worker might
-    still run it, otherwise that it won't."""
+    was longer than the wait (by more than TTL_MARGIN): the agent was then
+    told the worker might still run it, otherwise that it won't."""
     if _answers(e) is None:
         return False
     r = late_request(e, gave_up or {})
@@ -239,7 +249,7 @@ def consumed(e: dict, gave_up: dict | None = None) -> bool:
     if not _expired(e):
         return False
     ttl, wait = r.get("ttl"), r.get("wait")
-    return not (isinstance(ttl, (int, float)) and isinstance(wait, (int, float)) and ttl > wait)
+    return not (isinstance(ttl, (int, float)) and isinstance(wait, (int, float)) and ttl > wait + TTL_MARGIN)
 
 
 def _expired(e: dict) -> bool:

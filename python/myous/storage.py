@@ -23,6 +23,7 @@ import abc
 import contextlib
 import json
 import os
+import sys
 import time
 from pathlib import Path
 from typing import Any, ContextManager, Iterator
@@ -77,13 +78,44 @@ class Storage(abc.ABC):
         return contextlib.nullcontext(True)
 
 
+DEFAULT_HOME = "~/.myous"
+
+
+def installed_home() -> Path | None:
+    """The myous directory this client is installed in, if it is one of
+    its own: the venv is <directory>/venv, as skill.md installs it, and the
+    directory holds an identity (a key or settings). None otherwise."""
+    prefix = Path(sys.prefix)
+    if prefix.name != "venv":
+        return None
+    home = prefix.parent
+    return home if (home / "key").exists() or (home / "settings.json").exists() else None
+
+
+def home_mismatch() -> str | None:
+    """Why this command shouldn't run, if MYOUS_HOME isn't set and the
+    client is installed in a myous directory other than ~/.myous: it would
+    use ~/.myous, which may be another agent's (an agent whose shell
+    forgets variables between commands runs into this). None if all is
+    well."""
+    if os.environ.get("MYOUS_HOME"):
+        return None
+    home, default = installed_home(), Path(DEFAULT_HOME).expanduser()
+    if home is None or home.resolve() == default.resolve():
+        return None
+    setting = (f'$env:MYOUS_HOME = "{home}"; at the start of the command' if os.name == "nt"
+               else f"MYOUS_HOME={home} in front of the command")
+    return (f"error: MYOUS_HOME isn't set, so this would use {default}, but this myous is installed in {home}, "
+            f"a myous directory of its own. Put {setting}.")
+
+
 class FileStorage(Storage):
     """Everything in one directory (default ~/.myous, or $MYOUS_HOME):
     key, contacts.json, state.json, settings.json, hub.json, pending/*.json,
     messages.jsonl."""
 
     def __init__(self, home: str | os.PathLike | None = None):
-        self.home = Path(home or os.environ.get("MYOUS_HOME", "~/.myous")).expanduser()
+        self.home = Path(home or os.environ.get("MYOUS_HOME") or DEFAULT_HOME).expanduser()
         self.home.mkdir(mode=0o700, parents=True, exist_ok=True)
 
     def path(self, name: str) -> Path:
