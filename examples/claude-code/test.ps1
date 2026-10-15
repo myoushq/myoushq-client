@@ -107,6 +107,11 @@ try {
     $all = (Expect many "myous: 12 new item(s):") -and (Expect many "- and 2 more: myous history")
     if ((Count-Lines "- a ") -eq 10 -and $all) { Ok "many items: ten shown, the rest counted" } elseif ($all) { Fail "many items: expected 10 shown" }
 
+    Set-Items '[{"seq": 6, "type": "file", "direction": "in", "alias": "Sam''s PC", "name": "out.txt", "size": 12, "text": "late reply", "late": {"op": "get", "remote": "/work/out.txt", "sent_at": 1700000000}}]'
+    Invoke-Hook
+    if ($Code -ne 0) { Fail "late file: exit $Code ($Err)" }
+    elseif (Expect late "- Sam's PC (file): late reply to cp of /work/out.txt: out.txt (12 bytes; myous fetch 6)") { Ok "a late reply's file says which request it answers" }
+
     $env:FAKE_EXIT = "3"
     Invoke-Hook
     Remove-Item Env:FAKE_EXIT
