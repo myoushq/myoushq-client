@@ -739,24 +739,49 @@ func (a *Agent) Listen(ctx context.Context, onNew func([]Entry), onTick func(), 
 		}
 	}()
 
-	// What the relay holds comes in one batch, which handleWraps puts in
-	// the order it was written; then each wrap as it arrives.
+	handle := func(batch []*nostr.Event) error {
+		if len(batch) == 0 {
+			return nil
+		}
+		unlock, _, err := lock(a.st, "state", true)
+		if err != nil {
+			return err
+		}
+		_, err = handleWraps(a.st, sk, batch)
+		unlock()
+		if err != nil {
+			return err
+		}
+		deliver()
+		return nil
+	}
+	// New wraps are subscribed to first, then everything the relay holds
+	// is fetched (all of it: fetchWraps) and handled as one batch, which
+	// handleWraps puts in the order it was written; then each new wrap as
+	// it arrives (one that came in the meantime was in the fetch too, and
+	// is skipped as seen).
 	wraps := make(chan []*nostr.Event)
 	errc := make(chan error, 1)
-	go func() { errc <- conn.streamWraps(ctx, wraps) }()
+	ready := make(chan struct{})
+	go func() { errc <- conn.streamWraps(ctx, wraps, ready) }()
+	select {
+	case <-ready:
+	case err := <-errc:
+		return err
+	}
+	backlog, err := conn.fetchWraps(ctx)
+	if err != nil {
+		return err
+	}
+	if err := handle(backlog); err != nil {
+		return err
+	}
 	for {
 		select {
 		case batch := <-wraps:
-			unlock, _, err := lock(a.st, "state", true)
-			if err != nil {
+			if err := handle(batch); err != nil {
 				return err
 			}
-			_, err = handleWraps(a.st, sk, batch)
-			unlock()
-			if err != nil {
-				return err
-			}
-			deliver()
 		case err := <-errc:
 			return err
 		}

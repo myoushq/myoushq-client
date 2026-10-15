@@ -134,3 +134,99 @@ func BenchmarkHandleWrapsSeen(b *testing.B) {
 		}
 	}
 }
+
+// More wraps than a relay answers in one page (the hub: 250 to a
+// subscription, at most 1000 to a query; Poll asks 500 at a time): Poll
+// and Listen get every one, in the order written. Before, Poll stored the
+// newest 500 by the wraps' random timestamps (the same ones on every
+// poll) and a listener's replay 250; the rest never came.
+func TestListenAndPollGetEveryStoredWrap(t *testing.T) {
+	e := setup(t)
+	e.init("go-many", "go-poller", "go-listener")
+	e.pair("go-many", "go-poller", "code")
+	e.pair("go-many", "go-listener", "code")
+	ctx := context.Background()
+	st, _ := NewFileStorage(filepath.Join(e.dir, "go-many"))
+	sender, _ := New(st, "")
+	conn, err := sender.connect(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.close()
+	// Straight onto the relay: no history to write for each one.
+	sendN := func(to string, n int) []string {
+		t.Helper()
+		pk, _, err := findContact(st, to)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var texts []string
+		for i := 0; i < n; i++ {
+			text := fmt.Sprintf("%s %03d", to, i)
+			if _, err := conn.sendMessage(ctx, pk, text, nil, []string{conn.relays[0].URL}); err != nil {
+				t.Fatal(err)
+			}
+			texts = append(texts, text)
+		}
+		return texts
+	}
+	texts := func(entries []Entry) []string {
+		var s []string
+		for _, x := range entries {
+			if x.Type == "message" {
+				s = append(s, x.Text)
+			}
+		}
+		return s
+	}
+
+	want := sendN("go-poller", 520)
+	pst, _ := NewFileStorage(filepath.Join(e.dir, "go-poller"))
+	poller, _ := New(pst, "")
+	polled := time.Now()
+	got, err := poller.Poll(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("poll of %d took %v", len(want), time.Since(polled))
+	if g := texts(got); strings.Join(g, "|") != strings.Join(want, "|") {
+		t.Fatalf("poll: %d of %d (first %v)", len(g), len(want), g[:min(3, len(g))])
+	}
+
+	want = sendN("go-listener", 270)
+	lst, _ := NewFileStorage(filepath.Join(e.dir, "go-listener"))
+	listener, _ := New(lst, "")
+	lctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var mu sync.Mutex
+	var heard []string
+	all := make(chan struct{})
+	go listener.Listen(lctx, func(entries []Entry) {
+		mu.Lock()
+		defer mu.Unlock()
+		heard = append(heard, texts(entries)...)
+		if len(heard) == len(want) {
+			close(all)
+		}
+	}, nil, 20*time.Second)
+	select {
+	case <-all:
+	case <-time.After(60 * time.Second):
+		mu.Lock()
+		t.Fatalf("listen: %d of %d", len(heard), len(want))
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if strings.Join(heard, "|") != strings.Join(want, "|") {
+		t.Fatal("listen: out of order")
+	}
+	// And what comes next, live.
+	heard = nil
+	mu.Unlock()
+	sendN("go-listener", 1)
+	time.Sleep(2 * time.Second)
+	mu.Lock()
+	if len(heard) != 1 {
+		t.Fatalf("live after the backlog: %v", heard)
+	}
+}
