@@ -69,9 +69,12 @@ pub fn handle_wraps(st: &dyn Storage, keys: &Keys, wraps: &[Event]) -> Result<Ve
         seen.insert(id, json!(now));
         fresh.push(wrap);
     }
+    let remembered = seen.len();
     seen.retain(|_, t| now.saturating_sub(t.as_u64().unwrap_or(0)) < SEEN_RETENTION);
+    let seen_changed = !fresh.is_empty() || seen.len() != remembered;
     s.insert("seen".into(), Value::Object(seen));
-    // Saved with the new entries' seqs, below: one state write per batch.
+    // Saved with the new entries' seqs, below: one state write per batch,
+    // none when every wrap was handled before (the common poll).
 
     // Wrap timestamps are randomized, so put messages in the order they were written.
     let mut messages: Vec<relay::Unwrapped> = fresh.iter().filter_map(|w| relay::unwrap(keys, w)).collect();
@@ -147,7 +150,7 @@ pub fn handle_wraps(st: &dyn Storage, keys: &Keys, wraps: &[Event]) -> Result<Ve
             }));
         }
     }
-    let stored = record_all(st, &mut s, stored)?;
+    let stored = if seen_changed || !stored.is_empty() { record_all(st, &mut s, stored)? } else { stored };
     if changed {
         st.put("partials", &serde_json::to_value(&buf)?)?;
     }
@@ -306,9 +309,12 @@ mod tests {
         let s = state(&st).unwrap();
         assert_eq!(s["next_seq"], 7);
         assert_eq!(s["seen"].as_object().unwrap().len(), 6, "every wrap is remembered, the stranger's too");
-        // Nothing new: no history written, the state still saved.
-        assert!(handle_wraps(&st, &me, &[]).unwrap().is_empty());
-        assert_eq!(st.read_history().unwrap().len(), 6);
+        // Nothing new: nothing written.
+        let modified = || std::fs::metadata(st.path("state.json")).unwrap().modified().unwrap();
+        let before = modified();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        assert!(handle_wraps(&st, &me, &wraps).unwrap().is_empty());
+        assert_eq!((st.read_history().unwrap().len(), modified()), (6, before));
     }
 
     #[test]
