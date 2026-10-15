@@ -701,8 +701,10 @@ mod tests {
         std::sync::Arc::new(|_| {})
     }
 
-    /// A log that keeps its lines.
+    /// A log that keeps its lines (for the tests that don't run on Windows).
+    #[cfg(unix)]
     type Lines = std::sync::Arc<Mutex<Vec<String>>>;
+    #[cfg(unix)]
     fn recorder() -> (crate::browser::Log, Lines) {
         let lines: Lines = std::sync::Arc::new(Mutex::new(Vec::new()));
         let keep = lines.clone();
