@@ -1,0 +1,136 @@
+package myous
+
+import (
+	"context"
+	"fmt"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/nbd-wtf/go-nostr"
+)
+
+// countingStorage counts the writes of each document.
+type countingStorage struct {
+	*FileStorage
+	mu   sync.Mutex
+	puts map[string]int
+}
+
+func (c *countingStorage) Put(name string, v any) error {
+	c.mu.Lock()
+	c.puts[name]++
+	c.mu.Unlock()
+	return c.FileStorage.Put(name, v)
+}
+
+// A wrap seen before (a relay sends everything it holds on every connect)
+// costs no write of the state.
+func TestHandleWrapsWritesTheStateOnlyWhenItChanged(t *testing.T) {
+	fs, err := NewFileStorage(filepath.Join(t.TempDir(), "h"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := &countingStorage{FileStorage: fs, puts: map[string]int{}}
+	sk := nostr.GeneratePrivateKey()
+	now := time.Now().Unix()
+	st.FileStorage.Put("state", State{NextSeq: 1, Seen: map[string]int64{"aa": now, "bb": now}})
+	if _, err := handleWraps(st, sk, []*nostr.Event{{ID: "aa"}, {ID: "bb"}}); err != nil {
+		t.Fatal(err)
+	}
+	if st.puts["state"] != 0 {
+		t.Fatalf("state written %d times for wraps seen before", st.puts["state"])
+	}
+	// A new one (even one that doesn't open) is remembered.
+	if _, err := handleWraps(st, sk, []*nostr.Event{{ID: "aa"}, {ID: "cc"}}); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := loadState(st)
+	if st.puts["state"] != 1 || s.Seen["cc"] == 0 {
+		t.Fatalf("%d writes; seen %v", st.puts["state"], s.Seen)
+	}
+	// One past its retention is forgotten, which is a change too.
+	st.FileStorage.Put("state", State{NextSeq: 1, Seen: map[string]int64{"aa": now, "old": now - seenRetention}})
+	handleWraps(st, sk, []*nostr.Event{{ID: "aa"}})
+	if s, _ := loadState(st); st.puts["state"] != 2 || len(s.Seen) != 1 {
+		t.Fatalf("%d writes; seen %v", st.puts["state"], s.Seen)
+	}
+}
+
+// Messages sent while an agent wasn't listening come out of Listen in the
+// order they were written (the relay sends them in the random order of
+// the wraps' timestamps); a worker runs such a backlog in order.
+func TestListenHandsOverABacklogInOrder(t *testing.T) {
+	e := setup(t)
+	e.init("go-ord1", "go-ord2")
+	e.pair("go-ord1", "go-ord2", "code")
+	const n = 12
+	var want []string
+	for i := 0; i < n; i++ {
+		text := fmt.Sprintf("backlog %02d", i)
+		e.ok("go-ord1", "send", "go-ord2", text)
+		want = append(want, text)
+	}
+	st, err := NewFileStorage(filepath.Join(e.dir, "go-ord2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, err := New(st, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var mu sync.Mutex
+	var got []string
+	all := make(chan struct{})
+	go agent.Listen(ctx, func(entries []Entry) {
+		mu.Lock()
+		defer mu.Unlock()
+		for _, x := range entries {
+			if x.Type == "message" {
+				got = append(got, x.Text)
+			}
+		}
+		if len(got) == n {
+			close(all)
+		}
+	}, nil, 20*time.Second)
+	select {
+	case <-all:
+	case <-time.After(30 * time.Second):
+		mu.Lock()
+		t.Fatalf("got %d of %d: %v", len(got), n, got)
+	}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("out of order:\n%v", got)
+	}
+}
+
+// BenchmarkHandleWrapsSeen: one wrap already seen, in a state that
+// remembers 500.
+func BenchmarkHandleWrapsSeen(b *testing.B) {
+	st, err := NewFileStorage(filepath.Join(b.TempDir(), "h"))
+	if err != nil {
+		b.Fatal(err)
+	}
+	s := State{NextSeq: 1, Seen: map[string]int64{}}
+	now := time.Now().Unix()
+	var ids []string
+	for i := 0; i < 500; i++ {
+		id := fmt.Sprintf("%064x", i)
+		s.Seen[id] = now
+		ids = append(ids, id)
+	}
+	st.Put("state", s)
+	sk := nostr.GeneratePrivateKey()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := handleWraps(st, sk, []*nostr.Event{{ID: ids[i%len(ids)]}}); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

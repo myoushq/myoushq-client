@@ -349,9 +349,17 @@ func (c *connection) fetchWraps(ctx context.Context) ([]*nostr.Event, error) {
 	return all, nil
 }
 
-// streamWraps delivers gift wraps as they arrive (stored ones first) until
-// ctx ends or every relay connection drops.
-func (c *connection) streamWraps(ctx context.Context, out chan<- *nostr.Event) error {
+// storedWait is how long streamWraps waits for a relay to say it has sent
+// everything it holds (EOSE) before it hands over what it has and goes on
+// with each wrap as it arrives.
+const storedWait = 10 * time.Second
+
+// streamWraps delivers gift wraps until ctx ends or every relay connection
+// drops: first, per relay, what it holds, as one batch at its EOSE (so
+// handleWraps puts a backlog in the order it was written, where the relay
+// sends it in the random order of the wraps' timestamps); then each wrap
+// as it arrives.
+func (c *connection) streamWraps(ctx context.Context, out chan<- []*nostr.Event) error {
 	done := make(chan struct{}, len(c.relays))
 	for _, r := range c.relays {
 		sub, err := r.Subscribe(ctx, nostr.Filters{c.inboxFilter()})
@@ -360,18 +368,52 @@ func (c *connection) streamWraps(ctx context.Context, out chan<- *nostr.Event) e
 		}
 		go func(r *nostr.Relay, sub *nostr.Subscription) {
 			defer func() { done <- struct{}{} }()
+			send := func(batch []*nostr.Event) bool {
+				if len(batch) == 0 {
+					return true
+				}
+				select {
+				case out <- batch:
+					return true
+				case <-ctx.Done():
+					return false
+				}
+			}
+			var stored []*nostr.Event // until EOSE; nil after
+			live := false
+			goLive := func() bool {
+				if live {
+					return true
+				}
+				live = true
+				batch := stored
+				stored = nil
+				return send(batch)
+			}
+			storedEnd := time.NewTimer(storedWait)
+			defer storedEnd.Stop()
 			for {
 				select {
 				case e, ok := <-sub.Events:
 					if !ok {
+						goLive()
 						return
 					}
-					select {
-					case out <- e:
-					case <-ctx.Done():
+					if !live {
+						stored = append(stored, e)
+					} else if !send([]*nostr.Event{e}) {
+						return
+					}
+				case <-sub.EndOfStoredEvents:
+					if !goLive() {
+						return
+					}
+				case <-storedEnd.C:
+					if !goLive() {
 						return
 					}
 				case <-r.Context().Done():
+					goLive()
 					return
 				case <-ctx.Done():
 					return

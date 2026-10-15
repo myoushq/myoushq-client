@@ -739,17 +739,19 @@ func (a *Agent) Listen(ctx context.Context, onNew func([]Entry), onTick func(), 
 		}
 	}()
 
-	wraps := make(chan *nostr.Event)
+	// What the relay holds comes in one batch, which handleWraps puts in
+	// the order it was written; then each wrap as it arrives.
+	wraps := make(chan []*nostr.Event)
 	errc := make(chan error, 1)
 	go func() { errc <- conn.streamWraps(ctx, wraps) }()
 	for {
 		select {
-		case w := <-wraps:
+		case batch := <-wraps:
 			unlock, _, err := lock(a.st, "state", true)
 			if err != nil {
 				return err
 			}
-			_, err = handleWraps(a.st, sk, []*nostr.Event{w})
+			_, err = handleWraps(a.st, sk, batch)
 			unlock()
 			if err != nil {
 				return err
