@@ -178,6 +178,13 @@ class TornHistory(unittest.TestCase):
         self.st.append_history({"seq": 3, "type": "message"})
         self.assertEqual(self.seqs(), ([1, 2, 3], [3, 2, 1]))
 
+    def test_a_torn_line_longer_than_a_block(self):
+        with open(self.file, "a") as f:
+            f.write('{"seq": 2, "type": "message", "text": "' + "x" * 200_000)
+        self.st.append_history({"seq": 2, "type": "message", "text": "next"})
+        self.assertEqual(self.seqs(), ([1, 2], [2, 1]))
+        self.assertEqual(len(self.file.read_text().splitlines()), 2)
+
     def test_only_a_fragment(self):
         self.file.write_text('{"seq": 1, "ty')
         self.assertEqual(self.seqs(), ([], []))

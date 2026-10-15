@@ -299,15 +299,20 @@ def _mend_tail(fd: int) -> None:
     os.lseek(fd, size - 1, os.SEEK_SET)
     if os.read(fd, 1) == b"\n":
         return
-    start = max(0, size - (1 << 20))
-    os.lseek(fd, start, os.SEEK_SET)
-    tail = b""
-    while len(tail) < size - start:
-        chunk = os.read(fd, size - start - len(tail))
-        if not chunk:
-            break
-        tail += chunk
-    cut = tail.rfind(b"\n") + 1   # 0: the whole tail is the last line
+    # The last line: back from the end, a block at a time, to the newline before it.
+    start, tail = size, b""
+    while start > 0 and b"\n" not in tail:
+        step = min(1 << 16, start)
+        start -= step
+        os.lseek(fd, start, os.SEEK_SET)
+        block = b""
+        while len(block) < step:
+            chunk = os.read(fd, step - len(block))
+            if not chunk:
+                break
+            block += chunk
+        tail = block + tail
+    cut = tail.rfind(b"\n") + 1   # 0: the file is that one line
     if _torn(tail[cut:]):
         os.ftruncate(fd, start + cut)
     else:
