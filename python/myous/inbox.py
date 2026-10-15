@@ -355,9 +355,10 @@ def unread(st: Storage, mark_read: bool = True) -> list[dict]:
         entries = [shown(e, gave_up) for e in st.read_history_since(last + 1)
                    if e.get("direction") != "out" and not consumed(e, gave_up)]
         # The contact's current relationship context, so the agent has it when it answers.
+        known = contacts.load(st) if entries else {}
         for e in entries:
             if e.get("peer"):
-                e.update(contacts.context_of(st, e["peer"]))
+                e.update(contacts.context_of(st, e["peer"], known))
         if mark_read and entries:
             state["read_seq"] = entries[-1]["seq"]
             st.put("state", state)
