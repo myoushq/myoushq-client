@@ -106,7 +106,9 @@ pub fn start(
     let dir = PathBuf::from(home);
     paths::ensure(&dir).map_err(|e| e.to_string())?;
     std::fs::create_dir_all(dir.join("work")).map_err(|e| e.to_string())?;
-    if children().lock().unwrap().contains_key(home) {
+    // Held until the worker is in the map: two starts at once run one worker.
+    let mut map = children().lock().unwrap();
+    if map.contains_key(home) {
         return Err("this worker is already running".into());
     }
     // A quit file the last worker didn't take (killed first) would stop this one.
@@ -124,7 +126,8 @@ pub fn start(
         .spawn()
         .map_err(|e| format!("could not start {}: {e}", args[0]))?;
     let pid = child.id();
-    children().lock().unwrap().insert(home.to_string(), child);
+    map.insert(home.to_string(), child);
+    drop(map);
     let key = home.to_string();
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_millis(500));
@@ -535,9 +538,8 @@ pub fn stop_all() {
     end(workers);
 }
 
-#[cfg(test)]
-#[allow(dead_code)] // the tests that use it don't run on Windows
-fn running(home: &str) -> bool {
+/// Whether this app runs the worker for `home` now.
+pub fn running(home: &str) -> bool {
     children().lock().unwrap().contains_key(home)
 }
 
@@ -686,6 +688,44 @@ mod tests {
         assert!(!running(&h));
         assert!(quit.exists(), "the quit file was not written");
         assert!(home.join("work").is_dir());
+        std::fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn two_starts_at_once_run_one_worker() {
+        let home = std::env::temp_dir().join(format!("myous-direct-twice-{}", std::process::id()));
+        let h = home.to_string_lossy().to_string();
+        let args = script(
+            "echo started; sleep 30",
+            "Write-Output started; Start-Sleep 30",
+        );
+        let all = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let starts: Vec<_> = (0..8)
+            .map(|_| {
+                let (h, args, all, tx) = (h.clone(), args.clone(), all.clone(), tx.clone());
+                std::thread::spawn(move || {
+                    all.wait();
+                    start(&h, &args, move |st| {
+                        let _ = tx.send(st);
+                    })
+                })
+            })
+            .collect();
+        let results: Vec<_> = starts.into_iter().map(|t| t.join().unwrap()).collect();
+        assert_eq!(
+            results.iter().filter(|r| r.is_ok()).count(),
+            1,
+            "{results:?}"
+        );
+        assert!(results
+            .iter()
+            .filter_map(|r| r.as_ref().err())
+            .all(|e| e.contains("already running")));
+        wait_for_log(&h, "started");
+        assert!(stop(&h, 0, quiet(), || {}));
+        rx.recv_timeout(Duration::from_secs(30)).unwrap();
+        assert_eq!(log_tail(&h, 1000).matches("started").count(), 1);
         std::fs::remove_dir_all(&home).unwrap();
     }
 

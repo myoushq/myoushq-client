@@ -1359,6 +1359,23 @@ pub struct Started {
     pub port: u16,
     pub app: String,
     pub python: String,
+    /// Started by this call (not one that ran already, or one from before
+    /// taken over).
+    pub launched: bool,
+}
+
+/// One start, Show or stop at a time for a worker's browser: two starts
+/// at once would run two browsers on one profile, and a stop during a
+/// start would end the browser just started.
+fn serial(home: &Path) -> Arc<Mutex<()>> {
+    static LOCKS: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
+    LOCKS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap()
+        .entry(home.to_string_lossy().to_string())
+        .or_default()
+        .clone()
 }
 
 /// How the browser of a worker without a container runs: on a Mac under
@@ -1432,12 +1449,15 @@ pub fn start_with_how(
     log: Log,
 ) -> Result<Started, String> {
     let key = home.to_string_lossy().to_string();
+    let lock = serial(home);
+    let _one = lock.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(p) = procs().lock().unwrap().get(&key) {
         if p.pid != 0 {
             return Ok(Started {
                 port: p.spec.port,
                 app: p.spec.app.clone(),
                 python: p.spec.python.clone(),
+                launched: false,
             });
         }
     }
@@ -1449,6 +1469,7 @@ pub fn start_with_how(
                 port,
                 app: found.name.clone(),
                 python: python.into(),
+                launched: false,
             });
         }
         // The other kind (a Mac's worker that changed between a container
@@ -1463,6 +1484,7 @@ pub fn start_with_how(
         port,
         app: found.name.clone(),
         python: python.into(),
+        launched: true,
     })
 }
 
@@ -1522,6 +1544,8 @@ fn end_gracefully(pid: u32, mut child: Option<&mut Child>) {
 /// still answers there.
 pub fn stop(home: &Path) {
     let key = home.to_string_lossy().to_string();
+    let lock = serial(home);
+    let _one = lock.lock().unwrap_or_else(|e| e.into_inner());
     let taken = procs().lock().unwrap().remove(&key);
     let pid = match taken {
         Some(mut p) => {
@@ -1643,6 +1667,8 @@ pub fn show_with(
     log: Log,
 ) -> Result<String, String> {
     let key = home.to_string_lossy().to_string();
+    let lock = serial(home);
+    let _one = lock.lock().unwrap_or_else(|e| e.into_inner());
     let known = procs()
         .lock()
         .unwrap()
@@ -3247,6 +3273,42 @@ mod tests {
             let _ = c.kill();
             let _ = c.wait();
         }
+        fs::remove_dir_all(&home).unwrap();
+    }
+
+    /// Starts at once (the window's Start, a second click, Open browser):
+    /// one browser, the same for all.
+    #[cfg(unix)]
+    #[test]
+    fn starts_at_once_run_one_browser() {
+        let home = temp("twice");
+        let Some(found) = stand_in(&home) else { return };
+        let lines = Arc::new(Mutex::new(Vec::<String>::new()));
+        let l2 = lines.clone();
+        let log: Log = Arc::new(move |s| l2.lock().unwrap().push(s));
+        let all = Arc::new(std::sync::Barrier::new(4));
+        let starts: Vec<_> = (0..4)
+            .map(|_| {
+                let (home, found, log, all) =
+                    (home.clone(), found.clone(), log.clone(), all.clone());
+                std::thread::spawn(move || {
+                    all.wait();
+                    start_with(&home, "W", &found, "", vec![], log).unwrap()
+                })
+            })
+            .collect();
+        let started: Vec<Started> = starts.into_iter().map(|t| t.join().unwrap()).collect();
+        assert_eq!(started.iter().filter(|s| s.launched).count(), 1);
+        assert!(started.iter().all(|s| s.port == started[0].port));
+        let launches = lines
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|l| l.contains(" started (pid "))
+            .count();
+        assert_eq!(launches, 1);
+        stop(&home);
+        assert!(!running(&home) && !port_answers(started[0].port));
         fs::remove_dir_all(&home).unwrap();
     }
 
