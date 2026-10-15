@@ -67,7 +67,7 @@ It is a port of the Python worker and serves the same worker folder the
 same way, so the desktop apps can run either: the same replies, `help`
 text and pairing message, `worker.json` (the status and phase, the open
 pairing code, the version), `worker.log`, `requests/<id>.json` (the
-newest 200), and `commands/` (`new-code`, `unpair`, `stop-<id>`).
+newest 200), and `commands/` (`new-code`, `unpair`, `stop-<id>`, `quit`).
 `--alias` is needed the first time; `--work` defaults to `./work` or
 `$MYOUS_WORK`.
 The myous apps carry this worker inside themselves as `myous-worker`
@@ -80,9 +80,10 @@ owner in `approvals/`, `MYOUS_APPROVAL_WAIT`); `--review CMD` runs a hook
 of your own instead, with the request as JSON on stdin (exit 0 allows, the
 first line of stderr is the reason). Commands run in `/bin/sh` in a
 session of their own, or in PowerShell on Windows, and a timeout, the
-owner's stop or stopping the worker (SIGTERM or SIGINT; for the library,
-`Run`'s context ending) ends everything they started; the agent still
-gets its answer. Library use: `NewWorker` and `Worker.Run`.
+owner's stop or stopping the worker (SIGTERM or SIGINT, or a
+`commands/quit` file, which the app writes when it stops the worker; for
+the library, `Run`'s context ending) ends everything they started; the
+agent still gets its answer. Library use: `NewWorker` and `Worker.Run`.
 
 ## Tests
 
