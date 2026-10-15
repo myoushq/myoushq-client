@@ -49,6 +49,9 @@ export function applyFake(m: Model, state: string, home = "/home/max/.myous-work
       { id: "r4", op: "exec", alias: "Max's Muse", cmd: "python3 /work/quotes.py", at: now - 125, decision: "allow", done_at: now - 118, exit: 0, duration: 6.4, stdout: "BABA 95.4\nPRM 27.75\n" },
       { id: "r3", op: "put", alias: "Max's Muse", path: "quotes.py", size: 4977, at: now - 130, decision: "allow", done_at: now - 129 },
       { id: "r2", op: "exec", alias: "Max's Muse", cmd: "rm -rf /work/old", at: now - 3600, decision: "refuse", reason: "the owner didn't answer in time" },
+      // Sent while the worker was off; when it came back, its agent had long stopped waiting.
+      { id: "r6", op: "exec", alias: "Max's Muse", cmd: "python3 /work/quotes.py --all", at: now - 7200, done_at: now - 7200, decision: "expired",
+        reason: "expired: sent 3 hours ago, its ttl is 150 seconds; not run" },
       { id: "r1", op: "get", alias: "Max's Muse", path: "report.pdf", size: 120340, at: now - 86400 * 1.5, decision: "allow", done_at: now - 86400 * 1.5 + 2 },
     ];
     f.config!.seen_requests_at = now - 1000;
