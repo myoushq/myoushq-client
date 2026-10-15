@@ -75,15 +75,37 @@ def listener_healthy(st: FileStorage) -> bool:
     return processes.alive(pid)
 
 
-def start_listener(st: FileStorage) -> None:
-    info = st.get("listener", {})
+def _ours(info: dict) -> int | None:
+    """The pid in listener.json if that process may still be the listener:
+    a process started after the listener's last heartbeat is another
+    program that got its pid."""
     pid = info.get("pid")
+    if not pid:
+        return None
+    created = processes.created_at(pid)
+    return pid if created is None or created <= info.get("heartbeat", 0) + 5 else None
+
+
+def stop_listener(st: FileStorage, wait: float = 5) -> int | None:
+    """Stop this directory's listener (to upgrade, or when leaving): the
+    process in listener.json, never another directory's. Returns its pid,
+    or None if none was running. The next `ensure` starts a new one."""
+    info = st.get("listener", {})
+    st.delete("listener")
+    pid = _ours(info)
+    if pid is None or not processes.alive(pid):
+        return None
+    processes.terminate(pid)
+    deadline = time.time() + wait
+    while processes.alive(pid) and time.time() < deadline:
+        time.sleep(0.1)
+    return pid
+
+
+def start_listener(st: FileStorage) -> None:
+    pid = _ours(st.get("listener", {}))
     if pid:
-        # Stale or hung; but a process started after the listener's last
-        # heartbeat is another program that got its pid.
-        created = processes.created_at(pid)
-        if created is None or created <= info.get("heartbeat", 0) + 5:
-            processes.terminate(pid)
+        processes.terminate(pid)   # stale or hung
     with open(st.path("listener.log"), "a") as log:   # the child keeps its own handle
         processes.spawn_background(
             [sys.executable, "-m", "myous", "listen"],

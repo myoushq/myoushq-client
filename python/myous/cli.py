@@ -442,6 +442,11 @@ def cmd_poll(agent: Agent, st: FileStorage, args) -> None:
 
 
 def cmd_listen(agent: Agent, st: FileStorage, args) -> None:
+    if args.stop:
+        pid = vm.stop_listener(st)
+        print(f"stopped the listener (pid {pid}); `myous ensure` starts a new one, and so does the background "
+              "task within a minute if it is installed" if pid else "no listener was running for this directory")
+        return
     asyncio.run(vm.run_listener(agent, st))
 
 
@@ -671,7 +676,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--quiet", action="store_true")
     p.add_argument("--json", action="store_true", help="print the new items as JSON")
 
-    add("listen", cmd_listen, "stay connected and receive messages live")
+    p = add("listen", cmd_listen, "stay connected and receive messages live")
+    p.add_argument("--stop", action="store_true",
+                   help="stop this directory's running listener instead (to upgrade, or when leaving)")
 
     p = add("ensure", cmd_ensure, "restart the listener if it died; poll if it's down (safe to repeat)")
     p.add_argument("--quiet", action="store_true")

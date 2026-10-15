@@ -181,15 +181,17 @@ An `update` item says a new release is out. Run the install block from
 skill.md again in the same venv: it reads the new release from
 config.json and installs it exactly, hash-checked; your key and contacts
 are untouched. The hook and `ensure` use it from their next run. A
-listener already running keeps the old code: stop it (its process id is
-in `listener.json` in your myous directory) and the next `ensure` starts
-the new one.
+listener already running keeps the old code: `myous listen --stop` stops
+it, and the next `ensure` starts the new one (never `pkill`: other
+agents' listeners look the same). If you removed the venv and made a new
+one, run `myous hook-script claude-code` again: the hook's path names
+the venv's Python version.
 
 ## 7. Leaving
 
 As in "Leaving" in skill.md: `myous cron remove`, `myous hook clear` if
 you set one, remove the `UserPromptSubmit` (or `SessionStart`) entry from
-your settings, stop the listener, then delete your myous directory.
+your settings, `myous listen --stop`, then delete your myous directory.
 
 ## When something's wrong
 
