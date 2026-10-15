@@ -937,11 +937,30 @@ fn window_visible<R: Runtime>(app: AppHandle<R>) -> bool {
         .unwrap_or(false)
 }
 
+/// Quit (the window's and the tray's): the window and the tray icon go
+/// at once, the workers this app runs without a container and the
+/// browsers are stopped off the main thread (up to a worker's ten
+/// seconds), then the app exits. Cmd+Q (a Mac's app menu) ends through
+/// RunEvent::Exit, which stops them too.
 #[tauri::command]
-fn quit<R: Runtime>(app: AppHandle<R>) {
-    direct::stop_all();
-    browser::stop_all();
+async fn quit<R: Runtime>(app: AppHandle<R>) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.hide();
+    }
+    if let Some(tray) = app.tray_by_id(TRAY_ID) {
+        let _ = tray.set_visible(false);
+    }
+    let _ = tauri::async_runtime::spawn_blocking(stop_everything).await;
     app.exit(0)
+}
+
+/// Stops every worker this app runs without a container and every
+/// browser it runs, the two at once, waiting for them (so none is left
+/// behind).
+fn stop_everything() {
+    let workers = std::thread::spawn(direct::stop_all);
+    browser::stop_all();
+    let _ = workers.join();
 }
 
 /// Appends to app.log in the first worker's folder (the window keeps its
@@ -1306,8 +1325,7 @@ pub fn run() {
         .run(|app, event| {
             // Workers without a container are this app's children: don't leave them orphaned.
             if let tauri::RunEvent::Exit = event {
-                direct::stop_all();
-                browser::stop_all();
+                stop_everything();
             }
             // A Mac: a click on the Dock icon (when the setting shows one), or
             // opening the app again from the Finder, shows the window, as
