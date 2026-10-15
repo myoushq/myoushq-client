@@ -299,6 +299,31 @@ def main() -> int:
         check({k: saved.get(k) for k in want} == want and names().count("writeConfig") == writes + 1 and ["setDock", [True]] in calls(),
               f"Settings saved after a reread: every app-wide setting and the Dock, one write {saved}")
 
+        # A new name in Settings: the default description follows it (and stays the default, not
+        # kept as the owner's words); one the owner wrote stays as written.
+        go("", "linux")
+        emit("tray", "m:Settings…")
+        page.wait_for_selector("#dlg[open]")
+        page.fill("#dlg input:not([type])", "Max's laptop")
+        follows = "My own computer, Max's laptop." in page.input_value("#dlg textarea")
+        page.click("#dlg button:has-text('Save')")
+        page.wait_for_selector("#dlg", state="hidden")
+        page.wait_for_timeout(300)
+        saved = page.evaluate("window.myous.backend.files[0].config")
+        check(follows and saved.get("name") == "Max's laptop" and "description" not in saved,
+              f"Settings: a new name, and the default description follows it, still the default {saved}")
+        emit("tray", "m:Settings…")
+        page.wait_for_selector("#dlg[open]")
+        page.fill("#dlg textarea", "My laptop, for the builds.")
+        page.fill("#dlg input:not([type])", "Max's old laptop")
+        kept = page.input_value("#dlg textarea")
+        page.click("#dlg button:has-text('Save')")
+        page.wait_for_selector("#dlg", state="hidden")
+        page.wait_for_timeout(300)
+        saved = page.evaluate("window.myous.backend.files[0].config")
+        check(kept == "My laptop, for the builds." and saved.get("name") == "Max's old laptop" and saved.get("description") == "My laptop, for the builds.",
+              f"Settings: a description the owner wrote stays as written through a new name {saved}")
+
         # The window as it runs, with two workers (the first just paired, the second running).
         def two_workers(os_name: str, first: str = "{}", second: str = "{}") -> list[str]:
             go("", os_name)
@@ -362,6 +387,22 @@ def main() -> int:
         page.wait_for_function("window.myous.backend.calls.some(c => c[0] === 'composeRun')")
         check(env_of_start().get("MYOUS_BROWSER") == "container" and ["browserStop", [mac_home]] in calls()
               and "macBrowserEnsure" not in names(), "In the container: MYOUS_BROWSER=container, none on the Mac")
+        # Set up: the default description follows the name typed; the owner's own words stay.
+        go("setup")
+        page.fill("#setup-name", "Studio")
+        page.click("#setup-start")
+        page.wait_for_function("window.myous.backend.calls.some(c => c[0] === 'composeRun')")
+        desc = page.evaluate("window.myous.model.current.config.data.description")
+        check(desc is None and "My own computer, Studio." in env_of_start().get("MYOUS_DESCRIPTION", ""),
+              f"Set up: a new name, the default description follows it and stays the default {desc}")
+        go("setup")
+        page.fill("#setup-desc", "The studio's Linux box.")
+        page.fill("#setup-name", "Studio")
+        page.click("#setup-start")
+        page.wait_for_function("window.myous.backend.calls.some(c => c[0] === 'composeRun')")
+        check(env_of_start().get("MYOUS_DESCRIPTION") == "The studio's Linux box."
+              and page.evaluate("window.myous.model.current.config.data.description") == "The studio's Linux box.",
+              "Set up: a description the owner wrote stays as written")
         go("setup")
         check(page.is_hidden("#setup-macbrowser") and page.is_visible("#setup-browser"), "Linux: no browser question")
         page.click("#setup-start")

@@ -8,7 +8,7 @@ import { applyFake, fakeStates, previewBrowserCheck, previewContainers } from ".
 import { appMenu, browserItems, buildMenu, MenuActions, moreMenu } from "./menu.js";
 import { ADVANCE_SHOWS, Check, classifyContainers, Container, isAdvance, isUrgent, Model, Screen, staleChoice, UNKNOWN_AFTER, Worker, WorkerFiles } from "./model.js";
 import { advanceWords, attentionCard, browserAdvance, browserCard, browserRow, checkAdvance, checklist, hubHost, hubLine, installLine, macBrowserHint, macBrowserQuestion, runtimeCard } from "./setup.js";
-import { byteCount, countdown, dayLabel, defaultDescription, escapeMarkup, isDefaultDescription, newer, pairingMessage, plural, setHostOs, timeAgo } from "./text.js";
+import { byteCount, countdown, dayLabel, defaultDescription, escapeMarkup, isDefaultDescription, newer, pairingMessage, plural, renamedDescription, setHostOs, timeAgo } from "./text.js";
 
 const T = 1_791_700_000;
 
@@ -624,6 +624,18 @@ test("a worker that dies while the app looks only now and then is still found", 
   }
   assert.deepEqual(looks, ["running", "running", "stopped", "stopped"], "the first slow look is given the doubt, once");
   assert.equal(w.attention, "The worker stopped on its own.");
+});
+
+test("a new name: the default description follows it, the owner's own words stay", () => {
+  for (const direct of [false, true]) {
+    for (const browser of [false, true]) {
+      assert.equal(renamedDescription(defaultDescription("Max's PC", direct, browser), "Max's PC", "Max's laptop", direct),
+        defaultDescription("Max's laptop", direct, browser));
+    }
+  }
+  assert.equal(renamedDescription(`  ${defaultDescription("", false)}\n`, "", "Studio", false), defaultDescription("Studio", false), "from no name, spaces around");
+  assert.equal(renamedDescription("My laptop, for the builds.", "Max's PC", "Max's laptop", false), "My laptop, for the builds.");
+  assert.equal(renamedDescription(defaultDescription("Max's PC"), "Max's Mac", "Max's laptop", false), defaultDescription("Max's PC"), "a default for another name is the owner's");
 });
 
 test("words and numbers", () => {

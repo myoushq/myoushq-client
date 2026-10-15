@@ -8,7 +8,7 @@ import { applyFake } from "./fake.js";
 import { appMenu, buildMenu, MenuActions, moreMenu } from "./menu.js";
 import { Advance, Agent, agentContacts, agentName, classifyContainers, Container, isUrgent, Kind, MAC_BROWSER_LINKS, Model, notifyKinds, RuntimeStep, shortNpub, Staleness, staleChoice, verb, what, Worker } from "./model.js";
 import { attentionCard, browserAdvance, browserCard, BrowserRow, browserRow, checkAdvance, CheckName, checklist, hubLine, installLine, macBrowserHint, macBrowserName, macBrowserQuestion, Row, runtimeCard } from "./setup.js";
-import { byteCount, capitalize, clockTime, countdown, dayLabel, defaultDescription, dict, escapeMarkup, isDefaultDescription, newer, num, pairingMessage, plural, setHostOs, str, timeAgo } from "./text.js";
+import { byteCount, capitalize, clockTime, countdown, dayLabel, defaultDescription, dict, escapeMarkup, isDefaultDescription, newer, num, pairingMessage, plural, renamedDescription, setHostOs, str, timeAgo } from "./text.js";
 
 const INVITE_SECONDS = 900;
 const AGENTS_EVERY = 15; // ticks between reads of the local agents
@@ -1525,6 +1525,16 @@ async function openSettings() {
   const body = el("div", { className: "settings" });
   const name = el<HTMLInputElement>("input", { value: w.config.name });
   const desc = el<HTMLTextAreaElement>("textarea", { rows: 4, value: w.config.effectiveDescription });
+  // The default description follows the name as it is typed (an empty name keeps the old one);
+  // the owner's own words stay.
+  const shownName = w.config.name;
+  let prevName = shownName;
+  name.oninput = () => {
+    const to = name.value.trim() || shownName;
+    const d = renamedDescription(desc.value, prevName, to, w.config.isDirect);
+    if (d !== desc.value) desc.value = d;
+    prevName = to;
+  };
   const review = el<HTMLSelectElement>("select");
   review.append(...REVIEW.map(([v, t]) => el("option", { value: v, text: t, selected: v === w.review })));
   const check = (label: string, on: boolean, cls = "") => {
@@ -1575,8 +1585,9 @@ async function openSettings() {
   let switchBrowser = false;
   if (kept) {
     if (name.value.trim()) w.config.name = name.value.trim();
-    const d = desc.value.trim();
-    w.config.description = isDefaultDescription(d, w.config.name, w.config.isDirect) ? "" : d;
+    // A default, for the new name or still for the old one, is kept as none: it follows the name.
+    const d = desc.value.trim(), direct = w.config.isDirect;
+    w.config.description = isDefaultDescription(d, w.config.name, direct) || isDefaultDescription(d, shownName, direct) ? "" : d;
     if (macWhere) {
       const id = where.options[whereBox.selectedIndex]?.id ?? "";
       const which = id && !m.macBrowsers?.why ? "mac" : "container";

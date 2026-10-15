@@ -83,6 +83,16 @@ export function isDefaultDescription(text: string, name: string, direct: boolean
   return t === defaultDescription(name, direct, false) || t === defaultDescription(name, direct, true);
 }
 
+/** The description once the name changes from `from` to `to`: a default for the old name becomes
+ * the same default for the new one (with or without the browser, as it was); the owner's own words
+ * stay as they are. */
+export function renamedDescription(text: string, from: string, to: string, direct: boolean): string {
+  for (const browser of [false, true]) {
+    if (text.trim() === defaultDescription(from, direct, browser)) return defaultDescription(to, direct, browser);
+  }
+  return text;
+}
+
 /** What the owner pastes to the agent: the worker's own message when it
  * wrote one, else the same sentence built here. */
 export function pairingMessage(invite: Record<string, unknown> | null, name: string): string {
