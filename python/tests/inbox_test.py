@@ -281,6 +281,57 @@ class LateReplies(unittest.TestCase):
         self.assertIn(f"file from Sam's Mac: late reply to cp of /work/out.txt (sent {self.clock}): out.txt",
                       watcher.describe(get))
 
+    def history(self, json_out: bool = False) -> str:
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            cli.cmd_history(Agent(self.st), self.st, SimpleNamespace(with_=None, limit=50, json=json_out))
+        return out.getvalue()
+
+    def out(self, **entry) -> dict:
+        """A request (or message) this agent sent to the worker."""
+        return inbox.record(self.st, dict(entry, direction="out", peer=self.worker, alias="Sam's Mac"))
+
+    def test_history_shows_requests_and_replies_readably(self):
+        def line(e: dict, text: str) -> str:
+            return f"[{time.strftime('%Y-%m-%d %H:%M', time.localtime(e['at']))}] {text}"
+
+        exec_ = json.dumps({"myous": "exec", "id": "1" * 32, "cmd": "make test", "timeout": 120, "ttl": 150})
+        get = json.dumps({"myous": "get", "id": "2" * 32, "path": "/work/out.txt", "ttl": 300})
+        self.give_up("5" * 32, op="exec", cmd="sleep 900")
+        entries = [
+            self.out(type="message", text=exec_),
+            self.reply("result", "1" * 32, exit=0, stdout="ok\n", stderr="", truncated=False),
+            self.out(type="message", text=get),
+            self.reply("file", "2" * 32, name="out.txt", size=3),
+            self.out(type="file", name="in.pdf", size=5, w=["put", "3" * 32, "/work/in.pdf", "300"],
+                      text="sent file: in.pdf (5 bytes)"),
+            self.reply("ack", "3" * 32, ok=True, path="/work/in.pdf", size=5, sha256="00"),
+            self.reply("ack", "4" * 32, ok=False, error="refused by the owner"),
+            self.reply("result", "5" * 32, exit=0, stdout="", stderr=""),
+            self.out(type="message", text="hello"),
+            self.out(type="file", name="notes.txt", size=9, text="sent file: notes.txt (9 bytes)"),
+        ]
+        n = entries[3]["seq"]
+        self.assertEqual(self.history(), "\n".join([
+            line(entries[0], "me -> Sam's Mac: exec `make test` (request 11111111)"),
+            line(entries[1], "Sam's Mac: result of request 11111111: exit 0\nok"),
+            line(entries[2], "me -> Sam's Mac: cp of /work/out.txt (request 22222222)"),
+            line(entries[3], f"file from Sam's Mac: reply to request 22222222: out.txt (3 bytes, id {n}; `myous fetch {n}`)"),
+            line(entries[4], "file me -> Sam's Mac: cp of in.pdf to /work/in.pdf (5 bytes, request 33333333)"),
+            line(entries[5], "Sam's Mac: answer to request 33333333: written: /work/in.pdf (5 bytes)"),
+            line(entries[6], "Sam's Mac: answer to request 44444444: refused: refused by the owner"),
+            # A late reply exactly as the inbox shows it.
+            line(entries[7], f"Sam's Mac: late result of exec `sleep 900` (sent {self.clock}): exit 0"),
+            line(entries[8], "me -> Sam's Mac: hello"),
+            line(entries[9], "file me -> Sam's Mac: notes.txt (9 bytes)"),
+        ]) + "\n")
+        [late] = inbox.unread(self.st)   # the inbox shows the late one the same way
+        self.assertEqual(self.printed([late]), line(entries[7], f"Sam's Mac: {late['text']}") + "\n")
+        # --json keeps the entries as stored.
+        stored = json.loads(self.history(json_out=True))
+        self.assertEqual([e["text"] for e in stored], [e["text"] for e in entries])
+        self.assertNotIn("late", stored[7])
+
     def test_give_up_keeps_requests_a_day_past_their_ttl(self):
         now = int(time.time())
         self.st.put("gave_up", {"old": {"expires": now - inbox.GAVE_UP_KEEP - 5}, "recent": {"expires": now - 3600}})

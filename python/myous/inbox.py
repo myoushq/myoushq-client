@@ -211,11 +211,48 @@ def late_what(late: dict) -> str:
 
 def late_text(e: dict) -> str:
     """What a late reply says, for the agent to read instead of its JSON."""
-    what = late_what(e["late"])
+    return _reply_text(e, "late ", late_what(e["late"]))
+
+
+def reply_to(e: dict) -> str | None:
+    """The request a worker's reply answers, as history names it (by the
+    start of its id, as request_text shows the request): "request
+    1a2b3c4d"; None for an entry that is not a reply."""
+    rid = _answers(e)
+    return None if rid is None else _request_ref(rid)
+
+
+def reply_text(e: dict) -> str:
+    """What a reply that isn't late says, for history: as late_text, with
+    the request named by reply_to."""
+    return _reply_text(e, "", reply_to(e))
+
+
+def request_text(e: dict) -> str | None:
+    """What a request this agent sent to a worker asks, for history:
+    "exec `make test` (request 1a2b3c4d)"; None for any other entry."""
+    if e.get("direction") != "out":
+        return None
+    w = e.get("w") or [""]
+    if e.get("type") == "file" and w[0] == "put" and len(w) > 2:
+        return f"cp of {e.get('name')} to {w[2]} ({e.get('size')} bytes, {_request_ref(w[1])})"
+    obj = parse_request(e.get("text") or "") if e.get("type") == "message" else None
+    if obj and obj["myous"] == "exec":
+        return f"exec `{obj.get('cmd')}` ({_request_ref(obj['id'])})"
+    if obj and obj["myous"] == "get":
+        return f"cp of {obj.get('path')} ({_request_ref(obj['id'])})"
+    return None
+
+
+def _request_ref(rid: str) -> str:
+    return f"request {rid[:8]}" if rid else "a request"
+
+
+def _reply_text(e: dict, late: str, what: str) -> str:
     if e["type"] == "file":
-        return f"late reply to {what}: {describe_file(e)}"
+        return f"{late}reply to {what}: {describe_file(e)}"
     if e["type"] == "result":
-        lines = [f"late result of {what}: exit {e.get('exit')}"]
+        lines = [f"{late}result of {what}: exit {e.get('exit')}"]
         if e.get("stdout"):
             lines.append(e["stdout"].rstrip("\n"))
         if e.get("stderr"):
@@ -229,10 +266,10 @@ def late_text(e: dict) -> str:
         answer = f"written: {e['path']} ({e.get('size')} bytes)"
     else:
         answer = "done"
-    return f"late answer to {what}: {answer}"
+    return f"{late}answer to {what}: {answer}"
 
 
-def _shown(e: dict, gave_up: dict) -> dict:
+def shown(e: dict, gave_up: dict) -> dict:
     """An entry as unread shows it: a late reply gets "late" (the request
     it answers) and readable text."""
     r = late_request(e, gave_up)
@@ -248,7 +285,7 @@ def unread(st: Storage, mark_read: bool = True) -> list[dict]:
         state = st.get("state", {})
         last = state.get("read_seq", 0)
         gave_up = st.get("gave_up", {})
-        entries = [_shown(e, gave_up) for e in st.read_history()
+        entries = [shown(e, gave_up) for e in st.read_history()
                    if e["seq"] > last and e.get("direction") != "out" and not consumed(e, gave_up)]
         # The contact's current relationship context, so the agent has it when it answers.
         for e in entries:

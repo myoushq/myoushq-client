@@ -173,18 +173,28 @@ def context_line(e: dict) -> str | None:
 
 
 def _print_entries(entries: list[dict]) -> None:
+    """Entries as inbox and history print them: worker replies, and in the
+    history this agent's requests, readably rather than as their JSON."""
     for e in entries:
         when = time.strftime("%Y-%m-%d %H:%M", time.localtime(e.get("sent_at", e["at"])))
-        if e["type"] == "file":
-            who = f"me -> {e['alias']}" if e.get("direction") == "out" else f"from {e['alias']}"
-            late = f"late reply to {inbox.late_what(e['late'])}: " if e.get("late") else ""
-            print(f"[{when}] file {who}: {late}{e['name']} ({e.get('size')} bytes, id {e['seq']}; `myous fetch {e['seq']}`)")
+        if e["type"] == "file" and e.get("direction") == "out":
+            print(f"[{when}] file me -> {e['alias']}: {inbox.request_text(e) or inbox.describe_file(e)}")
+        elif e["type"] == "file":
+            about = ""
+            if e.get("late"):
+                about = f"late reply to {inbox.late_what(e['late'])}: "
+            elif inbox.reply_to(e):
+                about = f"reply to {inbox.reply_to(e)}: "
+            print(f"[{when}] file from {e['alias']}: {about}{e['name']} ({e.get('size')} bytes, id {e['seq']}; "
+                  f"`myous fetch {e['seq']}`)")
         elif e.get("late"):
             print(f"[{when}] {e['alias']}: {e['text']}")
+        elif e["type"] in inbox.REPLY_OPS:
+            print(f"[{when}] {e['alias']}: {inbox.reply_text(e)}")
         elif e["type"] != "message":
             print(f"[{when}] ({e['type']}) {e['text']}")
         elif e["direction"] == "out":
-            print(f"[{when}] me -> {e['alias']}: {e['text']}")
+            print(f"[{when}] me -> {e['alias']}: {inbox.request_text(e) or e['text']}")
         else:
             print(f"[{when}] {e['alias']}: {e['text']}")
             line = context_line(e)
@@ -217,7 +227,8 @@ def cmd_history(agent: Agent, st: FileStorage, args) -> None:
     if args.json:
         print(json.dumps([_public(e) for e in entries], indent=2))
     else:
-        _print_entries(entries)
+        gave_up = st.get("gave_up", {})
+        _print_entries([inbox.shown(e, gave_up) for e in entries])   # a late reply as the inbox showed it
 
 
 def cmd_send_file(agent: Agent, st: FileStorage, args) -> None:
