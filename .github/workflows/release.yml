@@ -479,6 +479,7 @@ jobs:
           set -eu
           pip install build==1.3.0 && python -m build --outdir out python
           cp python/requirements.lock out/requirements-python.lock
+          cp python/requirements-qr.lock out/requirements-qr-python.lock
           scripts/release-notes.sh "$TAG" > out/notes.md
           # shellcheck disable=SC2035 # our own file names; ./ would show in SHA256SUMS
           (cd out && shasum -a 256 *.dmg *.exe *.AppImage *.deb *.whl *.tar.gz *.lock > SHA256SUMS)
@@ -496,4 +497,5 @@ jobs:
             out/*.whl
             out/*.tar.gz
             out/requirements-python.lock
+            out/requirements-qr-python.lock
             out/SHA256SUMS

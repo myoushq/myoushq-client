@@ -4,6 +4,7 @@ import argparse
 import io
 import json
 import os
+import sys
 import tempfile
 import time
 import unittest
@@ -113,6 +114,19 @@ class InitGuardTest(unittest.TestCase):
         self.st.put("settings", {})
         self.init("Codex")
         self.assertEqual(self.registered, "Codex")
+
+
+class QrHintTest(unittest.TestCase):
+    def test_the_hint_installs_the_releases_qr_lock_for_this_version(self):
+        from myous import qr
+        hint = qr.install_hint()
+        self.assertIn(sys.executable, hint)
+        self.assertTrue(hint.endswith(f" -m pip install --require-hashes -r https://github.com/myoushq/myoushq-client"
+                                      f"/releases/download/v{__version__}/requirements-qr-python.lock"), hint)
+        # The release publishes python/requirements-qr.lock under that name.
+        release = (Path(__file__).resolve().parents[2] / ".github" / "workflows" / "release.yml").read_text()
+        self.assertIn("cp python/requirements-qr.lock out/requirements-qr-python.lock", release)
+        self.assertIn("out/requirements-qr-python.lock", release.split("files:", 1)[1])
 
 
 class HomeMismatchTest(unittest.TestCase):

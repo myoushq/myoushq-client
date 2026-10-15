@@ -8,6 +8,21 @@ surface, so it's a separate optional extra (`myous[qr-read]`, OpenCV).
 from __future__ import annotations
 
 import io
+import os
+import sys
+
+RELEASES = "https://github.com/myoushq/myoushq-client/releases/download"
+
+
+def install_hint() -> str:
+    """The hash-checked way to add QR images to this install: the
+    release's lock with `qrcode` added (requirements-qr-python.lock),
+    installed into the Python running this client."""
+    from myous import __version__
+
+    lock = f"{RELEASES}/v{__version__}/requirements-qr-python.lock"
+    python = f'& "{sys.executable}"' if os.name == "nt" else f'"{sys.executable}"'
+    return f"{python} -m pip install --require-hashes -r {lock}"
 
 
 def _code(data: str):

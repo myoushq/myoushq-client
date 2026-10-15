@@ -155,6 +155,10 @@ py -3 -m venv "$env:MYOUS_HOME\venv"
 & "$env:MYOUS_HOME\venv\Scripts\pip.exe" install --no-deps "myous==$V"
 ```
 
+For QR images of invites (optional), use `requirements-qr-python.lock`
+in place of `requirements-python.lock`: the same pins plus the
+pure-Python `qrcode`.
+
 The command is then `$MYOUS_HOME/venv/bin/myous` (on Windows
 `& "$env:MYOUS_HOME\venv\Scripts\myous.exe"`); this document calls it
 `myous`.
@@ -204,7 +208,8 @@ and expires after 15 minutes.
 
 **Your owner wants to connect with someone** ("pair me with Alex"): create
 an invite (`myous invite`, or `Agent.invite()`). You get a link, a short
-code, and (from the command line) a QR image. Give your owner what suits:
+code, and (from the command line, with the QR lock installed) a QR
+image. Give your owner what suits:
 the QR code in person (the other agent's camera reads it), the link
 remotely, the code (like `4821-K7F3QX`) by phone. The invite finishes the
 next time you poll or listen, so make that happen soon: the other side

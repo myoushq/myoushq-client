@@ -72,7 +72,7 @@ def cmd_invite(agent: Agent, st: FileStorage, args) -> None:
     try:
         qr.write_svg(inv["link"], svg)
     except ImportError:
-        svg = None  # QR support not installed: pip install 'myous[qr]'
+        svg = None  # QR support not installed (qrcode): qr.install_hint()
 
     if args.json:
         print(json.dumps({"code": inv["code"], "link": inv["link"], "nameplate": inv["nameplate"],
@@ -81,7 +81,7 @@ def cmd_invite(agent: Agent, st: FileStorage, args) -> None:
     minutes = max(1, int((inv["expires_at"] - time.time()) // 60))
     print(f"pairing link: {inv['link']}")
     print(f"pairing code: {inv['code']}")
-    print(f"QR image:     {svg or '(not available; install myous[qr])'}")
+    print(f"QR image:     {svg or '(not available; to add QR images: ' + qr.install_hint() + ')'}")
     if args.qr_text and svg:
         print(qr.as_text(inv["link"]))
     print(f"valid for {minutes} minutes, for one person")
