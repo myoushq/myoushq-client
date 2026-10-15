@@ -1,14 +1,18 @@
 """The Agent's bookkeeping around listen() and worker replies, without a
 relay: delivery happens once, and only the right contact can answer."""
 import asyncio
+import contextlib
+import io
+import json
+import time
 import unittest
 
 try:
     from inbox_test import MemoryStorage  # unittest discover puts tests/ on the path
 except ModuleNotFoundError:
     from tests.inbox_test import MemoryStorage
-from myous import contacts, inbox
-from myous.agent import Agent, _Deliveries
+from myous import cli, contacts, inbox
+from myous.agent import Agent, _Deliveries, timeout_text
 
 
 class Cards(unittest.TestCase):
@@ -146,3 +150,145 @@ class Connections(unittest.TestCase):
         conn = self.use()
         self.assertEqual(self.opened, [conn])
         self.assertTrue(conn.closed)
+
+
+class RequestTtl(unittest.TestCase):
+    """What exec, put and get send as their ttl (protocol.md 7.1), and what
+    a request that got no reply says."""
+
+    def setUp(self):
+        self.st = MemoryStorage()
+        self.agent = Agent(self.st)
+        self.sent, self.tags, self.waits = [], [], []
+
+        @contextlib.asynccontextmanager
+        async def connect(cfg=None):
+            yield object()
+
+        async def send(name, text, conn=None):
+            self.sent.append(json.loads(text))
+
+        async def send_file(name, path, extra_tags=None, conn=None):
+            self.tags.append(extra_tags)
+
+        async def await_reply(rid, timeout, npub, conn=None, expires=None):
+            self.waits.append((timeout, expires))
+            return {"type": "ack", "ok": True, "id": rid}
+
+        self.agent._connect = connect
+        self.agent.send = send
+        self.agent.send_file = send_file
+        self.agent._await_reply = await_reply
+        self.agent._npub = lambda name: "npub1worker"
+        self.agent.fetch = lambda reply, to: "fetched"
+
+    def test_exec_and_get_carry_the_ttl_in_the_json(self):
+        before = time.time()
+        asyncio.run(self.agent.exec("box", "ls"))
+        self.assertEqual((self.sent[-1]["timeout"], self.sent[-1]["ttl"]), (120, 150))   # as long as it waits
+        wait, expires = self.waits[-1]
+        self.assertEqual(wait, 150)
+        self.assertTrue(before + 150 <= expires <= time.time() + 150)   # from when it went out
+        asyncio.run(self.agent.exec("box", "ls", timeout=10.5))
+        self.assertEqual((self.sent[-1]["timeout"], self.sent[-1]["ttl"]), (10, 40))
+        asyncio.run(self.agent.exec("box", "ls", ttl=3600))
+        self.assertEqual(self.sent[-1]["ttl"], 3600)
+        self.assertEqual(self.waits[-1][0], 150)   # a longer ttl doesn't make it wait longer
+        asyncio.run(self.agent.exec("box", "ls", ttl=10 ** 6))
+        self.assertEqual(self.sent[-1]["ttl"], 86400)
+
+        self.assertEqual(asyncio.run(self.agent.get("box", "out.txt")), "fetched")
+        self.assertEqual((self.sent[-1]["myous"], self.sent[-1]["path"], self.sent[-1]["ttl"]), ("get", "out.txt", 300))
+        asyncio.run(self.agent.get("box", "out.txt", timeout=20, ttl=7))
+        self.assertEqual(self.sent[-1]["ttl"], 7)
+        self.assertEqual(self.waits[-1][0], 20)
+
+    def test_put_carries_it_as_the_fifth_value_of_the_w_tag(self):
+        asyncio.run(self.agent.put("box", __file__, "in.py"))
+        w = self.tags[-1][0]
+        self.assertEqual((w[0], w[1], w[3], w[4]), ("w", "put", "in.py", "300"))
+        self.assertEqual(len(w[2]), 32)
+        asyncio.run(self.agent.put("box", __file__, "in.py", timeout=60, ttl=900))
+        self.assertEqual(self.tags[-1][0][4], "900")
+
+    def test_a_ttl_is_at_least_a_second(self):
+        for ttl in (0, -1, 0.5, True, float("nan"), "60"):
+            with self.assertRaises(ValueError, msg=repr(ttl)):
+                asyncio.run(self.agent.exec("box", "ls", ttl=ttl))
+            with self.assertRaises(ValueError, msg=repr(ttl)):
+                asyncio.run(self.agent.put("box", __file__, "in.py", ttl=ttl))
+        self.assertEqual(self.sent, [])
+        self.assertEqual(self.tags, [])
+
+    def test_what_a_timeout_says(self):
+        gone = timeout_text(150, time.time() - 1)
+        self.assertEqual(gone, "no reply from the worker within 150 seconds; "
+                               "it won't start this request any more (it is off or busy)")
+        later = time.time() + 3600
+        self.assertEqual(timeout_text(150, later),
+                         f"no reply from the worker within 150 seconds; it may still run this request until "
+                         f"{time.strftime('%H:%M', time.gmtime(later))} UTC (its ttl), and its reply won't show in your inbox")
+
+    def test_the_timeout_error_says_it(self):
+        agent = Agent(MemoryStorage())
+
+        async def listen(**kwargs):
+            await asyncio.sleep(3600)
+
+        agent.listen = listen
+        with self.assertRaises(TimeoutError) as cm:
+            asyncio.run(agent._await_reply("c" * 32, 0.1, "npub1worker", expires=time.time() + 3600))
+        self.assertIn("it may still run this request until", str(cm.exception))
+        with self.assertRaises(TimeoutError) as cm:
+            asyncio.run(agent._await_reply("c" * 32, 0.1, "npub1worker", expires=time.time()))
+        self.assertIn("it won't start this request any more", str(cm.exception))
+
+
+class CliTtl(unittest.TestCase):
+    """--ttl on `myous exec` and `myous cp` reaches the request."""
+
+    class FakeAgent:
+        def __init__(self, st):
+            self.st, self.calls = st, []
+
+        async def exec(self, name, cmd, timeout=120, ttl=None):
+            self.calls.append(("exec", name, cmd, timeout, ttl))
+            return {"exit": 0, "stdout": "", "stderr": ""}
+
+        async def put(self, name, local, remote, timeout=300, ttl=None):
+            self.calls.append(("put", name, remote, timeout, ttl))
+            return {"path": remote, "size": 1}
+
+        async def get(self, name, remote, to, timeout=300, ttl=None):
+            self.calls.append(("get", name, remote, timeout, ttl))
+            return to
+
+    def setUp(self):
+        self.st = MemoryStorage()
+        contacts.add(self.st, "d" * 64, "box")
+        self.agent = self.FakeAgent(self.st)
+        self.parser = cli.build_parser()
+
+    def run_cli(self, *argv):
+        args = self.parser.parse_args(argv)
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            try:
+                args.func(self.agent, self.st, args)
+            except SystemExit as e:
+                self.assertEqual(e.code, 0)
+        return self.agent.calls[-1]
+
+    def test_ttl_passes_through(self):
+        self.assertEqual(self.run_cli("exec", "--ttl", "3600", "box", "--", "ls"), ("exec", "box", "ls", 120, 3600))
+        self.assertEqual(self.run_cli("exec", "box", "--", "ls"), ("exec", "box", "ls", 120, None))
+        self.assertEqual(self.run_cli("cp", "--ttl", "900", __file__, "box:in.py"), ("put", "box", "in.py", 300, 900))
+        self.assertEqual(self.run_cli("cp", "box:out.txt", "out.txt", "--ttl", "60"), ("get", "box", "out.txt", 300, 60))
+        self.assertEqual(self.run_cli("cp", "box:out.txt", "out.txt"), ("get", "box", "out.txt", 300, None))
+
+    def test_a_ttl_below_a_second_is_refused(self):
+        for bad in ("0", "-5", "1.5", "soon"):
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as cm:
+                self.parser.parse_args(["exec", "--ttl", bad, "box", "--", "ls"])
+            self.assertEqual(cm.exception.code, 2)
+            self.assertIn("argument --ttl", err.getvalue())
