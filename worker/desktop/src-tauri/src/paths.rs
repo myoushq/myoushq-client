@@ -200,11 +200,13 @@ pub fn ensure(home: &Path) -> io::Result<()> {
 }
 
 /// Drops a command file for the worker (it removes the file once done):
-/// new-code, unpair, stop-<id>, quit.
+/// new-code, unpair, stop-<id>, quit. Made in the worker folder and
+/// renamed into commands/, where the worker takes every name for a
+/// command; never written through a link there (files.rs).
 pub fn send_command(home: &Path, name: &str) -> io::Result<()> {
     let dir = commands_dir(home);
-    fs::create_dir_all(&dir)?;
-    fs::write(dir.join(name), b"")
+    crate::files::dir_in(home, &dir)?;
+    crate::files::write_atomic_via(home, &dir.join(name), b"")
 }
 
 pub fn is_paused(home: &Path) -> bool {
@@ -214,7 +216,7 @@ pub fn is_paused(home: &Path) -> bool {
 pub fn set_paused(home: &Path, on: bool) -> io::Result<()> {
     if on {
         ensure(home)?;
-        fs::write(paused_file(home), b"")
+        crate::files::write_atomic(&paused_file(home), b"")
     } else {
         match fs::remove_file(paused_file(home)) {
             Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),

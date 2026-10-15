@@ -31,6 +31,11 @@ base64 = "0.22"
 trash = "5"
 hostname = "0.4"
 
+# Opening files in a worker's folder without following links (O_NOFOLLOW;
+# files.rs). In the lock already (other crates use it): nothing new builds.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [target.'cfg(windows)'.dependencies]
 winreg = "0.56"
 # Tauri builds it with this feature already; listed so the app doesn't rely on that.

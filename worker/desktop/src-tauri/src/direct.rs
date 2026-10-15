@@ -7,7 +7,6 @@
 
 use std::collections::HashMap;
 use std::ffi::OsString;
-use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
 use std::sync::Mutex;
@@ -71,9 +70,7 @@ pub fn worker_args(
     description: &str,
     notes: &[String],
 ) -> Vec<String> {
-    let current = std::fs::read_to_string(home.join("settings.json"))
-        .ok()
-        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+    let current = crate::files::read_json(&home.join("settings.json"))
         .and_then(|v| v.get("alias").and_then(|a| a.as_str()).map(String::from))
         .unwrap_or_default();
     let mut args = vec![bin.to_string_lossy().to_string(), "worker".into()];
@@ -114,11 +111,7 @@ pub fn start(
     }
     // A quit file the last worker didn't take (killed first) would stop this one.
     let _ = std::fs::remove_file(paths::quit_file(&dir));
-    let log = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(paths::worker_log(&dir))
-        .map_err(|e| e.to_string())?;
+    let log = crate::files::open_append(&paths::worker_log(&dir)).map_err(|e| e.to_string())?;
     let mut cmd = crate::engine::command(&args[0]);
     cmd.args(&args[1..])
         .current_dir(&dir)
@@ -437,10 +430,7 @@ pub fn stop(
         done();
         return false;
     }
-    let status: serde_json::Value = std::fs::read_to_string(paths::status_file(Path::new(home)))
-        .ok()
-        .and_then(|t| serde_json::from_str(&t).ok())
-        .unwrap_or_default();
+    let status = crate::files::read_json(&paths::status_file(Path::new(home))).unwrap_or_default();
     if status["pid"].as_u64() != Some(pid as u64) {
         log(format!(
             "worker.json no longer names pid {pid}; nothing to stop"
@@ -511,7 +501,7 @@ fn running(home: &str) -> bool {
 
 /// The end of worker.log.
 pub fn log_tail(home: &str, max: usize) -> String {
-    let bytes = std::fs::read(paths::worker_log(Path::new(home))).unwrap_or_default();
+    let bytes = crate::files::read_file(&paths::worker_log(Path::new(home))).unwrap_or_default();
     let start = bytes.len().saturating_sub(max);
     String::from_utf8_lossy(&bytes[start..]).to_string()
 }

@@ -582,7 +582,7 @@ fn write_compose(home: String) -> Result<String, String> {
     paths::ensure(&p).map_err(err)?;
     let text = COMPOSE_TEMPLATE.replace("@VERSION@", &image_tag());
     let file = paths::compose_file(&p);
-    std::fs::write(&file, text).map_err(err)?;
+    files::write_atomic(&file, text.as_bytes()).map_err(err)?;
     Ok(file.to_string_lossy().to_string())
 }
 
@@ -814,9 +814,7 @@ fn set_dock<R: Runtime>(app: AppHandle<R>, on: bool) -> Result<(), String> {
 /// for Mac keeps it: off unless the owner turned it on.
 #[cfg(target_os = "macos")]
 fn dock_setting() -> bool {
-    std::fs::read_to_string(paths::config_file(&paths::default_home()))
-        .ok()
-        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+    files::read_json(&paths::config_file(&paths::default_home()))
         .and_then(|v| v.get("dock").and_then(Value::as_bool))
         .unwrap_or(false)
 }

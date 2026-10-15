@@ -33,7 +33,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 
 use crate::engine::{hide, run_capture};
-use crate::paths;
+use crate::{files, paths};
 
 /// The Playwright for Python the app installs: the container's
 /// (worker/Dockerfile), so agents' scripts behave the same in both.
@@ -686,14 +686,23 @@ pub fn bundle_of(exe: &Path) -> PathBuf {
 /// The profile's settings, set once before it exists (the owner's later
 /// choices stand): a name, avatar and toolbar colour that say "myous", the
 /// start page as home, downloads into the work folder, where the agent
-/// can fetch them (`myous cp`).
-pub fn seed_preferences(profile: &Path, worker: &str, start_url: &str, downloads: &Path) {
+/// can fetch them (`myous cp`). `profile` is in the worker folder `home`;
+/// nothing is written through a link there (files.rs).
+pub fn seed_preferences(
+    home: &Path,
+    profile: &Path,
+    worker: &str,
+    start_url: &str,
+    downloads: &Path,
+) {
     let def = profile.join("Default");
     let prefs = def.join("Preferences");
-    if prefs.exists() {
+    if fs::symlink_metadata(&prefs).is_ok() {
         return;
     }
-    let _ = fs::create_dir_all(&def);
+    if files::dir_in(home, &def).is_err() {
+        return;
+    }
     let d = downloads.to_string_lossy().to_string();
     let p = json!({
         "download": {"default_directory": d, "prompt_for_download": false},
@@ -708,7 +717,7 @@ pub fn seed_preferences(profile: &Path, worker: &str, start_url: &str, downloads
         "homepage": start_url,
         "homepage_is_newtabpage": false
     });
-    let _ = fs::write(&prefs, p.to_string());
+    let _ = files::write_atomic(&prefs, p.to_string().as_bytes());
 }
 
 /// How one browser is run for one worker.
@@ -822,7 +831,7 @@ pub fn prepare_with(
         home.join("work").join("downloads")
     };
     for d in [&dir, &profile, &downloads] {
-        paths::ensure(d).map_err(|e| format!("{}: {e}", d.display()))?;
+        files::private_dir_in(home, d).map_err(|e| e.to_string())?;
     }
     let page = dir.join("start.html");
     let html = if how.sandbox {
@@ -830,9 +839,9 @@ pub fn prepare_with(
     } else {
         start_page(worker)
     };
-    fs::write(&page, html).map_err(|e| e.to_string())?;
+    files::write_atomic(&page, html.as_bytes()).map_err(|e| format!("{}: {e}", page.display()))?;
     let start_url = file_url(&page);
-    seed_preferences(&profile, worker, &start_url, &downloads);
+    seed_preferences(home, &profile, worker, &start_url, &downloads);
     let sandbox = if how.sandbox {
         // The sandbox sees resolved paths (/private/tmp, not /tmp).
         let real = |p: &Path| {
@@ -973,7 +982,7 @@ pub fn devtools_answers(port: u16) -> bool {
 /// worker's (myous for Mac's kind: no `kind`, the host as the container
 /// reaches it) only on a Mac.
 fn adoptable(home: &Path) -> Option<(u16, u32, bool)> {
-    let v: Value = serde_json::from_slice(&fs::read(paths::browser_json(home)).ok()?).ok()?;
+    let v = files::read_json(&paths::browser_json(home))?;
     let kind = v.get("kind").and_then(Value::as_str).unwrap_or("");
     let host = v.get("host").and_then(Value::as_str).unwrap_or("");
     let container = match (kind, host) {
@@ -990,8 +999,9 @@ fn adoptable(home: &Path) -> Option<(u16, u32, bool)> {
 /// watches it: browser.json once its port answers, removed when it ends.
 pub fn launch(home: &Path, spec: Spec, log: Log) -> Result<u32, String> {
     let key = home.to_string_lossy().to_string();
-    fs::create_dir_all(&spec.profile).map_err(|e| e.to_string())?;
-    let out = fs::File::create(paths::browser_log(home)).map_err(|e| e.to_string())?;
+    files::dir_in(home, &spec.profile).map_err(|e| e.to_string())?;
+    let log_file = paths::browser_log(home);
+    let out = files::fresh_file(&log_file).map_err(|e| format!("{}: {e}", log_file.display()))?;
     let mut cmd = browser_command(&spec);
     cmd.args(args(&spec, crate::platform::os()))
         .stdin(Stdio::null())
