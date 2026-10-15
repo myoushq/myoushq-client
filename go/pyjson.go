@@ -83,7 +83,11 @@ func pyEncode(b *strings.Builder, v any, sortKeys bool) {
 	case float64:
 		b.WriteString(pyFloat(v))
 	case json.Number:
-		b.WriteString(v.String())
+		if f, ok := pyNumber(v); ok && (math.IsNaN(f) || math.IsInf(f, 0) && strings.ContainsAny(v.String(), ".eE")) {
+			b.WriteString(pyFloat(f)) // NaN or ±Infinity, as Python writes what pyLoads read
+		} else {
+			b.WriteString(v.String())
+		}
 	case pyObj:
 		members := v
 		if sortKeys {
@@ -203,11 +207,12 @@ func pyFloat(f float64) string {
 	return s
 }
 
-// pyLoads is json.loads for a request: NaN, Infinity and -Infinity are
-// taken (as null, which is all the worker needs: an infinite timeout is
-// no timeout, so the default) and numbers stay json.Number.
+// pyLoads is json.loads for a request: numbers stay json.Number, and
+// Python's NaN, Infinity and -Infinity are taken as the numbers they are
+// there (pyNumber reads them as NaN and ±Inf): a ttl of NaN is refused,
+// where a null ttl is no ttl.
 func pyLoads(text string) (any, error) {
-	dec := json.NewDecoder(strings.NewReader(nonFiniteToNull(text)))
+	dec := json.NewDecoder(strings.NewReader(nonFiniteNumbers(text)))
 	dec.UseNumber()
 	var v any
 	if err := dec.Decode(&v); err != nil {
@@ -219,9 +224,14 @@ func pyLoads(text string) (any, error) {
 	return v, nil
 }
 
-// nonFiniteToNull replaces Python's NaN, Infinity and -Infinity outside
-// strings with null.
-func nonFiniteToNull(text string) string {
+// nanNumber is NaN in what pyLoads decodes. JSON has no literal for it;
+// this one (a zero, written as no client writes it) stands in.
+const nanNumber = json.Number("-0e-999999999")
+
+// nonFiniteNumbers replaces Python's NaN, Infinity and -Infinity outside
+// strings with JSON numbers that pyNumber reads as the same: nanNumber,
+// 1e999 and -1e999 (which Python reads as ±inf too).
+func nonFiniteNumbers(text string) string {
 	if !strings.Contains(text, "NaN") && !strings.Contains(text, "Infinity") {
 		return text
 	}
@@ -245,10 +255,10 @@ func nonFiniteToNull(text string) string {
 			inString = true
 		}
 		replaced := false
-		for _, tok := range []string{"-Infinity", "Infinity", "NaN"} {
-			if strings.HasPrefix(text[i:], tok) {
-				b.WriteString("null")
-				i += len(tok) - 1
+		for _, tok := range [][2]string{{"-Infinity", "-1e999"}, {"Infinity", "1e999"}, {"NaN", string(nanNumber)}} {
+			if strings.HasPrefix(text[i:], tok[0]) {
+				b.WriteString(tok[1])
+				i += len(tok[0]) - 1
 				replaced = true
 				break
 			}
@@ -262,11 +272,14 @@ func nonFiniteToNull(text string) string {
 
 // pyNumber is a JSON number as Python would hold it: ok is false for
 // anything that isn't a number (bools included). Infinite values come back
-// as ±Inf.
+// as ±Inf, NaN as NaN.
 func pyNumber(v any) (float64, bool) {
 	n, ok := v.(json.Number)
 	if !ok {
 		return 0, false
+	}
+	if n == nanNumber {
+		return math.NaN(), true
 	}
 	f, err := strconv.ParseFloat(n.String(), 64)
 	if err != nil && !math.IsInf(f, 0) {

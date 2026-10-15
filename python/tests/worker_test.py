@@ -69,7 +69,9 @@ def message(text, **extra):
     return e
 
 
-class WorkerTest(unittest.TestCase):
+class WorkerFixture(unittest.TestCase):
+    """A worker with a fake agent, in a temporary home and work directory."""
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.home = Path(self.tmp.name) / "home"
@@ -89,6 +91,8 @@ class WorkerTest(unittest.TestCase):
     def replies(self):
         return [json.loads(t) if t.startswith("{") else t for _, t in self.agent.sent]
 
+
+class WorkerTest(WorkerFixture):
     def test_exec_result(self):
         self.run_(self.w.handle(message(json.dumps({"myous": "exec", "id": RID, "cmd": "echo out; echo err >&2; exit 3"}))))
         r = self.replies()[-1]
@@ -421,6 +425,155 @@ class WorkerTest(unittest.TestCase):
         (self.home / "commands" / "quit").touch()
         self.w.tick()
         self.assertTrue((self.home / "commands" / "quit").exists())
+
+
+NOW = 1_800_000_000  # the worker's clock in the expiry tests
+
+
+class ExpiryTest(WorkerFixture):
+    """A request is good for its ttl from when it was sent (protocol.md
+    7.1): one the worker takes up later is answered "expired", and is
+    neither reviewed nor run."""
+
+    def setUp(self):
+        super().setUp()
+        clock = mock.patch.object(worker.time, "time", return_value=float(NOW))
+        clock.start()
+        self.addCleanup(clock.stop)
+        # Anything that reaches the review fails the request (and the test).
+        self.reviewed = mock.Mock(side_effect=AssertionError("reviewed"))
+        self.w.review = self.reviewed
+
+    def exec_(self, age=None, **fields):
+        req = dict({"myous": "exec", "id": RID, "cmd": "touch ran"}, **fields)
+        return message(json.dumps(req), **({} if age is None else {"sent_at": NOW - age}))
+
+    def put(self, age, *ttl):
+        return {"type": "file", "direction": "in", "peer": PEER, "alias": "muse", "name": "in.txt", "size": 36,
+                "x": "00" * 32, "w": ["put", RID, "in.txt", *ttl], "seq": 2, "at": 0, "sent_at": NOW - age}
+
+    def assert_expired(self, error):
+        self.assertEqual(self.replies()[-1], {"myous": "ack", "id": RID, "ok": False, "error": error})
+        self.reviewed.assert_not_called()
+        rec = json.loads((self.home / "requests" / f"{RID}.json").read_text())
+        self.assertEqual((rec["decision"], rec["reason"], rec["at"], rec["done_at"]), ("expired", error, NOW, NOW))
+        return rec
+
+    def test_expired_exec_get_and_put_are_neither_reviewed_nor_run(self):
+        self.run_(self.w.handle(self.exec_(age=120, ttl=60)))
+        rec = self.assert_expired("expired: sent 2 minutes ago, its ttl is 60 seconds; not run")
+        self.assertEqual((rec["op"], rec["cmd"], rec["alias"], rec["sender"]), ("exec", "touch ran", "muse", PEER))
+        self.assertFalse((self.work / "ran").exists())
+        log = [json.loads(line) for line in (self.home / "worker.log").read_text().splitlines()]
+        self.assertEqual((log[-1]["op"], log[-1]["id"], log[-1]["sender"], log[-1]["decision"]), ("exec", RID, PEER, "expired"))
+
+        self.run_(self.w.handle(message(json.dumps({"myous": "get", "id": RID, "path": "secret.txt", "ttl": 60}),
+                                        sent_at=NOW - 61)))
+        rec = self.assert_expired("expired: sent 61 seconds ago, its ttl is 60 seconds; not run")
+        self.assertEqual((rec["op"], rec["path"]), ("get", "secret.txt"))
+        self.assertEqual(self.agent.files, [])
+
+        # A put expires before its blob is downloaded.
+        self.agent.fetch_bytes = mock.Mock(side_effect=AssertionError("downloaded"))
+        self.run_(self.w.handle(self.put(400, "300")))
+        rec = self.assert_expired("expired: sent 6 minutes ago, its ttl is 300 seconds; not run")
+        self.assertEqual((rec["op"], rec["path"], rec["size"]), ("put", "in.txt", 36))
+        self.agent.fetch_bytes.assert_not_called()
+        self.assertFalse((self.work / "in.txt").exists())
+
+        # Counted for the status, but not as a refusal.
+        self.w.write_status()
+        status = json.loads((self.home / "worker.json").read_text())
+        self.assertEqual((status["requests"], status["last"]["op"], status["last"]["ok"]), (3, "expired", False))
+
+    def test_the_age_in_the_error(self):
+        for age, ttl, ago in ((59, 30, "59 seconds"), (150, 30, "2 minutes"), (1500, 150, "25 minutes"),
+                              (3 * 3600, 600, "3 hours"), (119, 1, "119 seconds"), (120, 1, "2 minutes"),
+                              (7199, 1, "119 minutes"), (7200, 1, "2 hours")):
+            self.run_(self.w.handle(self.exec_(age=age, ttl=ttl)))
+            self.assertEqual(self.replies()[-1]["error"], f"expired: sent {ago} ago, its ttl is {ttl} seconds; not run")
+        self.assertEqual(worker.expired_text(1500, 150), "expired: sent 25 minutes ago, its ttl is 150 seconds; not run")
+        self.assertFalse((self.work / "ran").exists())
+
+    def test_within_its_ttl_a_request_runs(self):
+        self.w.review = lambda *a, **k: None
+        self.run_(self.w.handle(self.exec_(age=60, ttl=60)))   # expired only when older than its ttl
+        self.assertEqual(self.replies()[-1]["exit"], 0)
+        self.assertTrue((self.work / "ran").exists())
+
+    def test_without_a_ttl_600_seconds(self):
+        self.run_(self.w.handle(self.exec_(age=601)))
+        self.assertEqual(self.replies()[-1]["error"], "expired: sent 10 minutes ago, its ttl is 600 seconds; not run")
+        self.run_(self.w.handle(self.put(601)))
+        self.assertEqual(self.replies()[-1]["error"], "expired: sent 10 minutes ago, its ttl is 600 seconds; not run")
+        self.run_(self.w.handle(self.exec_(age=601, ttl=None)))   # null is no ttl
+        self.assertEqual(self.replies()[-1]["error"], "expired: sent 10 minutes ago, its ttl is 600 seconds; not run")
+        self.w.review = lambda *a, **k: None
+        self.run_(self.w.handle(self.exec_(age=600)))
+        self.assertEqual(self.replies()[-1]["exit"], 0)
+
+    def test_a_ttl_above_a_day_counts_as_a_day(self):
+        self.run_(self.w.handle(self.exec_(age=86401, ttl=10 ** 9)))
+        self.assertEqual(self.replies()[-1]["error"], "expired: sent 24 hours ago, its ttl is 86400 seconds; not run")
+        self.run_(self.w.handle(self.exec_(age=86401, ttl=10 ** 400)))   # too big for a float: still a day, as in Go
+        self.assertEqual(self.replies()[-1]["error"], "expired: sent 24 hours ago, its ttl is 86400 seconds; not run")
+        self.run_(self.w.handle(self.put(86401, "9" * 40)))
+        self.assertEqual(self.replies()[-1]["error"], "expired: sent 24 hours ago, its ttl is 86400 seconds; not run")
+        self.w.review = lambda *a, **k: None
+        self.run_(self.w.handle(self.exec_(age=86400, ttl=10 ** 9)))
+        self.assertEqual(self.replies()[-1]["exit"], 0)
+
+    def test_a_fractional_ttl_counts_whole_seconds(self):
+        self.run_(self.w.handle(self.exec_(age=91, ttl=90.7)))
+        self.assertEqual(self.replies()[-1]["error"], "expired: sent 91 seconds ago, its ttl is 90 seconds; not run")
+
+    def test_a_ttl_that_is_not_a_number_of_seconds_is_refused(self):
+        for ttl in (0, -5, 0.5, True, False, "60", [60], {"s": 60}):
+            self.run_(self.w.handle(self.exec_(age=1, ttl=ttl)))
+            self.assertEqual(self.replies()[-1], {"myous": "ack", "id": RID, "ok": False, "error": worker.BAD_TTL}, repr(ttl))
+            self.run_(self.w.handle(message(json.dumps({"myous": "get", "id": RID, "path": "x", "ttl": ttl}), sent_at=NOW)))
+            self.assertEqual(self.replies()[-1]["error"], worker.BAD_TTL, repr(ttl))
+        for raw in ("NaN", "Infinity", "-Infinity", "1e400"):
+            self.run_(self.w.handle(message('{"myous": "exec", "id": "%s", "cmd": "touch ran", "ttl": %s}' % (RID, raw),
+                                            sent_at=NOW)))
+            self.assertEqual(self.replies()[-1]["error"], worker.BAD_TTL, raw)
+        self.agent.fetch_bytes = mock.Mock(side_effect=AssertionError("downloaded"))
+        for ttl in ("0", "-1", "1.5", "", " 60", "abc", "\u0661"):
+            self.run_(self.w.handle(self.put(1, ttl)))
+            self.assertEqual(self.replies()[-1]["error"], worker.BAD_TTL, repr(ttl))
+        rec = json.loads((self.home / "requests" / f"{RID}.json").read_text())
+        self.assertEqual((rec["decision"], rec["reason"]), ("refuse", worker.BAD_TTL))
+        self.reviewed.assert_not_called()
+        self.agent.fetch_bytes.assert_not_called()
+        self.assertFalse((self.work / "ran").exists())
+
+    def test_when_it_was_sent_is_the_senders_clock(self):
+        self.w.review = lambda *a, **k: None
+        # No sent_at: never expired.
+        self.run_(self.w.handle(self.exec_(ttl=1)))
+        self.assertEqual(self.replies()[-1]["exit"], 0)
+        # A sent_at in the future counts as now.
+        (self.work / "ran").unlink()
+        self.run_(self.w.handle(self.exec_(age=-3600, ttl=1)))
+        self.assertEqual(self.replies()[-1]["exit"], 0)
+        self.assertTrue((self.work / "ran").exists())
+
+    def test_an_old_help_gets_no_reply(self):
+        self.run_(self.w.handle(message("help", sent_at=NOW - worker.DEFAULT_TTL - 1)))
+        self.run_(self.w.handle(message("what can you do?", sent_at=NOW - 3600)))
+        self.assertEqual(self.agent.sent, [])
+        self.run_(self.w.handle(message("help", sent_at=NOW - worker.DEFAULT_TTL)))
+        self.assertEqual(len(self.agent.sent), 1)
+        self.assertIn("myoushq worker", self.agent.sent[0][1])
+
+    def test_a_ttl_is_its_own_and_ids_come_first(self):
+        # A bad id is refused as before, whatever the ttl says.
+        self.run_(self.w.handle(message(json.dumps({"myous": "exec", "id": "a.b", "cmd": "touch ran", "ttl": 0}),
+                                        sent_at=NOW - 10)))
+        self.assertEqual(self.replies()[-1]["error"], worker.BAD_ID)
+        self.assertEqual(worker.request_ttl(None), worker.DEFAULT_TTL)
+        self.assertEqual(worker.request_ttl("0090", tag=True), 90)
+        self.assertIsNone(worker.request_ttl(90, tag=True))   # a tag's ttl is a string
 
 
 # A worker in a process of its own, as `myous worker` runs: its fake agent

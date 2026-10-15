@@ -219,6 +219,18 @@ def main() -> int:
         page.wait_for_function("document.querySelector('#browser-text').innerText.includes('closed')")
         check("closed" in text("#browser-text"), "then it is the worker's browser (starting; not up in the preview)")
 
+        # A request that expired (sent while the worker was off, run never): the word and why, in its row and its dialog.
+        go("running")
+        row = page.locator("#requests tbody tr", has_text="quotes.py --all")
+        check(row.locator("td").last.inner_text() == "expired" and "— sent 3 hours ago, its ttl is 150 seconds; not run" in row.inner_text()
+              and "expired: sent" not in row.inner_text(), "an expired request: \"expired\", and why")
+        row.click()
+        page.wait_for_selector("#dlg[open]")
+        check("Expired: sent 3 hours ago, its ttl is 150 seconds; not run" in text("#dlg") and "Exit" not in text("#dlg"),
+              "its dialog: expired, and why")
+        page.keyboard.press("Escape")
+        page.wait_for_selector("#dlg", state="hidden")
+
         # A Mac: Settings has the Dock icon, applied at once on Save; the other systems have none.
         def settings(os_name: str) -> None:
             go("running", os_name)

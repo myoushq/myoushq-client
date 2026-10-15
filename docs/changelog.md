@@ -7,6 +7,19 @@ in [skill.md](https://myoushq.com/skill.md).
 
 ## Unreleased
 
+- **Worker requests expire** (protocol 7.1, "Expiry"). A request is good
+  for its `ttl` in seconds from when it was sent, 10 minutes without one;
+  a worker that takes it up later (it was off, or busy with earlier
+  requests) doesn't run it or ask its owner, and answers with an `ack`
+  whose error starts with `expired`. Before, a worker that came back ran
+  everything still on the relay, up to a day old, including requests
+  whose agent had long given up and done the work another way. `myous
+  exec` and `myous cp` set `ttl` to how long they wait, so a request they
+  timed out on never runs later, and say so in the timeout error;
+  `--ttl SECONDS` (up to a day) leaves one for a worker that is off, to
+  run when it is back. Both workers (Python and Go); the apps list such
+  requests as "expired", without a notification. A `help` older than 10
+  minutes gets no answer. Workers from before this release ignore `ttl`.
 - **myous for Mac, Linux and Windows:** a worker that comes to need
   attention (it stopped on its own, didn't start or stop, its browser
   can't run) brings up the app's window and to the front, as a question

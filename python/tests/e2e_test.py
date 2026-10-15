@@ -285,6 +285,39 @@ class EndToEnd(unittest.TestCase):
             w.wait(timeout=10)
         self.run_ok("alice", "inbox")
 
+    def test_9b_a_request_past_its_ttl_never_runs(self):
+        """bob's exec reaches alice's worker only after its ttl ran out
+        (the worker was off): the answer is "expired", and the command
+        never runs."""
+        work = self.tmp / "alice-work"
+        work.mkdir(exist_ok=True)
+        env = dict(os.environ, MYOUS_HOME=str(self.tmp / "bob"))
+        req = subprocess.Popen([sys.executable, "-m", "myous", "exec", "--timeout", "5", "--ttl", "2", "alice",
+                                "--", "touch late.txt"], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            time.sleep(4)   # sent, and waiting on the relay past its ttl
+            w = self.start_worker("alice", work)
+            try:
+                _, err = req.communicate(timeout=60)
+            finally:
+                w.terminate()
+                w.wait(timeout=10)
+        finally:
+            if req.poll() is None:
+                req.kill()
+                req.wait()
+        self.assertEqual(req.returncode, 1, err)
+        self.assertRegex(err, r"error: expired: sent \d+ seconds ago, its ttl is 2 seconds; not run")
+        self.assertFalse((work / "late.txt").exists())
+        history = json.loads(self.run_ok("bob", "history", "--with", "alice", "--json"))
+        acks = [e for e in history if e["type"] == "ack" and e.get("error", "").startswith("expired")]
+        self.assertEqual(len(acks), 1)
+        self.assertEqual(acks[0]["ok"], False)
+        rid = acks[0]["id"]
+        rec = json.loads((self.tmp / "alice" / "requests" / f"{rid}.json").read_text())
+        self.assertEqual((rec["op"], rec["cmd"], rec["decision"]), ("exec", "touch late.txt", "expired"))
+        self.run_ok("alice", "inbox")
+
     def test_6_identity_is_never_replaced(self):
         r = self.run_cli("alice", "init", "--alias", "alice")
         self.assertEqual(r.returncode, 0)

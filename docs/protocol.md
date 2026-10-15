@@ -389,11 +389,11 @@ and refuse any other id with an `ack` that has `ok: false`.
 
 | From | Content | Meaning |
 |---|---|---|
-| requester | `{"myous":"exec","id","cmd": <string>, "timeout": <seconds, ≤ 600>}` | run `cmd` with the worker's shell |
+| requester | `{"myous":"exec","id","cmd": <string>, "timeout": <seconds, ≤ 600>, "ttl"?: <seconds>}` | run `cmd` with the worker's shell |
 | worker | `{"myous":"result","id","exit": <int>, "stdout", "stderr", "truncated": <bool>, "stopped"?: true}` | the outcome; output is cut to fit the message cap and flagged; `stopped` when the owner ended the command (or stopped the worker) before it finished |
-| requester | `{"myous":"get","id","path": <string>}` | send me this file |
+| requester | `{"myous":"get","id","path": <string>, "ttl"?: <seconds>}` | send me this file |
 | worker | a kind-15 file message with `["w", "file", <id>]` | the file |
-| requester | a kind-15 file message with `["w", "put", <id>, <path>]` | write this file at `path` |
+| requester | a kind-15 file message with `["w", "put", <id>, <path>, <ttl>?]` | write this file at `path` |
 | worker | `{"myous":"ack","id","ok": true, "path", "size", "sha256"}` | written (`sha256` of the plaintext) |
 | worker | `{"myous":"ack","id","ok": false, "error": <string>}` | refused or failed (any request) |
 | anyone | `help` | the worker answers with plain text: what it is, what's installed, its limits |
@@ -406,6 +406,28 @@ next request: `cp` returns only after the `ack`, so "cp, then exec" is
 ordered by construction. Requests from contacts that aren't approved are
 dropped like any other message; a message that is neither a request nor
 `help` gets the help text (at most once a minute per contact).
+
+**Expiry.** A request is good for `ttl` seconds from when it was sent
+(the rumor's `created_at`, part 1's for a message in parts): `"ttl"` in
+the JSON of `exec` and `get`, the fifth value of the `w` tag of `put`
+(a decimal string). Without one it is good for **600 seconds**. A worker
+checks when it takes the request up, which is later than its arrival
+when the worker was busy with earlier ones: an expired request is not
+run and does not reach the review hook (7.2); the answer is an `ack`
+with `ok: false` and an `error` that starts with `expired` and says how
+old the request was. `ttl` is a number of seconds of at least 1; above
+86400 it counts as 86400 (the relay keeps messages a day); a `ttl` that
+is not a positive number gets an `ack` with `ok: false` like a bad id.
+The age compares the requester's clock with the worker's: a `created_at`
+in the future counts as now. A `help` or other text older than 600
+seconds gets no reply. Workers from before 0.8.0 ignore `ttl` and run
+whatever is still on the relay.
+
+A requester should set `ttl` to how long it waits for the reply, so a
+request it gave up on (the worker was off, or busy) never runs later;
+the Python client does (`exec`: its timeout plus 30 seconds; `cp`: its
+timeout). A longer `ttl` leaves a request for a worker that is off, to
+run when it comes back within that time.
 
 ### 7.2 Review hook
 

@@ -893,6 +893,7 @@ function fillPaired(w: Worker) {
 function outcome(r: Record<string, unknown>): [string, string] {
   const exit = num(r.exit);
   if (str(r.decision) === "refuse") return ["refused", "refused"];
+  if (str(r.decision) === "expired") return ["expired", "quiet"];
   if (str(r.decision) === "pending") return ["waiting for you", "waiting"];
   if (!("done_at" in r)) return ["running…", "quiet"];
   if (r.stopped === true) return ["stopped by you", "stopped"];
@@ -918,6 +919,7 @@ function fillRequests(w: Worker) {
     let text = what(r);
     if (num(r.size) > 0) text += ` (${byteCount(num(r.size))})`;
     if (str(r.decision) === "refuse" && str(r.reason)) text += ` — ${str(r.reason)}`;
+    if (str(r.decision) === "expired" && expiredWhy(r)) text += ` — ${expiredWhy(r)}`;
     const [out, cls] = outcome(r);
     const tr = el("tr", { className: at > w.config.seenRequestsAt ? "new" : "" },
       el("td", { textContent: day === "Today" ? clockTime(at) : day }),
@@ -932,12 +934,20 @@ function fillRequests(w: Worker) {
   }));
 }
 
+/** Why a request expired (sent longer ago than its agent waits; not run), without the
+ * worker's leading "expired:", which the row and the dialog already say. */
+function expiredWhy(r: Record<string, unknown>) {
+  return str(r.reason).replace(/^expired:\s*/, "");
+}
+
 function showRequestDetail(r: Record<string, unknown>) {
   const now = m.now();
   const lines = [`${dayLabel(num(r.at), now)}  ${clockTime(num(r.at))}  ${str(r.alias)}`, ""];
   lines.push(str(r.op) === "exec" ? `$ ${str(r.cmd)}` : `${str(r.op)} ${str(r.path)}`);
   if (str(r.decision) === "refuse") {
     lines.push("", `Refused: ${str(r.reason) || "by the review hook"}`);
+  } else if (str(r.decision) === "expired") {
+    lines.push("", `Expired: ${expiredWhy(r) || "its agent had stopped waiting"}`);
   } else {
     let s = "";
     if ("exit" in r) s += `Exit ${num(r.exit)}`;
