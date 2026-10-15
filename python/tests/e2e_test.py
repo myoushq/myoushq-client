@@ -318,6 +318,33 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual((rec["op"], rec["cmd"], rec["decision"]), ("exec", "touch late.txt", "expired"))
         self.run_ok("alice", "inbox")
 
+    def test_9c_a_late_result_shows_in_the_inbox(self):
+        """bob's exec has a ttl longer than its wait, and alice's worker is
+        off: the command times out, the worker runs the request when it
+        starts, and the result shows in bob's inbox, once, readably."""
+        work = self.tmp / "alice-work"
+        work.mkdir(exist_ok=True)
+        self.run_ok("bob", "inbox")
+        r = self.run_cli("bob", "exec", "--timeout", "1", "--ttl", "600", "alice", "--", "echo late")
+        self.assertEqual(r.returncode, 124, r.stderr)
+        self.assertIn("its reply will show in `myous inbox` when it comes", r.stderr)
+        self.assertEqual(self.inbox("bob"), [])
+        w = self.start_worker("alice", work)
+        try:
+            for _ in range(40):
+                entries = json.loads(self.run_ok("bob", "inbox", "--peek", "--json"))
+                if entries:
+                    break
+                time.sleep(0.5)
+        finally:
+            w.terminate()
+            w.wait(timeout=10)
+        self.assertEqual([(e["type"], e["late"]["cmd"], e["exit"]) for e in entries], [("result", "echo late", 0)])
+        out = self.run_ok("bob", "inbox", "--local")
+        self.assertRegex(out, r"^\[[-0-9 :]+\] alice: late result of exec `echo late` \(sent \d\d:\d\d\): exit 0\nlate\n$")
+        self.assertEqual(self.run_ok("bob", "inbox", "--local"), "no new messages\n")
+        self.run_ok("alice", "inbox")
+
     def test_6_identity_is_never_replaced(self):
         r = self.run_cli("alice", "init", "--alias", "alice")
         self.assertEqual(r.returncode, 0)

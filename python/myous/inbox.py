@@ -12,10 +12,12 @@ History records, oldest first:
                                             a contact's card (what it says about itself), or ours sent to it
   {"seq", "type": "fetched", "direction": "out", "of": <seq>, "path", "text", "at"}
 The "state" document keeps the last seq read and the gift wraps already
-handled.
+handled; "gave_up" the requests a command stopped waiting for (give_up).
 
 Replies to blocking requests (result, ack, and files tagged ["w", "file"])
 are consumed by the command that waits for them, so `unread` skips them.
+A reply to a request the command gave up on is shown instead, once, as a
+late reply; an "expired" answer to it stays hidden.
 
 Callers hold `storage.lock()` around `record` and `handle_wraps`.
 """
@@ -44,6 +46,9 @@ REPLY_OPS = ("result", "ack")
 REPLY_FIELDS = {"id": str, "ok": bool, "error": str, "exit": int, "stdout": str, "stderr": str,
                 "truncated": bool, "path": str, "size": int, "sha256": str}
 _REQUEST_ID = re.compile(r"^[0-9a-f]{32}$")
+# A given-up request is remembered until a day after its ttl ran out: the
+# relay keeps messages a day.
+GAVE_UP_KEEP = 86400
 
 
 def record(st: Storage, entry: dict) -> dict:
@@ -151,20 +156,100 @@ def _text_entry(st: Storage, base: dict, text: str, sender: str, now: int) -> di
     return entry
 
 
-def consumed(e: dict) -> bool:
-    """Whether an entry is a reply that a blocking command waits for,
-    rather than something to show the agent."""
+def give_up(st: Storage, rid: str, request: dict) -> None:
+    """Remember a request whose command stopped waiting for the reply:
+    {"op": "exec"|"put"|"get", "peer", "alias", "cmd" (exec) or "remote"
+    and "local" (put, get), "sent_at", "expires" (when its ttl runs out)}.
+    Its reply, if one comes, is then shown as a late reply."""
+    now = time.time()
+    gave_up = {k: r for k, r in st.get("gave_up", {}).items() if r.get("expires", 0) > now - GAVE_UP_KEEP}
+    gave_up[rid] = request
+    st.put("gave_up", gave_up)
+
+
+def _answers(e: dict) -> str | None:
+    """The id of the request a worker's reply answers ("" if it has
+    none); None for an entry that is not a reply."""
     if e.get("type") in REPLY_OPS:
+        return e.get("id") or ""
+    w = e.get("w") or [""]
+    if e.get("type") == "file" and w[0] == "file":
+        return w[1] if len(w) > 1 else ""
+    return None
+
+
+def late_request(e: dict, gave_up: dict) -> dict | None:
+    """The given-up request (give_up) that this reply answers, or None.
+    The sender is checked too: no other contact may answer a request."""
+    rid = _answers(e)
+    r = gave_up.get(rid) if rid else None
+    return r if r and r.get("peer") == e.get("peer") else None
+
+
+def consumed(e: dict, gave_up: dict | None = None) -> bool:
+    """Whether an entry is a reply that a blocking command waits for,
+    rather than something to show the agent. A reply to a request the
+    command gave up on (`gave_up`, the document give_up writes) is shown,
+    unless it says the request expired: the agent knows it gave up."""
+    if _answers(e) is None:
+        return False
+    if late_request(e, gave_up or {}) is None:
         return True
-    return e.get("type") == "file" and (e.get("w") or [""])[0] == "file"
+    return e.get("type") == "ack" and not e.get("ok") and (e.get("error") or "").startswith("expired")
+
+
+def late_what(late: dict) -> str:
+    """The request a late reply answers: "exec `make test` (sent 13:58)"."""
+    if late.get("op") == "exec":
+        what = f"exec `{late.get('cmd')}`"
+    elif late.get("op") == "put":
+        what = f"cp of {late.get('local')} to {late.get('remote')}"
+    else:
+        what = f"cp of {late.get('remote')}"
+    return what + f" (sent {time.strftime('%H:%M', time.localtime(late.get('sent_at', 0)))})"
+
+
+def late_text(e: dict) -> str:
+    """What a late reply says, for the agent to read instead of its JSON."""
+    what = late_what(e["late"])
+    if e["type"] == "file":
+        return f"late reply to {what}: {describe_file(e)}"
+    if e["type"] == "result":
+        lines = [f"late result of {what}: exit {e.get('exit')}"]
+        if e.get("stdout"):
+            lines.append(e["stdout"].rstrip("\n"))
+        if e.get("stderr"):
+            lines += ["stderr:", e["stderr"].rstrip("\n")]
+        if e.get("truncated"):
+            lines.append("(the output was cut to fit the message)")
+        return "\n".join(lines)
+    if not e.get("ok"):
+        answer = "refused: " + (e.get("error") or "no reason given")
+    elif "path" in e:
+        answer = f"written: {e['path']} ({e.get('size')} bytes)"
+    else:
+        answer = "done"
+    return f"late answer to {what}: {answer}"
+
+
+def _shown(e: dict, gave_up: dict) -> dict:
+    """An entry as unread shows it: a late reply gets "late" (the request
+    it answers) and readable text."""
+    r = late_request(e, gave_up)
+    if r is None:
+        return e
+    e = dict(e, late={k: r[k] for k in ("op", "cmd", "local", "remote", "sent_at") if r.get(k) is not None})
+    e["text"] = late_text(e)
+    return e
 
 
 def unread(st: Storage, mark_read: bool = True) -> list[dict]:
     with st.lock():
         state = st.get("state", {})
         last = state.get("read_seq", 0)
-        entries = [e for e in st.read_history()
-                   if e["seq"] > last and e.get("direction") != "out" and not consumed(e)]
+        gave_up = st.get("gave_up", {})
+        entries = [_shown(e, gave_up) for e in st.read_history()
+                   if e["seq"] > last and e.get("direction") != "out" and not consumed(e, gave_up)]
         # The contact's current relationship context, so the agent has it when it answers.
         for e in entries:
             if e.get("peer"):

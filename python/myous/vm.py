@@ -23,7 +23,7 @@ import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from myous import processes
+from myous import inbox, processes
 from myous.agent import Agent
 from myous.storage import FileStorage
 
@@ -39,8 +39,11 @@ DEFAULT_HOME = "~/.myous"
 
 
 def run_hook(st: FileStorage, entries: list[dict]) -> None:
-    """Run the agent's hook, if it set one, without waiting for it."""
+    """Run the agent's hook, if it set one, without waiting for it: for
+    what the inbox shows, not for a reply a waiting command consumes."""
     command = st.get("settings", {}).get("on_message")
+    gave_up = st.get("gave_up", {})
+    entries = [e for e in entries if not inbox.consumed(e, gave_up)]
     if not command or not entries:
         return
     log = open(st.path("hook.log"), "a")

@@ -85,7 +85,10 @@ def release(pidfile) -> None:
 def describe(e: dict) -> str:
     when = time.strftime("%Y-%m-%d %H:%M", time.localtime(e.get("sent_at", e["at"])))
     if e["type"] == "file":
-        return f"[{when}] file from {e['alias']}: {e['name']} ({e.get('size')} bytes; `myous fetch {e['seq']}`)"
+        late = f"late reply to {inbox.late_what(e['late'])}: " if e.get("late") else ""
+        return f"[{when}] file from {e['alias']}: {late}{e['name']} ({e.get('size')} bytes; `myous fetch {e['seq']}`)"
+    if e.get("late"):
+        return f"[{when}] {e['alias']}: {e['text']}"
     if e["type"] != "message":
         return f"[{when}] ({e['type']}) {e['text']}"
     line = context_line(e)
@@ -115,8 +118,10 @@ async def wait_for_news(agent: Agent, retry: float, deadline: float | None) -> l
 
         def on_new(entries: list[dict]) -> None:
             # Replies to a blocking `myous exec` or `myous cp` are that
-            # command's business, not a reason to wake Muse.
-            if any(not inbox.consumed(e) for e in entries):
+            # command's business, not a reason to wake Muse, unless it
+            # gave up waiting for them.
+            gave_up = agent.st.get("gave_up", {})
+            if any(not inbox.consumed(e, gave_up) for e in entries):
                 news.set()
 
         listener = asyncio.ensure_future(agent.listen(on_new=on_new, on_tick=check_unread))
