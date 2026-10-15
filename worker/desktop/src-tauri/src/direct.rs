@@ -194,9 +194,12 @@ impl Stopping {
         }
     }
 
-    /// Ends it now, with what it started: SIGKILL, or taskkill /T /F. One
-    /// this app didn't start, only while its pid is still that worker.
-    /// True if it was ended.
+    /// Ends it now, with what it started: taskkill /T /F on Windows;
+    /// elsewhere SIGKILL to it and to every process it started and theirs
+    /// (as `ps` lists them just before), and to the process groups those
+    /// lead: the worker runs each command in a session of its own, which
+    /// a hung worker can no longer end. One this app didn't start, only
+    /// while its pid is still that worker. True if it was ended.
     fn kill(&self) -> bool {
         if !self.ours && check(self.pid, self.started) != Check::Worker {
             return false;
@@ -206,10 +209,63 @@ impl Stopping {
             cmd.args(["/T", "/F", "/PID", &self.pid.to_string()]);
             let _ = run_capture(cmd, Duration::from_secs(15));
         } else {
+            let started = descendants(self.pid);
+            // The worker first, so it starts nothing more.
             signal(self.pid, "-KILL");
+            for (pid, group) in started {
+                if group == pid {
+                    signal_group(group);
+                }
+                signal(pid, "-KILL");
+            }
         }
         true
     }
+}
+
+/// The processes `root` started and theirs, as (pid, process group), from
+/// `ps -A -o pid= -o ppid= -o pgid=` now (none if it can't be asked).
+fn descendants(root: u32) -> Vec<(u32, u32)> {
+    let mut cmd = crate::engine::command("ps");
+    cmd.args(["-A", "-o", "pid=", "-o", "ppid=", "-o", "pgid="]);
+    let (status, out) = run_capture(cmd, Duration::from_secs(15));
+    if status != 0 {
+        return Vec::new();
+    }
+    descendants_in(&out, root)
+}
+
+/// `descendants` from `ps`'s lines: `<pid> <ppid> <pgid>`.
+fn descendants_in(ps: &str, root: u32) -> Vec<(u32, u32)> {
+    let table: Vec<(u32, u32, u32)> = ps
+        .lines()
+        .filter_map(|l| {
+            let mut n = l.split_whitespace().map(|w| w.parse::<u32>().ok());
+            Some((n.next()??, n.next()??, n.next()??))
+        })
+        .collect();
+    let mut out: Vec<(u32, u32)> = Vec::new();
+    let mut parents = vec![root];
+    while let Some(parent) = parents.pop() {
+        for &(pid, ppid, pgid) in &table {
+            if ppid == parent && pid != root && pid != 0 && !out.iter().any(|(p, _)| *p == pid) {
+                out.push((pid, pgid));
+                parents.push(pid);
+            }
+        }
+    }
+    out
+}
+
+/// SIGKILL to the process group `group` (one a process the worker
+/// started leads: never this app's own).
+fn signal_group(group: u32) {
+    if group <= 1 || group == std::process::id() {
+        return;
+    }
+    let mut cmd = crate::engine::command("kill");
+    cmd.args(["-KILL", "--", &format!("-{group}")]);
+    let _ = run_capture(cmd, Duration::from_secs(15));
 }
 
 /// Asks the workers to stop, waits up to STOP_GRACE for them to exit,
@@ -750,23 +806,63 @@ mod tests {
         std::fs::remove_dir_all(&home).unwrap();
     }
 
+    /// A hung worker is killed after STOP_GRACE, and so are the commands
+    /// it runs: on a Mac and Linux a child of its own, and one in a
+    /// session of its own as the Go worker runs commands (Python's
+    /// os.setsid, when there is a python3).
     #[test]
     fn a_worker_that_doesnt_stop_is_killed() {
         let home = std::env::temp_dir().join(format!("myous-direct-kill-{}", std::process::id()));
         let h = home.to_string_lossy().to_string();
         let (tx, rx) = std::sync::mpsc::channel();
         let args = script(
-            "trap '' TERM; echo started; while :; do sleep 1; done",
+            "trap '' TERM; sleep 300 & echo $! > child.pid; \
+             if command -v python3 >/dev/null; then python3 -c 'import os, signal, time\n\
+signal.signal(signal.SIGTERM, signal.SIG_IGN); os.setsid(); open(\"session.pid\", \"w\").write(str(os.getpid())); time.sleep(300)' & fi; \
+             echo started; while :; do sleep 1; done",
             "Write-Output started; while ($true) { Start-Sleep 1 }",
         );
         start(&h, &args, move |st| tx.send(st).unwrap()).unwrap();
         wait_for_log(&h, "started");
+        let pids = || -> Vec<u32> {
+            ["child.pid", "session.pid"]
+                .iter()
+                .filter_map(|f| std::fs::read_to_string(home.join(f)).ok())
+                .filter_map(|t| t.trim().parse().ok())
+                .collect()
+        };
+        if cfg!(unix) {
+            let begun = std::time::Instant::now();
+            while pids().len() < 2 && begun.elapsed() < Duration::from_secs(5) {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            assert!(!pids().is_empty());
+        }
         let begun = std::time::Instant::now();
         assert!(stop(&h, 0, quiet(), || {}));
         assert_ne!(rx.recv_timeout(Duration::from_secs(30)).unwrap(), 0);
         assert!(begun.elapsed() >= STOP_GRACE, "took {:?}", begun.elapsed());
         assert!(!running(&h));
+        // Its commands ended with it (reaped by the system once killed).
+        for pid in pids() {
+            let begun = std::time::Instant::now();
+            let alive = || matches!(process(pid), Ok(Some(p)) if !p.zombie);
+            while alive() && begun.elapsed() < Duration::from_secs(5) {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            assert!(!alive(), "pid {pid} outlived the worker");
+        }
         std::fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn a_workers_commands_from_ps() {
+        let ps = "    1     0     1\n  500     1   500\n  501   500   500\n  502   501   502\n  503   502   502\n  600     1   600\n  504   500   500\n garbage\n";
+        let mut d = descendants_in(ps, 500);
+        d.sort();
+        assert_eq!(d, [(501, 500), (502, 502), (503, 502), (504, 500)]);
+        assert!(descendants_in(ps, 600).is_empty());
+        assert!(descendants_in("", 500).is_empty());
     }
 
     fn quiet() -> crate::browser::Log {

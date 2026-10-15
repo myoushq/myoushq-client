@@ -204,7 +204,10 @@ is in `worker.log` (Show worker log, in the ⋯ menu). Stop writes a
 `commands/quit` file in the worker folder (and sends SIGTERM outside
 Windows): the worker ends the command it runs with everything it
 started, answers that request "stopped by the owner" and exits; after
-ten seconds the app kills it. When the app quits it waits for its
+ten seconds the app kills it, and the command it runs with it (on
+Windows its process tree; elsewhere every process it started, as `ps`
+lists them, and the process groups those lead, since the worker runs
+each command in a session of its own). When the app quits it waits for its
 workers the same way. A worker the app didn't start (found through the
 pid in `worker.json`) is stopped the same way only while that pid is
 still the worker: a myous worker program (`myous-worker`, `myous` or
