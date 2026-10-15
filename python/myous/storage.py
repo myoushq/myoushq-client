@@ -69,6 +69,19 @@ class Storage(abc.ABC):
     def read_history(self) -> list[dict]:
         """The whole message history, oldest first."""
 
+    def read_history_since(self, seq: int) -> list[dict]:
+        """The entries with a seq of at least `seq`, oldest first. Entries
+        are appended in seq order (record() runs under the lock), so a
+        store can read just the end of the history; this default reads it
+        all."""
+        return [e for e in self.read_history() if e["seq"] >= seq]
+
+    def history_reversed(self) -> Iterator[dict]:
+        """The history newest first, for a caller that stops at what it
+        looks for (the latest file, the last 50 entries). This default
+        reads it all."""
+        yield from reversed(self.read_history())
+
     def lock(self, name: str = "state", wait: bool = True) -> ContextManager[bool]:
         """Mutual exclusion between concurrent runs of the same agent.
 
@@ -168,6 +181,42 @@ class FileStorage(Storage):
         except FileNotFoundError:
             return []
         return [json.loads(line) for line in lines if line.strip()]
+
+    HISTORY_BLOCK = 64 * 1024  # bytes read at a time from the end (tests lower it)
+
+    def read_history_since(self, seq: int) -> list[dict]:
+        found = []
+        for e in self.history_reversed():
+            if e["seq"] < seq:
+                break
+            found.append(e)
+        found.reverse()
+        return found
+
+    def history_reversed(self) -> Iterator[dict]:
+        """Newest first, reading the file backwards a block at a time: the
+        hot paths (unread, a reply being waited for, the latest file) need
+        only its end, however long the history has grown. The file is open
+        only while a block is read, so a caller may stop at any point."""
+        path = self.path("messages.jsonl")
+        try:
+            pos = path.stat().st_size
+        except FileNotFoundError:
+            return
+        head = b""  # the start of a line whose beginning is in an earlier block
+        while pos > 0:
+            step = min(self.HISTORY_BLOCK, pos)
+            pos -= step
+            with open(path, "rb") as f:
+                f.seek(pos)
+                block = f.read(step)
+            lines = (block + head).split(b"\n")
+            head = lines.pop(0)
+            for line in reversed(lines):
+                if line.strip():
+                    yield json.loads(line)
+        if head.strip():
+            yield json.loads(head)
 
     def last_used(self) -> int | None:
         """Unix time of the newest file under the home: when this agent last

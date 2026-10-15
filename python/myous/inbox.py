@@ -352,8 +352,8 @@ def unread(st: Storage, mark_read: bool = True) -> list[dict]:
         state = st.get("state", {})
         last = state.get("read_seq", 0)
         gave_up = st.get("gave_up", {})
-        entries = [shown(e, gave_up) for e in st.read_history()
-                   if e["seq"] > last and e.get("direction") != "out" and not consumed(e, gave_up)]
+        entries = [shown(e, gave_up) for e in st.read_history_since(last + 1)
+                   if e.get("direction") != "out" and not consumed(e, gave_up)]
         # The contact's current relationship context, so the agent has it when it answers.
         for e in entries:
             if e.get("peer"):
