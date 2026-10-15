@@ -280,6 +280,13 @@ def shown(e: dict, gave_up: dict) -> dict:
     return e
 
 
+def to_show(st: Storage, entries: list[dict]) -> list[dict]:
+    """Of entries just stored (poll, listen), those the inbox shows, as it
+    shows them: not a reply that a waiting command consumes."""
+    gave_up = st.get("gave_up", {})
+    return [shown(e, gave_up) for e in entries if not consumed(e, gave_up)]
+
+
 def unread(st: Storage, mark_read: bool = True) -> list[dict]:
     with st.lock():
         state = st.get("state", {})

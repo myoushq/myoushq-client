@@ -207,6 +207,10 @@ class LateReplies(unittest.TestCase):
             entry.update(id=rid, text=json.dumps(dict(fields, myous=kind, id=rid)))
         return inbox.record(self.st, entry)
 
+    def incoming(self, **entry) -> dict:
+        """Anything else the worker sent."""
+        return inbox.record(self.st, dict(entry, direction="in", peer=self.worker, alias="Sam's Mac"))
+
     def printed(self, entries: list[dict]) -> str:
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
@@ -331,6 +335,30 @@ class LateReplies(unittest.TestCase):
         stored = json.loads(self.history(json_out=True))
         self.assertEqual([e["text"] for e in stored], [e["text"] for e in entries])
         self.assertNotIn("late", stored[7])
+
+    def test_poll_counts_and_lists_what_the_inbox_shows(self):
+        self.give_up("1" * 32, op="exec", cmd="make test")
+        new = [self.reply("result", "3" * 32, exit=0, stdout="mine", stderr=""),   # a waiting command's
+               self.reply("result", "1" * 32, exit=0, stdout="", stderr=""),       # late
+               self.incoming(type="file", name="notes.txt", size=9, key="00", nonce="00", text="file: notes.txt (9 bytes)"),
+               self.incoming(type="message", text="hi")]
+        agent = Agent(self.st)
+
+        async def poll():
+            return new
+
+        def run(**args) -> str:
+            out = io.StringIO()
+            with mock.patch.object(agent, "poll", poll), contextlib.redirect_stdout(out):
+                cli.cmd_poll(agent, self.st, SimpleNamespace(**dict(dict(json=False, quiet=False), **args)))
+            return out.getvalue()
+
+        self.assertEqual(run(), "3 new item(s); read them with `myous inbox`\n")
+        late, file, message = json.loads(run(json=True))
+        self.assertEqual((late["late"]["cmd"], late["text"]), ("make test", f"late result of exec `make test` (sent {self.clock}): exit 0"))
+        self.assertEqual((file["name"], message["text"]), ("notes.txt", "hi"))
+        self.assertNotIn("key", file)   # as in inbox --json: the key stays in the history
+        self.assertEqual([e["text"] for e in inbox.unread(self.st)], [late["text"], file["text"], "hi"])
 
     def test_give_up_keeps_requests_a_day_past_their_ttl(self):
         now = int(time.time())

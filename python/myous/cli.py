@@ -384,8 +384,9 @@ def cmd_rename(agent: Agent, st: FileStorage, args) -> None:
 def cmd_poll(agent: Agent, st: FileStorage, args) -> None:
     entries = asyncio.run(agent.poll())
     vm.run_hook(st, entries)
+    entries = inbox.to_show(st, entries)   # not the replies a waiting exec or cp took
     if args.json:
-        print(json.dumps(entries, indent=2))
+        print(json.dumps([_public(e) for e in entries], indent=2))
     elif not args.quiet:
         print(f"{len(entries)} new item(s); read them with `myous inbox`")
 
@@ -410,7 +411,7 @@ def cmd_ensure(agent: Agent, st: FileStorage, args) -> None:
     if not healthy or time.time() - last_poll > vm.SAFETY_POLL_EVERY:
         entries = asyncio.run(agent.poll())
         vm.run_hook(st, entries)
-        notes.append(f"polled, {len(entries)} new item(s)")
+        notes.append(f"polled, {len(inbox.to_show(st, entries))} new item(s)")
     if not args.quiet:
         print("; ".join(notes))
 

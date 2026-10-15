@@ -120,8 +120,7 @@ async def wait_for_news(agent: Agent, retry: float, deadline: float | None) -> l
             # Replies to a blocking `myous exec` or `myous cp` are that
             # command's business, not a reason to wake Muse, unless it
             # gave up waiting for them.
-            gave_up = agent.st.get("gave_up", {})
-            if any(not inbox.consumed(e, gave_up) for e in entries):
+            if inbox.to_show(agent.st, entries):
                 news.set()
 
         listener = asyncio.ensure_future(agent.listen(on_new=on_new, on_tick=check_unread))
