@@ -45,8 +45,11 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
-        with: { go-version-file: go/go.mod }
+      # setup-go 6 installs the Go of go.mod's toolchain line (from GitHub,
+      # not through the go command, whose download flaked) and sets
+      # GOTOOLCHAIN=local for the rest of the job; every job here does so.
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with: { go-version-file: go/go.mod, cache-dependency-path: go/go.sum }
       - run: cd go && go vet ./... && go test -race ./... && GOOS=windows go vet ./...
       # The tests that need a hub (the Go integration tests, the Python
       # end-to-end tests with each worker, interop) skip here: the hub is
@@ -59,8 +62,8 @@ jobs:
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
-        with: { go-version-file: go/go.mod }
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with: { go-version-file: go/go.mod, cache-dependency-path: go/go.sum }
       - run: cd go && go test -short -v -run 'Worker|Shell|Review|Shlex|PyJSON|Lock|EncodedCommand|Windows' .
   rust:
     runs-on: ubuntu-24.04
@@ -92,10 +95,11 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with: { node-version: "22" }
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        with: { components: rustfmt }
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with: { python-version: "3.12" }
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
-        with: { go-version-file: go/go.mod }
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with: { go-version-file: go/go.mod, cache-dependency-path: go/go.sum }
       - name: system libraries for Tauri
         run: |
           sudo apt-get update -qq
@@ -104,6 +108,10 @@ jobs:
       # (Tauri's externalBin: the Rust build needs it in place).
       - run: sh worker/build-worker.sh x86_64-unknown-linux-gnu worker/desktop/src-tauri/binaries "$(node -p 'require("./worker/desktop/package.json").version')"
       - run: cd worker/desktop && npm ci && npm test && npm run build:ui
+      # Formatting is the same everywhere. Clippy runs on Windows and the
+      # Mac (below), not yet here: it hasn't been checked warning-free for
+      # Linux's cfg.
+      - run: cd worker/desktop/src-tauri && cargo fmt --check
       - run: cd worker/desktop/src-tauri && cargo test -- --nocapture
       - name: every screen renders
         run: |
@@ -140,36 +148,45 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with: { node-version: "22" }
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
-        with: { go-version-file: go/go.mod }
+        with: { components: "clippy, rustfmt" }
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with: { go-version-file: go/go.mod, cache-dependency-path: go/go.sum }
       - run: sh worker/build-worker.sh x86_64-pc-windows-msvc worker/desktop/src-tauri/binaries "$(node -p 'require("./worker/desktop/package.json").version')"
         shell: bash
       - run: cd worker/desktop && npm ci && npm test && npm run build:ui
+      # Clippy on the app, not yet its tests: two test helpers in direct.rs
+      # (Lines, recorder) are unused on Windows. --all-targets once they're
+      # gated as the tests that use them are.
+      - run: cd worker/desktop/src-tauri && cargo fmt --check && cargo clippy -- -D warnings
       - run: cd worker/desktop/src-tauri && cargo test -- --nocapture
       - run: cd worker/desktop && npx tauri build --bundles nsis
   mac-app:
-    # myous for Mac: the same app (worker/desktop) built on macOS, for
-    # this runner's architecture only (the release builds it universal),
-    # signed ad hoc, and packed into a disk image with worker/mac's script.
+    # myous for Mac: the same app (worker/desktop) built on macOS as the
+    # release builds it, universal (both Rust targets, the worker for each
+    # joined with lipo), so a push of main proves that build before a tag
+    # does; signed ad hoc instead of with the Developer ID, and packed into
+    # a disk image with worker/mac's script. About 30 minutes.
     runs-on: macos-15
-    timeout-minutes: 40
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with: { node-version: "22" }
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
-        with: { go-version-file: go/go.mod }
+        with: { targets: "aarch64-apple-darwin,x86_64-apple-darwin", components: "clippy, rustfmt" }
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with: { go-version-file: go/go.mod, cache-dependency-path: go/go.sum }
       - run: sh worker/build-worker.sh host worker/desktop/src-tauri/binaries "$(node -p 'require("./worker/desktop/package.json").version')"
       - run: cd worker/desktop && npm ci && npm test && npm run build:ui
+      - run: cd worker/desktop/src-tauri && cargo fmt --check && cargo clippy --all-targets -- -D warnings
       - run: cd worker/desktop/src-tauri && cargo test -- --nocapture
-      - run: cd worker/desktop && ./make-mac.sh
+      - run: cd worker/desktop && ./make-mac.sh --universal
   audit:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
-        with: { go-version-file: go/go.mod }
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with: { go-version-file: go/go.mod, cache-dependency-path: go/go.sum }
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with: { python-version: "3.12" }
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4

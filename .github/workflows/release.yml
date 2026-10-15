@@ -56,13 +56,9 @@ jobs:
         run: |
           set -eu
           version=${TAG#v}
-          grep -q "^version = \"$version\"" python/pyproject.toml || { echo "python/pyproject.toml is not $version" >&2; exit 1; }
-          grep -q "\"version\": \"$version\"" typescript/package.json || { echo "typescript/package.json is not $version" >&2; exit 1; }
-          grep -q "^version = \"$version\"" rust/Cargo.toml || { echo "rust/Cargo.toml is not $version" >&2; exit 1; }
-          # The Go client is also the worker the apps carry.
-          grep -q "^const Version = \"$version\"" go/notices.go || { echo "go/notices.go is not $version" >&2; exit 1; }
-          grep -q "\"version\": \"$version\"" worker/desktop/package.json || { echo "worker/desktop/package.json is not $version" >&2; exit 1; }
-          grep -q "^version = \"$version\"" worker/desktop/src-tauri/Cargo.toml || { echo "worker/desktop/src-tauri/Cargo.toml is not $version" >&2; exit 1; }
+          # Every file of RELEASING.md's bump list (the pre-push hook runs
+          # the same script).
+          sh scripts/check-versions.sh "$version"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
   test-python:
@@ -87,8 +83,11 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with: { ref: "refs/tags/${{ env.TAG }}" }
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
-        with: { go-version-file: go/go.mod }
+      # setup-go 6 installs the Go of go.mod's toolchain line (from GitHub,
+      # not through the go command, whose download flaked) and sets
+      # GOTOOLCHAIN=local for the rest of the job; every job here does so.
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with: { go-version-file: go/go.mod, cache-dependency-path: go/go.sum }
       - run: cd go && go vet ./... && go test ./...
 
   test-rust:
@@ -125,8 +124,8 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with: { ref: "refs/tags/${{ env.TAG }}" }
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
-        with: { go-version-file: go/go.mod }
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with: { go-version-file: go/go.mod, cache-dependency-path: go/go.sum }
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with: { python-version: "3.12" }
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -303,8 +302,8 @@ jobs:
         with: { node-version: "22" }
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
         with: { targets: "aarch64-apple-darwin,x86_64-apple-darwin" }
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
-        with: { go-version-file: go/go.mod }
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with: { go-version-file: go/go.mod, cache-dependency-path: go/go.sum }
       - name: test on this Mac
         run: |
           set -eu
@@ -324,12 +323,17 @@ jobs:
           set -eu
           echo "$MAC_CERT_P12" | base64 --decode > /tmp/cert.p12
           security create-keychain -p "" build.keychain
+          # A new keychain locks itself after 5 minutes; the universal build
+          # takes longer than that before the first codesign, and the disk
+          # image is signed after notarization. Six hours outlasts the job.
+          security set-keychain-settings -lut 21600 build.keychain
           security default-keychain -s build.keychain
           security unlock-keychain -p "" build.keychain
           security import /tmp/cert.p12 -k build.keychain -P "$MAC_CERT_PASSWORD" -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple: -s -k "" build.keychain
           # codesign only searches keychains on the search list; being the
           # default keychain isn't enough.
+          # shellcheck disable=SC2046 # one word per keychain path
           security list-keychains -d user -s build.keychain $(security list-keychains -d user | tr -d '"')
           rm /tmp/cert.p12
           security find-identity -v -p codesigning build.keychain
@@ -372,6 +376,7 @@ jobs:
           else
             worker/mac/make-dmg.sh worker/desktop/build/myous.app "out/myous-$TAG.dmg"
           fi
+          # shellcheck disable=SC2035 # our own file names; ./ would show in SHA256SUMS
           (cd out && shasum -a 256 *.dmg > SHA256SUMS)
           cat out/SHA256SUMS
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -390,8 +395,8 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with: { node-version: "22" }
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
-        with: { go-version-file: go/go.mod }
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with: { go-version-file: go/go.mod, cache-dependency-path: go/go.sum }
       - name: system libraries for Tauri
         run: |
           sudo apt-get update -qq
@@ -425,8 +430,8 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with: { node-version: "22" }
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
-        with: { go-version-file: go/go.mod }
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with: { go-version-file: go/go.mod, cache-dependency-path: go/go.sum }
       - name: build the installer (unsigned; SHA256SUMS on the release vouches for it)
         shell: bash
         run: |
@@ -446,7 +451,8 @@ jobs:
 
   github-release:
     name: GitHub release
-    needs: [verify, test-python, test-go, test-rust, test-typescript, audit, mac-app, desktop-app-linux, desktop-app-windows]
+    # The apps pull ghcr.io/myoushq/worker:X.Y.Z: no download before it exists.
+    needs: [verify, test-python, test-go, test-rust, test-typescript, audit, image-manifest, mac-app, desktop-app-linux, desktop-app-windows]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -474,6 +480,7 @@ jobs:
           pip install build==1.3.0 && python -m build --outdir out python
           cp python/requirements.lock out/requirements-python.lock
           scripts/release-notes.sh "$TAG" > out/notes.md
+          # shellcheck disable=SC2035 # our own file names; ./ would show in SHA256SUMS
           (cd out && shasum -a 256 *.dmg *.exe *.AppImage *.deb *.whl *.tar.gz *.lock > SHA256SUMS)
           cat out/SHA256SUMS
       - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2

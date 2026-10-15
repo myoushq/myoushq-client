@@ -26,11 +26,11 @@ Current release key: `SHA256:PevPZ8ORUnoGw3hg9Febw7KjXxCUv+sMkAXzw+rjQuk` (ED255
 ## Each release
 
 0. Once: `git config core.hooksPath scripts/hooks`. The pre-push hook then
-   refuses to push a `v*` tag whose versions don't match (it checks
-   `python/pyproject.toml`, `rust/Cargo.toml`, `typescript/package.json`
-   and `go/notices.go`), that isn't signed by the release key, or while
-   `scripts/audit.sh` reports a problem (new advisories appear between
-   releases; the usual fix is a toolchain or dependency bump).
+   refuses to push a `v*` tag whose versions don't match (every file of
+   the bump list in step 2, checked by `scripts/check-versions.sh`, which
+   the release workflow runs too), that isn't signed by the release key,
+   or while `scripts/audit.sh` reports a problem (new advisories appear
+   between releases; the usual fix is a toolchain or dependency bump).
    `MYOUS_SKIP_HOOK=1 git push` skips it.
 1. Run the checks: `scripts/audit.sh`, each client's tests, and (with the
    private myoushq repo checked out next to this one, for the hub) the
@@ -44,6 +44,9 @@ Current release key: `SHA256:PevPZ8ORUnoGw3hg9Febw7KjXxCUv+sMkAXzw+rjQuk` (ED255
    `worker/desktop/package.json`'s), the install lines in `go/README.md`
    and `rust/README.md`, and add the release to `docs/changelog.md`:
    agents read it when their client tells them about the new release.
+   `scripts/check-versions.sh X.Y.Z` checks every file of this list (the
+   changelog aside); a file that starts carrying the version goes into
+   both.
 3. Tag and sign:
 
    ```sh
@@ -69,8 +72,9 @@ Current release key: `SHA256:PevPZ8ORUnoGw3hg9Febw7KjXxCUv+sMkAXzw+rjQuk` (ED255
    tests and the audit (PyPI and the image for the Python tests, crates.io
    for Rust's, npm for TypeScript's), so a failure elsewhere doesn't stop
    it; the apps wait for the Python tests, and only the GitHub release
-   waits for every test, the audit and the apps. Registries are reached with
-   their trusted publishing (OpenID Connect): no tokens are stored. Every
+   waits for every test, the audit, the apps and the worker image's tags
+   (the apps pull `ghcr.io/myoushq/worker:X.Y.Z`). Registries are reached
+   with their trusted publishing (OpenID Connect): no tokens are stored. Every
    step skips what is already published, so the workflow can be re-run for
    a tag from the Actions tab ("Run workflow", give the tag) after a
    registry or secret is set up. npm is staged, not published: after the

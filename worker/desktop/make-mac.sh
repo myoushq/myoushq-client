@@ -20,7 +20,7 @@ set -eu
 cd "$(dirname "$0")"
 UNIVERSAL=0
 SIGN=
-KEY_ID= ISSUER= KEY=
+KEY_ID='' ISSUER='' KEY=''
 DMG=1
 while [ $# -gt 0 ]; do
 	case "$1" in
@@ -41,10 +41,15 @@ if [ -n "$KEY_ID" ] && [ -z "$SIGN" ]; then
 fi
 VERSION=$(sed -n 's/^  "version": "\(.*\)"/\1/p' package.json | head -1)
 [ -n "$VERSION" ] || { echo "no version in package.json" >&2; exit 1; }
+# tauri build, rustc and rustup come from PATH: cargo's directory goes in
+# front when $CARGO names one, or when cargo isn't on PATH (rustup's
+# default place). A cargo found on PATH changes nothing (its dirname, ".",
+# must not go on PATH).
 CARGO=${CARGO:-cargo}
 command -v "$CARGO" >/dev/null 2>&1 || CARGO=$HOME/.cargo/bin/cargo
-PATH=$(dirname "$CARGO"):$PATH
-export PATH
+case $CARGO in
+*/*) PATH=$(dirname "$CARGO"):$PATH; export PATH ;;
+esac
 
 # The worker the app carries (the Go client), for the same targets as
 # the app: Tauri takes binaries/myous-worker-<target>.

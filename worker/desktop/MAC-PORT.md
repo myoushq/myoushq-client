@@ -244,12 +244,14 @@ and `out/` (the dmg and `SHA256SUMS`) uploaded as the artifact
 `mac-app`, which the `github-release` job attaches as before. The asset
 keeps its name, `myous-<tag>.dmg`, which is what the hub's
 `/download/mac` serves. `worker/mac` is no longer built by the release
-or by `ci.yml`, whose macOS job now runs `npm test`, `cargo test` and an
-ad-hoc `make-mac.sh` (the runner's architecture only, with its dmg).
+or by `ci.yml`, whose macOS job now runs `npm test`, `cargo fmt --check`,
+clippy, `cargo test` and an ad-hoc `make-mac.sh --universal` (as the
+release builds it, with its dmg), so a push of main proves the universal
+build before a tag does.
 
-Not checked before a tag: the universal build itself (the draft's Mac
-lacked the disk for it), signing with the Developer ID and
-notarization of this app. The first release run is the test; if
+Not checked before a tag: signing with the Developer ID and
+notarization of this app (the throwaway keychain stays unlocked for six
+hours, longer than the job). The first release run is the test; if
 notarization rejects the app, Apple's log is in the job's output.
 
 ## Differences a Mac user would notice
