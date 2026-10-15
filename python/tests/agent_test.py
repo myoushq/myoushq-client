@@ -232,11 +232,15 @@ class RequestTtl(unittest.TestCase):
         gone = timeout_text(150, time.time() - 1)
         self.assertEqual(gone, "no reply from the worker within 150 seconds; it won't start this request any more "
                                "(it is off or busy), but if it already has, its reply will show in `myous inbox`")
+        # A ttl that ends with the wait (the default) is over: no race on the seconds between them.
+        self.assertEqual(timeout_text(40, time.time() + 2), gone.replace("150", "40"))
         later = time.time() + 3600
         self.assertEqual(timeout_text(150, later),
-                         f"no reply from the worker within 150 seconds; it may still run this request until "
-                         f"{time.strftime('%H:%M', time.gmtime(later))} UTC (its ttl), and its reply will show in "
-                         f"`myous inbox` when it comes")
+                         f"no reply from the worker within 150 seconds; it may still run this request in the next "
+                         f"60 minutes (its ttl; until {time.strftime('%H:%M', time.localtime(later))} this computer's "
+                         f"time), and its reply will show in `myous inbox` when it comes")
+        self.assertIn("in the next 23 hours", timeout_text(150, time.time() + 23 * 3600 - 30))
+        self.assertIn("in the next 45 seconds", timeout_text(150, time.time() + 44.5))
 
     def test_a_request_given_up_on_is_remembered(self):
         async def no_reply(rid, timeout, npub, conn=None, expires=None):
@@ -301,7 +305,7 @@ class RequestTtl(unittest.TestCase):
         agent.listen = listen
         with self.assertRaises(TimeoutError) as cm:
             asyncio.run(agent._await_reply("c" * 32, 0.1, "npub1worker", expires=time.time() + 3600))
-        self.assertIn("it may still run this request until", str(cm.exception))
+        self.assertIn("it may still run this request in the next 60 minutes", str(cm.exception))
         with self.assertRaises(TimeoutError) as cm:
             asyncio.run(agent._await_reply("c" * 32, 0.1, "npub1worker", expires=time.time()))
         self.assertIn("it won't start this request any more", str(cm.exception))
@@ -452,6 +456,19 @@ class CliTtl(unittest.TestCase):
             except SystemExit as e:
                 self.assertEqual(e.code, 0)
         return self.agent.calls[-1]
+
+    def test_a_timeout_exits_124_for_exec_and_cp(self):
+        async def too_late(*args, **kwargs):
+            raise TimeoutError("no reply from the worker within 40 seconds")
+
+        self.agent.exec = self.agent.put = self.agent.get = too_late
+        for argv in (["exec", "box", "--", "ls"], ["cp", __file__, "box:in.py"], ["cp", "box:out.txt", "out.txt"]):
+            args = self.parser.parse_args(argv)
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as cm:
+                args.func(self.agent, self.st, args)
+            self.assertEqual(cm.exception.code, 124, argv)
+            self.assertEqual(err.getvalue(), "error: no reply from the worker within 40 seconds\n")
 
     def test_exec_refuses_input_it_would_drop(self):
         # `myous exec W -- python3 - <<'EOF'` feeds the script to this

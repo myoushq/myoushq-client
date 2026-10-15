@@ -279,9 +279,12 @@ class LateReplies(unittest.TestCase):
         # The timeout said the worker might still run it until its ttl ran out.
         self.give_up("1" * 32, op="exec", cmd="make test", ttl=3600, wait=150)
         self.give_up("2" * 32, op="exec", cmd="make lint")   # from before ttl and wait were kept: hidden
+        # A ttl within the margin of the wait: the timeout said it won't run. Hidden.
+        self.give_up("3" * 32, op="exec", cmd="make docs", ttl=150 + inbox.TTL_MARGIN, wait=150)
         why = "expired: sent 2 hours ago, its ttl is 3600 seconds; not run"
         self.reply("ack", "1" * 32, ok=False, error=why)
         self.reply("ack", "2" * 32, ok=False, error=why)
+        self.reply("ack", "3" * 32, ok=False, error=why)
         self.assertEqual([e["text"] for e in inbox.unread(self.st)],
                          [f"late answer to exec `make test` (sent {self.clock}): {why}"])
 

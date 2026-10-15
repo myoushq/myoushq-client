@@ -674,11 +674,24 @@ def timeout_text(wait: float, expires: float | None) -> str:
     text = f"no reply from the worker within {int(wait)} seconds"
     if expires is None:
         return text
-    if expires <= time.time():
+    left = expires - time.time()
+    if left <= inbox.TTL_MARGIN:
         return text + ("; it won't start this request any more (it is off or busy), "
                        "but if it already has, its reply will show in `myous inbox`")
-    return (text + f"; it may still run this request until {time.strftime('%H:%M', time.gmtime(expires))} UTC "
-            "(its ttl), and its reply will show in `myous inbox` when it comes")
+    return (text + f"; it may still run this request in the next {_duration(left)} "
+            f"(its ttl; until {time.strftime('%H:%M', time.localtime(expires))} this computer's time), "
+            "and its reply will show in `myous inbox` when it comes")
+
+
+def _duration(seconds: float) -> str:
+    """"40 seconds", "59 minutes", "23 hours": rounded up, so it never says
+    less time than is left."""
+    for unit, size in (("hour", 3600), ("minute", 60)):
+        if seconds > 2 * size:
+            n = -(-int(seconds) // size)
+            return f"{n} {unit}s"
+    n = max(1, int(-(-seconds // 1)))
+    return f"{n} second" + ("s" if n != 1 else "")
 
 
 class _Deliveries:

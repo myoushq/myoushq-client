@@ -261,16 +261,19 @@ def cmd_cp(agent: Agent, st: FileStorage, args) -> None:
     if bool(src) == bool(dst):
         sys.exit("exactly one side must be CONTACT:PATH (a paired contact), e.g. "
                  "myous cp report.pdf worker:in.pdf  or  myous cp worker:out.png out.png")
-    if dst:
-        if not os.path.isfile(args.src):
-            sys.exit(f"no such file: {args.src}")
-        ack = asyncio.run(agent.put(dst[0], args.src, dst[1] or os.path.basename(args.src), timeout=args.timeout,
-                                    ttl=args.ttl))
-        print(f"written on {dst[0]}: {ack['path']} ({ack['size']} bytes)")
-    else:
-        to = args.dst if args.dst not in (".", "") else "./"
-        path = asyncio.run(agent.get(src[0], src[1], to, timeout=args.timeout, ttl=args.ttl))
-        print(path)
+    if dst and not os.path.isfile(args.src):
+        sys.exit(f"no such file: {args.src}")
+    try:
+        if dst:
+            ack = asyncio.run(agent.put(dst[0], args.src, dst[1] or os.path.basename(args.src),
+                                        timeout=args.timeout, ttl=args.ttl))
+            print(f"written on {dst[0]}: {ack['path']} ({ack['size']} bytes)")
+        else:
+            to = args.dst if args.dst not in (".", "") else "./"
+            print(asyncio.run(agent.get(src[0], src[1], to, timeout=args.timeout, ttl=args.ttl)))
+    except TimeoutError as e:
+        sys.stderr.write(f"error: {e}\n")
+        sys.exit(124)   # as exec, and timeout(1)
 
 
 def _exec_options(args) -> None:
