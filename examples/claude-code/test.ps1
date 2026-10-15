@@ -69,6 +69,30 @@ try {
     $called = (Get-Content -Raw $env:FAKE_LOG).Trim()
     if ($called -eq "$MyousHomeDir inbox --json") { Ok "MYOUS_HOME from the argument, inbox --json" } else { Fail "called as: $called" }
 
+    # A running listener has fetched already: the hook only reads what it stored.
+    $listenerJson = Join-Path $MyousHomeDir "listener.json"
+    function Invoke-WithListener([long]$age, [string]$pidJson) {  # write listener.json, run the hook, return how myous was called
+        $beat = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - $age
+        Set-Content -Path $listenerJson -Value "{`"pid`": $pidJson, `"heartbeat`": $beat}" -Encoding Ascii
+        Invoke-Hook
+        return (Get-Content -Raw $env:FAKE_LOG).Trim()
+    }
+    $gone = Start-Process -PassThru -NoNewWindow -FilePath "cmd.exe" -ArgumentList "/c", "exit 0"
+    $gone.WaitForExit()
+    $called = Invoke-WithListener 5 $PID
+    if ($called -eq "$MyousHomeDir inbox --json --local") { Ok "listener running: inbox --local" } else { Fail "listener running: called as $called" }
+    $called = Invoke-WithListener 5 "null"
+    if ($called -eq "$MyousHomeDir inbox --json --local") { Ok "listener just started (no pid yet): --local" } else { Fail "listener starting: called as $called" }
+    $called = Invoke-WithListener 300 $PID
+    if ($called -eq "$MyousHomeDir inbox --json") { Ok "listener's heartbeat stale: fetches" } else { Fail "stale heartbeat: called as $called" }
+    $called = Invoke-WithListener 5 $gone.Id
+    if ($called -eq "$MyousHomeDir inbox --json") { Ok "listener's process gone: fetches" } else { Fail "dead listener: called as $called" }
+    Set-Content -Path $listenerJson -Value "not json" -Encoding Ascii
+    Invoke-Hook
+    $called = (Get-Content -Raw $env:FAKE_LOG).Trim()
+    if ($called -eq "$MyousHomeDir inbox --json" -and $Code -eq 0) { Ok "unreadable listener.json: fetches" } else { Fail "bad listener.json: exit $Code, called as $called" }
+    Remove-Item $listenerJson
+
     # One item: Windows PowerShell 5.1 returns a JSON array as one object.
     Set-Items '[{"seq": 1, "type": "message", "direction": "in", "alias": "Alex''s Muse", "text": "hi", "relationship": "friend"}]'
     Invoke-Hook

@@ -12,7 +12,11 @@ try:
     from inbox_test import MemoryStorage  # unittest discover puts tests/ on the path
 except ModuleNotFoundError:
     from tests.inbox_test import MemoryStorage
-from myous import cli, contacts, inbox, processes
+from nostr_sdk import Keys
+
+from myous import cli, contacts, inbox, processes, relay
+from myous import hub as hub_module
+from myous.hub import Hub
 from myous.agent import Agent, _Deliveries, timeout_text
 
 
@@ -318,6 +322,58 @@ class RelayDown(unittest.TestCase):
         with self.assertRaises(OSError):
             asyncio.run(agent.listen())
         self.assertEqual(agent.relay_down_since, since)   # since the first time
+
+
+class RelayUnreachable(unittest.TestCase):
+    """A poll that reaches no relay fails at once instead of passing for an
+    empty inbox, and the last poll stays when it was last done."""
+
+    def setUp(self):
+        self.st = MemoryStorage()
+        self.st.key = Keys.generate().secret_key().to_bech32()
+        self.st.put("state", {"last_poll": 123})
+        self.agent = Agent(self.st)
+        self.agent.hub.config = lambda refresh=False: {"relays": ["ws://127.0.0.1:1"]}   # refused
+
+    def test_poll_raises_and_keeps_last_poll(self):
+        started = time.time()
+        with self.assertRaises(relay.RelayError) as cm:
+            asyncio.run(self.agent.poll())
+        self.assertLess(time.time() - started, 10)   # one attempt, not the retrying connect's full wait
+        self.assertIn("couldn't reach the relay at ws://127.0.0.1:1", str(cm.exception))
+        self.assertEqual(self.st.get("state")["last_poll"], 123)
+
+    def test_inbox_warns_and_shows_what_is_stored(self):
+        out, err = io.StringIO(), io.StringIO()
+        args = cli.build_parser().parse_args(["inbox"])
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            args.func(self.agent, self.st, args)
+        self.assertEqual(out.getvalue(), "no new messages\n")
+        self.assertIn("warning: couldn't fetch new items (couldn't reach the relay at ws://127.0.0.1:1", err.getvalue())
+        self.assertEqual(self.st.get("state")["last_poll"], 123)
+
+
+class HubConfigBackoff(unittest.TestCase):
+    """A stale config the hub can't refresh is used as it is, and not
+    asked for again for a while: each try may wait for its timeout."""
+
+    def test_a_failed_refresh_is_not_retried_at_once(self):
+        st = MemoryStorage()
+        hub = Hub(st, "https://hub.test")
+        st.put("hub", {"url": "https://hub.test", "relays": ["wss://r"], "fetched_at": 0})
+        calls = []
+
+        def unreachable(*args, **kwargs):
+            calls.append(kwargs.get("timeout"))
+            raise OSError("timed out")
+
+        hub.request = unreachable
+        self.assertEqual(hub.config()["relays"], ["wss://r"])
+        self.assertEqual(hub.config()["relays"], ["wss://r"])
+        self.assertEqual(calls, [hub_module.CONFIG_TIMEOUT])   # asked once
+        st.put("hub", dict(st.get("hub"), retry_at=0))           # the pause is over
+        hub.config()
+        self.assertEqual(len(calls), 2)
 
 
 class CliTtl(unittest.TestCase):

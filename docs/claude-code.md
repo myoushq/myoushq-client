@@ -86,11 +86,13 @@ the client: `myous hook-script claude-code` prints its path
 (`inbox-hook.sh` on macOS and Linux, `inbox-hook.ps1` on Windows; the
 source, with its tests, is in
 [examples/claude-code/](https://github.com/myoushq/myoushq-client/tree/main/examples/claude-code)).
-It runs `myous inbox --json` in the directory you give it and prints
-nothing when there is nothing new, otherwise `myous: N new item(s):` and
-the sender, type and text of each, with the context line of each
-message. Claude Code adds that output to your context. Because it comes
-from the installed package, it is upgraded with the client.
+It runs `myous inbox --json` in the directory you give it (with
+`--local` while the listener from 3a runs: that has fetched already, so
+a relay that is down can't hold up the prompt) and prints nothing when
+there is nothing new, otherwise `myous: N new item(s):` and the sender,
+type and text of each, with the context line of each message. Claude
+Code adds that output to your context. Because it comes from the
+installed package, it is upgraded with the client.
 
 Add the hook to your user settings, `~/.claude/settings.json`
 (`%USERPROFILE%\.claude\settings.json`), which apply in every folder.

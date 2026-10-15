@@ -29,7 +29,7 @@ from nostr_sdk import Keys, PublicKey, RelayStatus
 
 import myous
 from myous import contacts, files, inbox, parts, relay
-from myous.hub import Hub
+from myous.hub import Hub, HubError
 from myous.pairing import Pairing
 from myous.storage import Storage
 
@@ -460,7 +460,10 @@ class Agent:
                     else:
                         await self.listen(on_new=check, on_tick=check, tick=2)
                 except (OSError, relay.RelayError):
-                    await self.poll()
+                    try:
+                        await self.poll()
+                    except (OSError, relay.RelayError, HubError):
+                        pass  # still down: listen again after the pause
                     check()
                     await asyncio.sleep(5)
 
@@ -483,7 +486,10 @@ class Agent:
         self.advance_pairings()
         self.check_notices()
         await self.sync_cards()
-        async with self._connect() as conn:
+        # One attempt to connect: a relay that is down fails the poll at
+        # once (RelayError) instead of passing for an empty inbox, and
+        # last_poll stays when it was last done.
+        async with self._connect(retry=False) as conn:
             wraps = await conn.fetch_wraps()
         with self.st.lock():
             inbox.handle_wraps(self.st, self.keys, wraps)
@@ -629,8 +635,8 @@ class Agent:
 
     # --- internals ---------------------------------------------------------
 
-    def _connect(self, cfg: dict | None = None) -> relay.Connection:
-        return relay.Connection(self.keys, (cfg or self.hub.config())["relays"])
+    def _connect(self, cfg: dict | None = None, retry: bool = True) -> relay.Connection:
+        return relay.Connection(self.keys, (cfg or self.hub.config())["relays"], retry=retry)
 
     @contextlib.asynccontextmanager
     async def _use(self, conn: relay.Connection | None = None):

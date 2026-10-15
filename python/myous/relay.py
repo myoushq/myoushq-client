@@ -60,9 +60,15 @@ class _Auth(Authenticator):
 
 
 class Connection:
-    def __init__(self, keys: Keys, relays: list[str]):
+    """A connection to the hub's relays. `retry`: keep trying to connect
+    in the background (listening, sending); False makes one attempt, for
+    a one-shot fetch that should fail at once when no relay answers."""
+
+    def __init__(self, keys: Keys, relays: list[str], retry: bool = True):
         self.keys = keys
         self.relays = [RelayUrl.parse(u) for u in relays]
+        self.retry = retry
+        self.failures: dict[str, str] = {}   # relay URL -> why one attempt to connect failed
         builder = ClientBuilder().authenticator(_Auth(keys))
         socks = proxy.relay_proxy(relays)
         if socks:
@@ -75,7 +81,11 @@ class Connection:
         uniffi_set_event_loop(asyncio.get_running_loop())
         for url in self.relays:
             await self.client.add_relay(url)
-        await self.client.connect(TIMEOUT)
+        if self.retry:
+            await self.client.connect(TIMEOUT)
+        else:
+            out = await self.client.try_connect(TIMEOUT)
+            self.failures = {str(u): str(why) for u, why in out.failed.items()}
         return self
 
     async def __aexit__(self, *exc) -> None:
@@ -154,6 +164,12 @@ class Connection:
         return Filter().kind(Kind(KIND_GIFT_WRAP)).pubkey(self.keys.public_key())
 
     async def fetch_wraps(self) -> list[Event]:
+        """The gift wraps the relays hold for us. Raises RelayError when no
+        relay is connected: an empty answer then would look like an empty
+        inbox."""
+        if not await self.connected():
+            raise RelayError("; ".join(f"couldn't reach the relay at {u}" + (
+                f": {self.failures[str(u)]}" if str(u) in self.failures else "") for u in self.relays))
         target = ReqTarget.manual({u: [self._inbox_filter().limit(500)] for u in self.relays})
         return await self.client.fetch_events(target, TIMEOUT)
 
