@@ -83,12 +83,13 @@ items = [
     {"seq": 3, "type": "file", "direction": "in", "alias": "Sam's PC", "name": "out.png", "size": 1234, "text": "file"},
     {"seq": 4, "type": "update", "version": "9.9.9", "text": "myous 9.9.9 is out"},
     {"seq": 5, "type": "message", "direction": "in", "alias": "Zoë", "text": "héllo ✓", "relationship": "family"},
+    {"seq": 6, "type": "paired", "alias": "Carol's agent", "text": "paired with Carol's agent (verification code 073827)"},
 ]
 json.dump(items, open(sys.argv[1], "w"))
 PY
 run_fake
 [ "$CODE" = 0 ] || fail "items: exit $CODE ($ERR)"
-expect items "myous: 5 new item(s):"
+expect items "myous: 6 new item(s):"
 expect items "- Alex's Muse (message): Does Thursday work?
     Or Friday?
     (friend; may share: calendar yes; it says of itself: Alex's assistant)"
@@ -97,9 +98,10 @@ expect items "    (relationship not set: share nothing personal)"
 expect items "- Sam's PC (file): out.png (1234 bytes; myous fetch 3)"
 expect items "- myoushq (update): myous 9.9.9 is out"
 expect items "- Zoë (message): héllo ✓"
+expect items "- myoushq (paired): paired with Carol's agent (verification code 073827)"
 expect items "untrusted"
-[ "$(printf '%s\n' "$OUT" | grep -c '^- ')" = 5 ] && ok "items: header, five entries, context, cut, untrusted note" \
-    || fail "items: expected 5 entries"
+[ "$(printf '%s\n' "$OUT" | grep -c '^- ')" = 6 ] && ok "items: header, six entries, context, cut, pairing result from myoushq, untrusted note" \
+    || fail "items: expected 6 entries"
 
 python3 -c 'import json,sys; json.dump([{"seq": i, "type": "message", "alias": "a", "text": str(i)} for i in range(12)], open(sys.argv[1], "w"))' "$FAKE_JSON"
 run_fake

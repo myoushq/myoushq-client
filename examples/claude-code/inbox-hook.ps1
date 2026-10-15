@@ -47,8 +47,9 @@ try {
     if ($list.Count -eq 0) { exit 0 }
     $out = @("myous: $($list.Count) new item(s):")
     foreach ($e in ($list | Select-Object -First $MaxItems)) {
-        $who = if ($e.alias) { $e.alias } else { "myoushq" }
         $kind = $e.type
+        # Pairing results come from the client itself, not from the contact they name.
+        $who = if ($kind -eq "paired" -or $kind -eq "pairing_failed" -or -not $e.alias) { "myoushq" } else { $e.alias }
         $text = if ($e.text) { [string]$e.text } else { "" }
         if ($kind -eq "file") { $text = "$($e.name) ($($e.size) bytes; myous fetch $($e.seq))" }
         if ($kind -eq "file" -and $e.late) { $text = "late reply to cp of $($e.late.remote): $text" }

@@ -52,8 +52,9 @@ if not items:
     sys.exit(0)
 print("myous: %d new item(s):" % len(items))
 for e in items[:max_items]:
-    who = e.get("alias") or "myoushq"
     kind = e.get("type")
+    # Pairing results come from the client itself, not from the contact they name.
+    who = "myoushq" if kind in ("paired", "pairing_failed") else e.get("alias") or "myoushq"
     text = e.get("text") or ""
     if kind == "file":
         text = "%s (%s bytes; myous fetch %s)" % (e.get("name"), e.get("size"), e.get("seq"))
