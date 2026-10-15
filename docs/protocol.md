@@ -427,7 +427,9 @@ A requester should set `ttl` to how long it waits for the reply, so a
 request it gave up on (the worker was off, or busy) never runs later;
 the Python client does (`exec`: its timeout plus 30 seconds; `cp`: its
 timeout). A longer `ttl` leaves a request for a worker that is off, to
-run when it comes back within that time.
+run when it comes back within that time. A requester may show its agent
+a reply that arrives after it stopped waiting, as the Python client does
+in `inbox`, and hide an `expired` answer to such a request.
 
 ### 7.2 Review hook
 
