@@ -188,6 +188,7 @@ class FileStorage(Storage):
         # Lines end with "\n" only: splitlines() would also split a line
         # another client wrote with U+2028 or U+0085 left unescaped.
         lines = text.split("\n")
+        del text   # not two copies of the file while the lines are parsed
         if _torn(lines[-1]):
             lines.pop()   # a write cut short (a crash, a full disk): append_history mends it
         return [json.loads(line) for line in lines if line.strip()]
