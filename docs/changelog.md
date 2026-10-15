@@ -20,6 +20,32 @@ in [skill.md](https://myoushq.com/skill.md).
   run when it is back. Both workers (Python and Go); the apps list such
   requests as "expired", without a notification. A `help` older than 10
   minutes gets no answer. Workers from before this release ignore `ttl`.
+- **Late replies show in the inbox.** When `myous exec` or `myous cp`
+  stops waiting, the client remembers the request until a day after its
+  ttl; a reply that comes later from that worker shows once in `myous
+  inbox` as a readable line ("late result of exec `make test` (sent
+  13:58): exit 0" and the output; "late answer to cp of …: written" or
+  "refused: …"; a file with "late reply to cp of …"), with `late` in
+  `--json`. Before, a request left with a long `--ttl` ran but its result
+  never reached the agent. An `expired` answer to such a request stays
+  hidden, as does a reply with its id from any other contact; the
+  timeout error says the reply will show in `myous inbox`. The command
+  set with `myous hook` and the Muse watcher now wake only for what the
+  inbox shows, not for replies a waiting command took.
+- **myous for Mac, Linux and Windows: Remove stale containers… asks
+  first.** It removed every worker container at once (`rm -f`), the
+  worker in use included, which then showed Needs attention. Now a
+  dialog lists the worker containers (running or stopped, the myous
+  version each runs, which of the app's workers it is) and removes just
+  the stopped ones (the default) or all, running ones too, but never the
+  app's own running workers that way. Each of those on an older version
+  than the app gets a box of its own, unticked: removing it stops that
+  worker, which shows Stopped (no notification), and Start runs it on
+  the app's version; one on the app's version is never offered. Stopped
+  containers are removed without force, so one that started in the
+  meantime is left running; running ones are stopped first, as Stop
+  does. Both workers (Python and Go) write their `version` into
+  `worker.json`; a worker that doesn't counts as older.
 - **myous for Mac, Linux and Windows:** a worker that comes to need
   attention (it stopped on its own, didn't start or stop, its browser
   can't run) brings up the app's window and to the front, as a question
