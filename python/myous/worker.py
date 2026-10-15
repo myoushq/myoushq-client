@@ -681,17 +681,21 @@ class Worker:
         try:
             self.requests_dir.mkdir(parents=True, exist_ok=True)
             path = self.requests_dir / f"{rid}.json"
+            new = False
             try:
                 current = json.loads(path.read_text())
+            except FileNotFoundError:
+                current, new = {"id": rid}, True
             except (OSError, ValueError):
                 current = {"id": rid}
             current.update({k: v for k, v in fields.items() if v is not None})
             tmp = path.with_suffix(".tmp")
             tmp.write_text(json.dumps(current, sort_keys=True))
             tmp.replace(path)
-            old = sorted(self.requests_dir.glob("*.json"), key=lambda p: p.stat().st_mtime)
-            for p in old[:-REQUESTS_KEEP]:
-                p.unlink(missing_ok=True)
+            if new:   # only a new record adds one: updates (a request's 2 to 4) needn't list them all again
+                old = sorted(self.requests_dir.glob("*.json"), key=lambda p: p.stat().st_mtime)
+                for p in old[:-REQUESTS_KEEP]:
+                    p.unlink(missing_ok=True)
         except OSError as err:
             self.say(f"could not record request {rid}: {err}")
 
@@ -737,7 +741,9 @@ def run_command(cmd: str, cwd: Path, timeout: int, stop_file: Path | None = None
                 pass
         out_f.seek(0)
         err_f.seek(0)
-        out, err = out_f.read(), err_f.read()
+        # Only what can be kept, and one byte to tell it was cut: a command
+        # may have written gigabytes (the Go worker reads the same).
+        out, err = out_f.read(STDOUT_LIMIT + 1), err_f.read(STDERR_LIMIT + 1)
     exit_code = proc.returncode if note is None else -1
     if note:
         err += b"\n" + note.encode()
