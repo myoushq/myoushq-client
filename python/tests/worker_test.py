@@ -515,6 +515,8 @@ class ExpiryTest(WorkerFixture):
     def test_a_ttl_above_a_day_counts_as_a_day(self):
         self.run_(self.w.handle(self.exec_(age=86401, ttl=10 ** 9)))
         self.assertEqual(self.replies()[-1]["error"], "expired: sent 24 hours ago, its ttl is 86400 seconds; not run")
+        self.run_(self.w.handle(self.exec_(age=86401, ttl=10 ** 400)))   # too big for a float: still a day, as in Go
+        self.assertEqual(self.replies()[-1]["error"], "expired: sent 24 hours ago, its ttl is 86400 seconds; not run")
         self.run_(self.w.handle(self.put(86401, "9" * 40)))
         self.assertEqual(self.replies()[-1]["error"], "expired: sent 24 hours ago, its ttl is 86400 seconds; not run")
         self.w.review = lambda *a, **k: None

@@ -82,8 +82,9 @@ def request_ttl(value, tag: bool = False) -> int | None:
             return None
         digits = value.lstrip("0") or "0"
         value = int(digits) if len(digits) <= 6 else MAX_TTL
-    elif isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
-        return None
+    elif isinstance(value, bool) or not isinstance(value, (int, float)) or (isinstance(value, float)
+                                                                             and not math.isfinite(value)):
+        return None   # a whole number of any size is fine (a day at most); NaN and infinity aren't
     if value < 1:
         return None
     return int(min(value, MAX_TTL))
