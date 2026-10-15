@@ -97,9 +97,15 @@ test("real files drive the screens through a start and a stop", () => {
   m.load([files({ config: { name: "Max's PC" }, status: { phase: "running", contacts: 1 }, status_modified: now })]);
   evaluate(m);
   assert.equal(w.screen, "running");
-  now += 60;
+  // The window looks every two seconds; the file isn't written any more. Stale after 15 s, and that
+  // holds on a look 4 s later.
   m.ticks = 5;
-  evaluate(m);
+  const look = (secs: number) => { for (let t = 0; t < secs; t += 2) { now += 2; evaluate(m); } };
+  look(16);
+  assert.equal(w.screen, "running", "one look at a stale file isn't enough");
+  look(2);
+  assert.equal(w.screen, "running");
+  look(2);
   assert.equal(w.screen, "stopped");
   assert.equal(w.attention, "The worker stopped on its own.");
   evaluate(m);
@@ -501,8 +507,84 @@ test("a worker whose container the owner removed is stopped, not stopped on its 
   m.load([{ ...files(), status_modified: now }]);
   evaluate(m);
   assert.equal(w.screen, "running");
-  now += 60;
+  for (let t = 0; t < 30; t += 2) {
+    now += 2;
+    evaluate(m);
+  }
+  assert.equal(w.attention, "The worker stopped on its own.");
+});
+
+test("a sleep of the computer isn't a worker that stopped: it gets time to write again, and one late look is no news", () => {
+  const m = model();
+  let now = T, written = T;
+  m.now = () => now;
+  const sent: string[] = [], needy: string[] = [];
+  m.notify = (kind) => sent.push(kind);
+  m.needsAttention = (w) => needy.push(w.attention);
+  m.ticks = 5;
+  const files = (home: string): WorkerFiles => ({ home, folder: home.slice(1), is_default: home === "/h", project: home.slice(1),
+    config: { name: home }, status: { phase: "running", contacts: 1 }, status_modified: written, requests: [], approvals: [], paused: false, review: "trust" });
+  // Two workers; the second is the one shown. A look every two seconds; `writing`: the workers write before each.
+  const look = (secs: number, every = 2, writing = false) => {
+    for (let t = 0; t < secs; t += every) {
+      now += every;
+      if (writing) written = now;
+      m.load([files("/h"), files("/h-2")]);
+      evaluate(m);
+    }
+  };
+  look(2);
+  const [first, second] = m.workers;
+  m.current = second;
+  const running = () => m.workers.every((w) => w.screen === "running" && w.attention === "");
+  // The computer sleeps an hour: the next look is an hour on, worker.json an hour old.
+  written = now - 3;
+  look(3600, 3600);
+  assert.ok(running(), "the look after the wake doesn't call it stopped");
+  // The workers write again 8 s after the wake (a worker writes every 5 to 10 s).
+  look(8);
+  assert.ok(running());
+  look(30, 2, true);
+  assert.ok(running());
+  assert.deepEqual([sent, needy], [[], []], "no notification, the window not raised");
+  assert.equal(m.current, second, "the worker shown stays the one shown");
+  // One look at a stale file, then a write: no news.
+  look(16);
+  assert.ok(running());
+  written = now;
+  look(4);
+  assert.ok(running());
+  // A worker that doesn't write again after a wake: stopped once it had STALE_AFTER seconds, and that held 4 s on.
+  written = now - 2;
+  look(3600, 3600);
+  look(14);
+  assert.ok(running(), "still running within 15 s of the wake");
+  look(8);
+  assert.ok(m.workers.every((w) => w.screen === "stopped" && w.attention === "The worker stopped on its own."));
+  assert.deepEqual(sent, ["stopped", "stopped"], "now it's news");
+  assert.equal(needy.length, 2);
+  assert.equal(first.screen, "stopped");
+});
+
+test("a worker that dies while the app looks only now and then is still found", () => {
+  const m = model();
+  let now = T;
+  m.now = () => now;
+  m.ticks = 5;
+  const files = (written: number): WorkerFiles => ({ home: "/h", folder: "h", is_default: true, project: "p", config: { name: "x" },
+    status: { phase: "running", contacts: 1 }, status_modified: written, requests: [], approvals: [], paused: false, review: "trust" });
+  m.load([files(now)]);
   evaluate(m);
+  const w = m.current;
+  // The app's timer slowed to a look every 20 s (a hidden window); the worker wrote once more, then died.
+  const looks: string[] = [];
+  for (let i = 0; i < 4; i++) {
+    now += 20;
+    m.load([files(T + 2)]);
+    evaluate(m);
+    looks.push(w.screen);
+  }
+  assert.deepEqual(looks, ["running", "running", "stopped", "stopped"], "the first slow look is given the doubt, once");
   assert.equal(w.attention, "The worker stopped on its own.");
 });
 

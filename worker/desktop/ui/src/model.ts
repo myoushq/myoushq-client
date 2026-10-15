@@ -11,6 +11,9 @@ type Json = Record<string, unknown>;
 
 /** How long worker.json may go unwritten before the worker counts as stopped. */
 export const STALE_AFTER = 15;
+/** A worker that ran and went quiet without a Stop counts as stopped once that holds from one look
+ * to another at least this many seconds later: one look isn't news (a late write, a slow read). */
+export const GONE_AFTER = 4;
 
 /** What the backend reads from one worker folder. */
 export interface WorkerFiles {
@@ -302,6 +305,14 @@ export class Worker {
   attentionButton = "";
   /** Evaluated at least once: a line that appears later is news, one there from the start is not. */
   evaluated = false;
+  /** When the app last looked at it (Model.evaluate). */
+  lookedAt = 0;
+  /** When the app looked again after a break longer than STALE_AFTER (the computer slept, or the app
+   * was suspended) while the worker ran and wrote: it couldn't write while the computer slept, so it
+   * has STALE_AFTER seconds from then, as after a write. */
+  wokeAt = 0;
+  /** When it first looked stopped after running, without a Stop (0 not); see GONE_AFTER. */
+  goneSince = 0;
   /** Its app.json writes in flight, and Model.writesEnded when the last one ended (see Model.load). */
   writesInFlight = 0;
   wroteAt = 0;
@@ -336,7 +347,7 @@ export class Worker {
   get contacts() { return num(this.status?.contacts); }
   /** The version the worker reports in worker.json ("" from a worker older than that). */
   get version() { return str(this.status?.version); }
-  fresh(now: number) { return this.statusModified > 0 && now - this.statusModified < STALE_AFTER; }
+  fresh(now: number) { return this.statusModified > 0 && now - Math.max(this.statusModified, this.wokeAt) < STALE_AFTER; }
 
   /** The owner removed its running container (Remove stale containers): it is gone as after Stop,
    * so it shows Stopped with Start, not "stopped on its own". */
@@ -586,8 +597,18 @@ export class Model {
   /** Decides one worker's screen and attention line from its files; notifications for what changed. */
   evaluate(w: Worker) {
     const now = this.now();
+    // A break in the app's own looking: a worker that ran and wrote until then may have been asleep
+    // with the computer, so worker.json's age says nothing yet (see wokeAt). Not one that was quiet
+    // already: a worker that died while the app's timer was slowed is found on the next look.
+    if (w.lookedAt !== 0 && now - w.lookedAt > STALE_AFTER && w.alive && w.lookedAt - w.statusModified < STALE_AFTER) w.wokeAt = now;
+    w.lookedAt = now;
     const phase = w.phase;
     let fresh = w.fresh(now);
+    // A worker that ran and went quiet without a Stop: running until that holds GONE_AFTER seconds on.
+    if (!fresh && w.alive && !w.stopping) {
+      if (w.goneSince === 0) w.goneSince = now;
+      if (now - w.goneSince < GONE_AFTER) fresh = true;
+    } else w.goneSince = 0;
     // Stop finished and the worker has written nothing since: it is gone, until the next start.
     if (fresh && w.stopDoneAt !== 0 && w.statusModified < w.stopDoneAt) fresh = false;
     const alive = fresh && (phase === "running" || phase === "paused" || phase === "");
