@@ -50,6 +50,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
       - run: cd typescript && npm ci
       - id: audit
+        # bash here means -o pipefail: the audit's exit status decides the
+        # step, not tee's (without it, advisories were printed and it passed).
+        shell: bash
         run: CARGO=cargo sh scripts/audit.sh 2>&1 | tee audit.log
       - name: open or update an issue on failure
         if: failure()
@@ -65,7 +68,7 @@ jobs:
             echo
             echo "Last lines:"
             echo '```'
-            tail -40 audit.log 2>/dev/null || true
+            tail -40 audit.log 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' || true   # without cargo's colours
             echo '```'
             echo "Usual fix: bump the toolchain or the dependency, regenerate the lock, release."
           } > body.md
