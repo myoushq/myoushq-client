@@ -172,7 +172,14 @@ reads at each `help`: a line with the address for Playwright's
 Playwright was installed, say) gets one from "Open browser" on the
 Browser card, no restart: its next `help` names it. The browser stops
 with the worker and when the app quits (asked to close first, ended
-after 8 s); "Show browser" (the Browser card, the tray, the ⋯ menu)
+after 8 s). One left running by an earlier run of the app is taken over
+(and ended or shown) only if it is the one the app started: the app
+keeps its pid, port and start in its own folder (`browsers.json` next
+to `browser-python` above), and the process must have been started with
+this worker's profile folder and that port and no later than that;
+`browser.json`, in the worker folder, is never trusted alone (in a
+container worker's folder an agent's command can write any pid there).
+"Show browser" (the Browser card, the tray, the ⋯ menu)
 brings its page to the front, or starts it again on the same port if
 the owner closed it. "Continue
 without a browser" on the Set up card, or the checkbox in Settings,

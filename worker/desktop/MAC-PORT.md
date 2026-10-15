@@ -106,7 +106,10 @@ behind `cfg(target_os = "macos")` or the window's `info.os === "macos"`.
   with the container's browser. The browser lives with the worker:
   started while it starts and runs (one the owner quits comes back),
   ended when it stops or the app quits, a browser left from a run before
-  taken over. Hidden after launch when `browser_hidden` says so (again
+  taken over (only the one the app started: the pid in `browser.json`
+  must be a process with this worker's profile folder and port, as the
+  app's own record says, never just any pid the container wrote there).
+  Hidden after launch when `browser_hidden` says so (again
   every half second for six seconds, as myous for Mac does); Show browser
   unhides and activates it through AppKit. The Browser card, the start
   rows and the menu item say what myous for Mac says; when it can't run,

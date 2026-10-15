@@ -29,7 +29,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::engine::{hide, run_capture};
@@ -1021,11 +1021,158 @@ pub fn devtools_answers(port: u16) -> bool {
     port_answers(port) && get_text(&format!("http://127.0.0.1:{port}/json/version")).is_ok()
 }
 
-/// The browser a browser.json names, if it is this app's and still
-/// answers: (port, pid, whether it is a container worker's). A container
-/// worker's (myous for Mac's kind: no `kind`, the host as the container
-/// reaches it) only on a Mac.
-fn adoptable(home: &Path) -> Option<(u16, u32, bool)> {
+// --- which browser is this worker's ------------------------------------------------
+
+/// What the app keeps of a browser it started, in its own folder, never
+/// the worker folder (which an agent's command in a container can
+/// change, browser.json included): its pid, its port and when it was
+/// started, by worker folder. A browser left running by a run before is
+/// taken over only if it is that one.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+struct Record {
+    pid: u32,
+    port: u16,
+    /// Unix seconds, just after it was started.
+    at: i64,
+}
+
+/// Where the records are kept: the app's own folder. The tests keep
+/// theirs in memory (the same within one run), so they leave no file.
+fn records_file() -> Option<PathBuf> {
+    (!cfg!(test)).then(|| paths::app_data().join("browsers.json"))
+}
+
+/// The records, and the tests' in memory; one reader or writer at a time.
+static RECORDS: Mutex<Option<HashMap<String, Record>>> = Mutex::new(None);
+
+fn read_records(file: &Path) -> HashMap<String, Record> {
+    fs::read(file)
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
+}
+
+fn write_records(file: &Path, all: &HashMap<String, Record>) {
+    if let Some(dir) = file.parent() {
+        let _ = fs::create_dir_all(dir);
+    }
+    let text = serde_json::to_string_pretty(all).unwrap_or_default();
+    let _ = files::write_atomic(file, text.as_bytes());
+}
+
+fn records(memory: &Option<HashMap<String, Record>>) -> HashMap<String, Record> {
+    match records_file() {
+        Some(file) => read_records(&file),
+        None => memory.clone().unwrap_or_default(),
+    }
+}
+
+fn record(home: &Path) -> Option<Record> {
+    let memory = RECORDS.lock().unwrap();
+    records(&memory).get(&*home.to_string_lossy()).copied()
+}
+
+/// Keeps `r` as the worker's browser; None forgets the one with `pid`.
+fn set_record(home: &Path, r: Option<Record>, pid: u32) {
+    let mut memory = RECORDS.lock().unwrap();
+    let key = home.to_string_lossy().to_string();
+    let mut all = records(&memory);
+    match r {
+        Some(r) => {
+            all.insert(key, r);
+        }
+        None if all.get(&key).is_some_and(|r| r.pid == pid) => {
+            all.remove(&key);
+        }
+        None => return,
+    }
+    match records_file() {
+        Some(file) => write_records(&file, &all),
+        None => *memory = Some(all),
+    }
+}
+
+/// Whether a command line has `flag` at the start of an argument (after
+/// a space or a quote) and, when `whole`, ending there too.
+fn runs_with(line: &str, flag: &str, whole: bool) -> bool {
+    let edge = |c: Option<char>| matches!(c, None | Some(' ') | Some('"'));
+    line.match_indices(flag).any(|(i, _)| {
+        edge(line[..i].chars().last()) && (!whole || edge(line[i + flag.len()..].chars().next()))
+    })
+}
+
+/// Whether the process `pid`, which a browser.json says is the worker's
+/// browser on `port`, is: a process started with a profile in the
+/// worker's browser folder (`browser_dir`) and that DevTools port (what
+/// `args` puts on its command line), and when the app has a record of
+/// the browser it started (`recorded`), that pid, started no later than
+/// that. browser.json is in the worker folder, where an agent's command
+/// in a container can write any pid and any port something answers on;
+/// a process that isn't the browser is never signalled, shown or hidden.
+/// Ok, or why not.
+fn judge_browser(
+    pid: u32,
+    port: u16,
+    browser_dir: &Path,
+    found: Result<Option<crate::direct::Proc>, String>,
+    command_line: Result<Option<String>, String>,
+    recorded: Option<Record>,
+) -> Result<(), String> {
+    if pid == 0 || pid == std::process::id() {
+        return Err("that is no browser's pid".into());
+    }
+    if let Some(r) = recorded {
+        if r.pid != pid {
+            return Err(format!("the browser myous started there was pid {}", r.pid));
+        }
+    }
+    let p = found?.ok_or("no process has it")?;
+    if p.zombie {
+        return Err("it has exited".into());
+    }
+    if let Some(r) = recorded {
+        if p.started > r.at + crate::direct::START_SLACK {
+            return Err(format!("{} has it, started after the browser", p.name));
+        }
+    }
+    let line = command_line?.ok_or("no process has it")?;
+    let profile = format!(
+        "--user-data-dir={}{}",
+        browser_dir.display(),
+        std::path::MAIN_SEPARATOR
+    );
+    if !runs_with(&line, &profile, false)
+        || !runs_with(&line, &format!("--remote-debugging-port={port}"), true)
+    {
+        return Err(format!(
+            "{} has it, not with this worker's browser profile and port",
+            p.name
+        ));
+    }
+    Ok(())
+}
+
+/// `judge_browser` for the process as the system has it now.
+fn verify_browser(home: &Path, port: u16, pid: u32) -> Result<(), String> {
+    if pid == 0 {
+        return Err("browser.json names no pid".into());
+    }
+    judge_browser(
+        pid,
+        port,
+        &paths::browser_dir(home),
+        crate::direct::process(pid),
+        crate::direct::command_line(pid),
+        record(home),
+    )
+}
+
+/// The browser a browser.json names, if it is this worker's (as
+/// `verify_browser` tells) and still answers: (port, pid, whether it is a
+/// container worker's). A container worker's (myous for Mac's kind: no
+/// `kind`, the host as the container reaches it) only on a Mac. One that
+/// isn't is left alone, and `log` says why.
+fn adoptable(home: &Path, log: &dyn Fn(String)) -> Option<(u16, u32, bool)> {
     let v = files::read_json(&paths::browser_json(home))?;
     let kind = v.get("kind").and_then(Value::as_str).unwrap_or("");
     let host = v.get("host").and_then(Value::as_str).unwrap_or("");
@@ -1035,8 +1182,19 @@ fn adoptable(home: &Path) -> Option<(u16, u32, bool)> {
         _ => return None,
     };
     let port = u16::try_from(v.get("port")?.as_u64()?).ok()?;
-    let pid = v.get("pid").and_then(Value::as_u64).unwrap_or(0) as u32;
-    devtools_answers(port).then_some((port, pid, container))
+    let pid = u32::try_from(v.get("pid").and_then(Value::as_u64).unwrap_or(0)).unwrap_or(0);
+    if !devtools_answers(port) {
+        return None;
+    }
+    match verify_browser(home, port, pid) {
+        Ok(()) => Some((port, pid, container)),
+        Err(why) => {
+            log(format!(
+                "browser: browser.json names pid {pid} on port {port}, which isn't this worker's browser ({why}); left alone"
+            ));
+            None
+        }
+    }
 }
 
 /// Starts the program for `spec`, keeps it as this worker's browser and
@@ -1058,6 +1216,15 @@ pub fn launch(home: &Path, spec: Spec, log: Log) -> Result<u32, String> {
         .spawn()
         .map_err(|e| format!("could not run {}: {e}", spec.exe.display()))?;
     let pid = child.id();
+    set_record(
+        home,
+        Some(Record {
+            pid,
+            port: spec.port,
+            at: crate::direct::unix_now(),
+        }),
+        pid,
+    );
     let gen = GEN.fetch_add(1, Ordering::SeqCst);
     log(format!(
         "browser: {} started (pid {pid}), profile {}, DevTools port {}{}; its output is in browser.log",
@@ -1085,6 +1252,13 @@ pub fn launch(home: &Path, spec: Spec, log: Log) -> Result<u32, String> {
 }
 
 fn adopt(home: &Path, spec: Spec, pid: u32, log: Log) {
+    // Verified (adoptable): kept as this app's from now on (a browser
+    // from an app without the record; it started before now).
+    if record(home).is_none() {
+        let at = crate::direct::unix_now();
+        let port = spec.port;
+        set_record(home, Some(Record { pid, port, at }), pid);
+    }
     let gen = GEN.fetch_add(1, Ordering::SeqCst);
     log(format!(
         "browser: {} from before is still running on port {} (pid {pid}); using it",
@@ -1117,6 +1291,7 @@ fn watch(home: PathBuf, gen: u64, log: Log) {
                 if p.gen != gen {
                     return;
                 }
+                let was = p.pid;
                 let ended = match p.child.as_mut() {
                     Some(c) => match c.try_wait() {
                         Ok(None) => None,
@@ -1129,10 +1304,11 @@ fn watch(home: PathBuf, gen: u64, log: Log) {
                     p.child = None;
                     p.pid = 0;
                 }
-                (p.spec.clone(), p.pid, ended)
+                (p.spec.clone(), was, ended)
             };
             if let Some(why) = ended {
                 let _ = fs::remove_file(paths::browser_json(&home));
+                set_record(&home, None, pid);
                 log(format!(
                     "browser: {} closed ({why}); {}",
                     spec.app,
@@ -1265,7 +1441,7 @@ pub fn start_with_how(
             });
         }
     }
-    match adoptable(home) {
+    match adoptable(home, &*log) {
         Some((port, pid, container)) if container == how.container => {
             let spec = prepare_with(home, worker, found, port, python, extra, &how)?;
             adopt(home, spec, pid, log);
@@ -1347,20 +1523,23 @@ fn end_gracefully(pid: u32, mut child: Option<&mut Child>) {
 pub fn stop(home: &Path) {
     let key = home.to_string_lossy().to_string();
     let taken = procs().lock().unwrap().remove(&key);
-    match taken {
+    let pid = match taken {
         Some(mut p) => {
             if p.pid != 0 {
                 end_gracefully(p.pid, p.child.as_mut());
             }
+            p.pid
         }
-        None => {
-            if let Some((_, pid, _)) = adoptable(home) {
-                if pid != 0 {
-                    end_gracefully(pid, None);
-                }
+        // One from before this app's run, only if it is this worker's.
+        None => match adoptable(home, &|l| files::append_app_log(&l)) {
+            Some((_, pid, _)) => {
+                end_gracefully(pid, None);
+                pid
             }
-        }
-    }
+            None => 0,
+        },
+    };
+    set_record(home, None, pid);
     let _ = fs::remove_file(paths::browser_json(home));
 }
 
@@ -1471,7 +1650,7 @@ pub fn show_with(
         .map(|p| (p.spec.clone(), p.pid));
     let (port, pid) = match &known {
         Some((s, pid)) => (s.port, *pid),
-        None => adoptable(home)
+        None => adoptable(home, &*log)
             .map(|(port, pid, _)| (port, pid))
             .unwrap_or((0, 0)),
     };
@@ -2763,19 +2942,9 @@ mod tests {
         fs::remove_dir_all(&owner).unwrap();
     }
 
-    /// Launching, browser.json, Show and Stop, with a stand-in for the
-    /// browser: a script that serves the DevTools addresses Show uses on
-    /// the port it is given (Python's http.server).
+    /// The DevTools addresses Show uses, as files for Python's http.server.
     #[cfg(unix)]
-    #[test]
-    fn launch_show_and_stop_with_a_stand_in() {
-        use std::os::unix::fs::PermissionsExt;
-        let Some(python) = crate::engine::which("python3") else {
-            println!("no python3 here; skipped");
-            return;
-        };
-        let home = temp("run");
-        let www = home.join("www");
+    fn devtools_files(www: &Path) {
         fs::create_dir_all(www.join("json/activate")).unwrap();
         fs::write(www.join("json/version"), r#"{"Browser": "Stand-in/1"}"#).unwrap();
         fs::write(
@@ -2784,23 +2953,49 @@ mod tests {
         )
         .unwrap();
         fs::write(www.join("json/activate/P1"), "Target activated").unwrap();
+    }
+
+    /// A stand-in for the browser in `home`: a Python script that serves
+    /// the DevTools addresses on the port it is given, keeping the
+    /// browser's command line as its own (as a browser's process does).
+    #[cfg(unix)]
+    fn stand_in(home: &Path) -> Option<Found> {
+        use std::os::unix::fs::PermissionsExt;
+        let Some(python) = crate::engine::which("python3") else {
+            println!("no python3 here; skipped");
+            return None;
+        };
+        let www = home.join("www");
+        devtools_files(&www);
         let exe = home.join("fake-browser");
         fs::write(
             &exe,
             format!(
-                "#!/bin/sh\nfor a in \"$@\"; do case \"$a\" in --remote-debugging-port=*) port=${{a#*=}};; esac; done\n\
-                 echo \"args: $*\"\nexec {} -m http.server \"$port\" --bind 127.0.0.1 --directory {}\n",
+                "#!{}\nimport functools, http.server, sys\n\
+                 port = [a.split('=', 1)[1] for a in sys.argv if a.startswith('--remote-debugging-port=')][0]\n\
+                 print('args:', ' '.join(sys.argv[1:]), flush=True)\n\
+                 h = functools.partial(http.server.SimpleHTTPRequestHandler, directory={:?})\n\
+                 http.server.ThreadingHTTPServer(('127.0.0.1', int(port)), h).serve_forever()\n",
                 python.display(),
-                www.display()
+                www.display().to_string()
             ),
         )
         .unwrap();
         fs::set_permissions(&exe, fs::Permissions::from_mode(0o755)).unwrap();
-        let found = Found {
+        Some(Found {
             id: "custom".into(),
             name: "Stand-in".into(),
             path: exe.to_string_lossy().to_string(),
-        };
+        })
+    }
+
+    /// Launching, browser.json, Show and Stop, with a stand-in for the
+    /// browser (`stand_in`).
+    #[cfg(unix)]
+    #[test]
+    fn launch_show_and_stop_with_a_stand_in() {
+        let home = temp("run");
+        let Some(found) = stand_in(&home) else { return };
         let lines = Arc::new(Mutex::new(Vec::<String>::new()));
         let l2 = lines.clone();
         let log: Log = Arc::new(move |s| l2.lock().unwrap().push(s));
@@ -2873,6 +3068,185 @@ mod tests {
             !matches!(child.try_wait(), Ok(None)),
             "the adopted browser was ended"
         );
+        fs::remove_dir_all(&home).unwrap();
+    }
+
+    /// The records in the app's own folder: written and read back.
+    #[test]
+    fn records_are_kept_in_a_file() {
+        let dir = temp("records");
+        let file = dir.join("myous").join("browsers.json");
+        assert!(read_records(&file).is_empty());
+        let mut all = HashMap::new();
+        all.insert(
+            "/Users/max/.myous-worker".to_string(),
+            Record {
+                pid: 77,
+                port: 41234,
+                at: 1_800_000_000,
+            },
+        );
+        write_records(&file, &all);
+        assert_eq!(read_records(&file), all);
+        fs::write(&file, "not json").unwrap();
+        assert!(read_records(&file).is_empty());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn which_browser_is_this_workers() {
+        let dir = Path::new("/Users/max/.myous-worker/browser");
+        let sep = std::path::MAIN_SEPARATOR;
+        let line = format!(
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir={}{sep}com.google.Chrome --remote-debugging-port=41234 --no-first-run",
+            dir.display()
+        );
+        let proc_ = |name: &str, started: i64| {
+            Ok(Some(crate::direct::Proc {
+                name: name.into(),
+                started,
+                zombie: false,
+            }))
+        };
+        let t = 1_800_000_000;
+        let rec = Record {
+            pid: 77,
+            port: 41234,
+            at: t,
+        };
+        let judge = |pid, port, found, line: &str, rec| {
+            judge_browser(pid, port, dir, found, Ok(Some(line.to_string())), rec)
+        };
+        // The browser: its profile in this worker's folder, its port.
+        assert_eq!(
+            judge(77, 41234, proc_("google chrome", t), &line, Some(rec)),
+            Ok(())
+        );
+        // From an app without the record: the command line alone.
+        assert_eq!(
+            judge(77, 41234, proc_("google chrome", t + 999), &line, None),
+            Ok(())
+        );
+        // On Windows, quoted (a space in the path).
+        let quoted = format!(
+            "\"C:\\Program Files\\Edge\\msedge.exe\" \"--user-data-dir={}{sep}msedge\" --remote-debugging-port=41234",
+            dir.display()
+        );
+        assert_eq!(judge(77, 41234, proc_("msedge", t), &quoted, None), Ok(()));
+        // Whatever else browser.json may name: another port, another
+        // worker's profile, a program that isn't a browser (a dev server
+        // answering on the port), a pid the system has given away since,
+        // one the app's record doesn't name, this app, nothing.
+        let other_port = line.replace("41234", "412345");
+        let other_worker = line.replace(".myous-worker/", ".myous-worker-2/");
+        for (pid, found, l, r) in [
+            (77, proc_("google chrome", t), other_port.as_str(), None),
+            (77, proc_("google chrome", t), other_worker.as_str(), None),
+            (77, proc_("node", t), "node server.js --port 41234", None),
+            (
+                77,
+                proc_("google chrome", t + 3600),
+                line.as_str(),
+                Some(rec),
+            ),
+            (78, proc_("google chrome", t), line.as_str(), Some(rec)),
+            (std::process::id(), proc_("myous", t), line.as_str(), None),
+            (0, proc_("x", t), line.as_str(), None),
+            (77, Ok(None), line.as_str(), None),
+        ] {
+            assert!(judge(pid, 41234, found, l, r).is_err(), "{pid} {l}");
+        }
+        // No way to tell: left alone.
+        assert!(
+            judge_browser(77, 41234, dir, Err("ps didn't run".into()), Ok(None), None).is_err()
+        );
+        assert!(judge_browser(
+            77,
+            41234,
+            dir,
+            proc_("chrome", t),
+            Err("no ps".into()),
+            None
+        )
+        .is_err());
+        assert!(runs_with("a --x=1 b", "--x=1", true));
+        assert!(!runs_with("a --x=12 b", "--x=1", true));
+        assert!(!runs_with("a x--x=1", "--x=1", true));
+        assert!(runs_with("\"--x=/a/b\"", "--x=/a/", false));
+    }
+
+    /// A browser.json an agent's command wrote, naming a pid of the
+    /// owner's and a port something else answers on (a dev server): the
+    /// pid is never signalled, and the app starts the worker's own
+    /// browser rather than taking that one over.
+    #[cfg(unix)]
+    #[test]
+    fn a_pid_in_browser_json_is_left_alone_unless_it_is_the_browser() {
+        let home = temp("forged");
+        let Some(found) = stand_in(&home) else { return };
+        let www = home.join("dev");
+        devtools_files(&www);
+        let port = free_port().unwrap();
+        let mut dev = std::process::Command::new("python3")
+            .args([
+                "-m",
+                "http.server",
+                &port.to_string(),
+                "--bind",
+                "127.0.0.1",
+            ])
+            .arg("--directory")
+            .arg(&www)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let t = Instant::now();
+        while !devtools_answers(port) && t.elapsed() < Duration::from_secs(15) {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        assert!(devtools_answers(port));
+        let mut victim = std::process::Command::new("sleep")
+            .arg("60")
+            .spawn()
+            .unwrap();
+        let forge = |pid: u32| {
+            fs::write(
+                paths::browser_json(&home),
+                format!(r#"{{"host": "127.0.0.1", "kind": "host", "port": {port}, "pid": {pid}}}"#),
+            )
+            .unwrap()
+        };
+        let lines = Arc::new(Mutex::new(Vec::<String>::new()));
+        let l2 = lines.clone();
+        let log: Log = Arc::new(move |s| l2.lock().unwrap().push(s));
+        // Stop, Show and Start with no browser of this app's for the worker.
+        for pid in [victim.id(), dev.id()] {
+            forge(pid);
+            stop(&home);
+            assert!(
+                victim.try_wait().unwrap().is_none(),
+                "the owner's process was signalled"
+            );
+            assert!(
+                dev.try_wait().unwrap().is_none(),
+                "the dev server was signalled"
+            );
+        }
+        forge(victim.id());
+        let st = start_with(&home, "W", &found, "", vec![], log.clone()).unwrap();
+        assert_ne!(st.port, port, "took over what browser.json named");
+        assert!(lines
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|l| l.contains("isn't this worker's browser")));
+        stop(&home);
+        assert!(victim.try_wait().unwrap().is_none() && dev.try_wait().unwrap().is_none());
+        for c in [&mut victim, &mut dev] {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
         fs::remove_dir_all(&home).unwrap();
     }
 

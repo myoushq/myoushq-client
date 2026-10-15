@@ -156,7 +156,7 @@ const STOP_GRACE: Duration = Duration::from_secs(10);
 /// How much later than a worker's recorded start its process may seem to
 /// have begun and still be it: the recorded time is whole seconds, `ps`
 /// counts whole seconds too, and the clock may have been set meanwhile.
-const START_SLACK: i64 = 5;
+pub(crate) const START_SLACK: i64 = 5;
 
 /// A worker being stopped: `pid`, this app's child for `home` if `ours`;
 /// else one started outside this app, whose worker.json says it started
@@ -236,13 +236,13 @@ fn signal(pid: u32, sig: &str) -> bool {
 
 /// What the system says about a process.
 #[derive(Debug, Clone)]
-struct Proc {
+pub(crate) struct Proc {
     /// Its program's file name, in lower case, without `.exe`.
-    name: String,
+    pub(crate) name: String,
     /// When it started (Unix seconds).
-    started: i64,
+    pub(crate) started: i64,
     /// Exited but not yet waited for by its parent.
-    zombie: bool,
+    pub(crate) zombie: bool,
 }
 
 /// Whether a pid from worker.json is still that worker.
@@ -296,7 +296,7 @@ fn worker_program(name: &str) -> bool {
     n.starts_with("myous") || n.starts_with("python")
 }
 
-fn unix_now() -> i64 {
+pub(crate) fn unix_now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
@@ -307,7 +307,7 @@ fn unix_now() -> i64 {
 /// error if the system can't be asked. `ps` on a Mac and Linux; on
 /// Windows PowerShell's Get-Process (the start time the Python client's
 /// pid-reuse guard reads through GetProcessTimes).
-fn process(pid: u32) -> Result<Option<Proc>, String> {
+pub(crate) fn process(pid: u32) -> Result<Option<Proc>, String> {
     if cfg!(windows) {
         let script = format!(
             "$p = Get-Process -Id {pid} -ErrorAction SilentlyContinue; if (-not $p) {{ exit 0 }}; \
@@ -362,6 +362,48 @@ fn parse_ps(status: i32, out: &str, now: i64) -> Result<Option<Proc>, String> {
         started: now - elapsed,
         zombie: stat.starts_with('Z'),
     }))
+}
+
+/// The command line the process `pid` was started with, as one line (its
+/// arguments joined with spaces; on Windows as Windows keeps it, quotes
+/// and all): None if there is no such process, an error if the system
+/// can't be asked. `ps -ww -o args=` on a Mac and Linux, CIM's
+/// Win32_Process on Windows.
+pub(crate) fn command_line(pid: u32) -> Result<Option<String>, String> {
+    if cfg!(windows) {
+        let script = format!(
+            "$p = Get-CimInstance Win32_Process -Filter 'ProcessId = {pid}' -ErrorAction SilentlyContinue; \
+             if (-not $p) {{ exit 0 }}; Write-Output ('cmd ' + $p.CommandLine)"
+        );
+        let mut cmd = crate::engine::command("powershell.exe");
+        cmd.args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            &script,
+        ]);
+        let (st, out) = run_capture(cmd, Duration::from_secs(30));
+        if st != 0 {
+            return Err(format!("PowerShell's Get-CimInstance: {out}"));
+        }
+        let line = out
+            .lines()
+            .map(str::trim)
+            .find_map(|l| l.strip_prefix("cmd "));
+        return Ok(line.map(String::from));
+    }
+    let mut cmd = crate::engine::command("ps");
+    cmd.args(["-ww", "-o", "args=", "-p"]).arg(pid.to_string());
+    let (st, out) = run_capture(cmd, Duration::from_secs(15));
+    let out = out.trim();
+    match st {
+        0 if !out.is_empty() => Ok(Some(out.to_string())),
+        0 => Err("ps said nothing".into()),
+        127 => Err(format!("ps didn't run: {out}")),
+        _ if out.is_empty() => Ok(None),
+        _ => Err(format!("ps: {out}")),
+    }
 }
 
 /// `ps`'s elapsed time, `[[dd-]hh:]mm:ss`, in seconds.
