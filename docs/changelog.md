@@ -20,6 +20,12 @@ in [skill.md](https://myoushq.com/skill.md).
   run when it is back. Both workers (Python and Go); the apps list such
   requests as "expired", without a notification. A `help` older than 10
   minutes gets no answer. Workers from before this release ignore `ttl`.
+- **`myous exec CONTACT --timeout N --ttl N -- CMD`**: `--timeout` and
+  `--ttl` written after the contact and before the `--` are now `myous
+  exec`'s own options. Before, they were sent to the worker as part of
+  the command. Anything else before a `--` is still the command's
+  (`myous exec CONTACT git diff -- file` runs `git diff -- file`), and the
+  options before the contact work as before.
 - **Late replies show in the inbox.** When `myous exec` or `myous cp`
   stops waiting, the client remembers the request until a day after its
   ttl; a reply that comes later from that worker shows once in `myous
@@ -45,7 +51,8 @@ in [skill.md](https://myoushq.com/skill.md).
   containers are removed without force, so one that started in the
   meantime is left running; running ones are stopped first, as Stop
   does. Both workers (Python and Go) write their `version` into
-  `worker.json`; a worker that doesn't counts as older.
+  `worker.json`; one that says neither (the version in its
+  `worker.json`, or its image's tag) counts as older.
 - **myous for Mac, Linux and Windows:** a worker that comes to need
   attention (it stopped on its own, didn't start or stop, its browser
   can't run) brings up the app's window and to the front, as a question
@@ -59,43 +66,45 @@ in [skill.md](https://myoushq.com/skill.md).
   the same download (`/download/mac`, `myous-v<version>.dmg`). What a Mac
   gains from the shared app: one Install per runtime with a Website link
   (the Objective-C app had the checklist and the Homebrew installs
-  already), the approval banner with "Needs attention", the ok / refused
-  column in the requests, and direct mode with the Go worker inside the
-  app. What it keeps from the Objective-C app: a menu bar app
-  (the mark in the state's colour, the count of new requests) with the
-  Dock icon as a setting; a question's notification with Allow and
-  Refuse (UserNotifications), either of which answers it without the
-  window; open at login as a login item (SMAppService); and the worker's
-  browser on the Mac (Chrome, Edge, Brave or Chromium) under
-  `sandbox-exec` with the same seatbelt profile, for container workers
-  too (`MYOUS_BROWSER=host`), hidden or shown as before. It uses the same
+  already), the approval banner with "Needs attention" and the ok /
+  refused column in the requests. What it keeps from the Objective-C app:
+  a menu bar app (the mark in the state's colour, the count of new
+  requests) with the Dock icon as a setting; a question's notification
+  with Allow and Refuse (UserNotifications), either of which answers it
+  without the window; open at login as a login item (SMAppService); and
+  the worker's browser on the Mac (Chrome, Edge, Brave or Chromium) under
+  `sandbox-exec` with the same seatbelt profile, for container workers too
+  (`MYOUS_BROWSER=host`), hidden or shown as before. It uses the same
   worker folders, Chrome profiles (`<worker folder>/browser/<bundle id>`),
   `app.json` settings and bundle identifier (`com.myoushq.desktop`), so an
-  existing worker, its logins, its browser choice and its login item
-  carry over. What differs: Settings and the logs open inside the window
-  rather than in windows of their own (chosen from the menu bar icon's
-  menu while the window is closed, they bring the window up first, on
-  all three systems); what the ⋯ menu holds on Linux and
-  Windows is in the app menu (Settings… on ⌘,), not under the Option-held
-  Advanced menu; and the browser choice for a container worker is in Set
-  up and Settings. The window is dressed as a Mac window (its colours,
-  push buttons and striped table; dark mode and the accent colour follow
-  System Settings). The Objective-C app (`worker/mac`) is no longer
-  released and is kept in the repository for now. Linux and Windows are
-  unchanged.
+  existing worker, its logins, its browser choice and its login item carry
+  over. What differs: Settings and the logs open inside the window rather
+  than in windows of their own (chosen from the menu bar icon's menu while
+  the window is closed, they bring the window up first, on all three
+  systems); the menu bar icon's menu always has Advanced, which the
+  Objective-C app showed only with Option held (or in a checkout or direct
+  mode), and while the Dock icon is on, the app menu holds what the ⋯ menu
+  holds on Linux and Windows (Settings… on ⌘,); and the browser choice for
+  a container worker is in Set up and Settings, not under Advanced. The
+  window is dressed as a Mac window (its colours, push buttons and striped
+  table; dark mode and the accent colour follow System Settings). The
+  Objective-C app (`worker/mac`) is no longer released and is kept in the
+  repository for now. Linux and Windows are unchanged.
 - **A stopped worker container lets the worker answer**: `docker stop`
   and `docker compose down` (the apps' Stop) give the container ten
   seconds, but its entry point ended within a second (sending TERM to
   everything, itself included, crashed it), so the agent whose command
   was being ended could miss "stopped by the owner". It now waits for the
   worker to answer and exit, up to nine seconds, then ends the rest.
-- **The Rust and TypeScript clients check the peer's pairing point as
-  Python and Go do**: `myous-pake` (and so its WebAssembly build, which
-  TypeScript uses) now refuses a SPAKE2 message whose point is the
-  identity, lies outside the prime-order subgroup, or is our own point sent
-  back. The `spake2` crate only checked that the point is on the curve. A
-  peer that follows the protocol never sends such a point, so pairing with
-  every client works as before. Found in the SPAKE2 review of 2026-10-14.
+- **The Rust and TypeScript clients check the peer's pairing point**:
+  `myous-pake` (and so its WebAssembly build, which TypeScript uses) now
+  refuses a SPAKE2 message whose point is the identity (in any
+  encoding), lies outside the prime-order subgroup, or is our own point
+  sent back, as the Go client does; python-spake2 makes the same checks
+  but rejects the identity only in its canonical encoding. The `spake2`
+  crate only checked that the point is on the curve. A peer that follows
+  the protocol never sends such a point, so pairing with every client
+  works as before. Found in the SPAKE2 review of 2026-10-14.
 - protocol.md §5.4 names the SPAKE2 implementations the clients use (Go's
   is its own, not gospake2) and the point checks to make.
 - **Stopping a worker on Windows answers the agent**: myous for Mac,
@@ -116,8 +125,8 @@ in [skill.md](https://myoushq.com/skill.md).
   it is stopped as the app's own worker is: the quit file (and SIGTERM),
   killed after ten seconds, Stopping until it is gone. A pid the system
   has since given to another program is left alone, and so is one the
-  app can't check, with the log saying why. The Objective-C myous for Mac
-  had this check first; Linux and Windows gain it with the shared app.
+  app can't check, with the log saying why. myous for Mac, Linux and
+  Windows gain it with the shared app.
 - **The scheduled `ensure` on a Windows laptop**: `myous cron install`
   now defines the Task Scheduler task in XML (written next to
   `ensure.pyw` as `ensure-task.xml`) instead of schtasks' defaults, which
