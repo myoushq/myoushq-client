@@ -3,6 +3,9 @@
 import contextlib
 import io
 import json
+import os
+import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -11,7 +14,7 @@ from unittest import mock
 
 from nostr_sdk import EventBuilder, Keys, Kind, Tag, nip59_make_gift_wrap
 
-from myous import cli, contacts, files, inbox, relay, vm
+from myous import cli, contacts, files, inbox, processes, relay, vm
 from myous.agent import Agent
 from myous.muse import watcher
 from myous.storage import FileStorage, Storage
@@ -207,6 +210,10 @@ class LateReplies(unittest.TestCase):
             entry.update(id=rid, text=json.dumps(dict(fields, myous=kind, id=rid)))
         return inbox.record(self.st, entry)
 
+    def incoming(self, **entry) -> dict:
+        """Anything else the worker sent."""
+        return inbox.record(self.st, dict(entry, direction="in", peer=self.worker, alias="Sam's Mac"))
+
     def printed(self, entries: list[dict]) -> str:
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
@@ -239,12 +246,44 @@ class LateReplies(unittest.TestCase):
         self.assertEqual(e["text"], f"late result of exec `ls` (sent {self.clock}): exit 0\na")
 
     def test_an_expired_answer_stays_hidden_a_refusal_shows(self):
-        self.give_up("1" * 32, op="exec", cmd="make test")
-        self.give_up("2" * 32, op="exec", cmd="rm -rf build")
-        self.reply("ack", "1" * 32, ok=False, error="expired: sent 4000 seconds ago, its ttl is 3600 seconds; not run")
+        self.give_up("1" * 32, op="exec", cmd="make test", ttl=150, wait=150)
+        self.give_up("2" * 32, op="exec", cmd="rm -rf build", ttl=150, wait=150)
+        self.reply("ack", "1" * 32, ok=False, error="expired: sent 4000 seconds ago, its ttl is 150 seconds; not run")
         self.reply("ack", "2" * 32, ok=False, error="refused by the owner")
         self.assertEqual([e["text"] for e in inbox.unread(self.st)],
                          [f"late answer to exec `rm -rf build` (sent {self.clock}): refused: refused by the owner"])
+
+    def test_an_expired_answer_shows_when_the_ttl_outlived_the_wait(self):
+        # The timeout said the worker might still run it until its ttl ran out.
+        self.give_up("1" * 32, op="exec", cmd="make test", ttl=3600, wait=150)
+        self.give_up("2" * 32, op="exec", cmd="make lint")   # from before ttl and wait were kept: hidden
+        why = "expired: sent 2 hours ago, its ttl is 3600 seconds; not run"
+        self.reply("ack", "1" * 32, ok=False, error=why)
+        self.reply("ack", "2" * 32, ok=False, error=why)
+        self.assertEqual([e["text"] for e in inbox.unread(self.st)],
+                         [f"late answer to exec `make test` (sent {self.clock}): {why}"])
+
+    def test_a_reply_its_command_still_waits_for_stays_the_commands(self):
+        inbox.waiting(self.st, "1" * 32, {"op": "exec", "cmd": "make test", "peer": self.worker, "alias": "Sam's Mac",
+                                          "sent_at": self.sent, "expires": self.sent + 3600})
+        self.assertEqual(self.st.get("gave_up")["1" * 32]["pid"], os.getpid())
+        self.reply("result", "1" * 32, exit=0, stdout="", stderr="")
+        self.assertEqual(inbox.unread(self.st), [])
+        inbox.answered(self.st, "1" * 32)   # the command took it
+        self.assertEqual(self.st.get("gave_up"), {})
+
+    def test_a_reply_whose_command_was_killed_shows(self):
+        gone = subprocess.Popen([sys.executable, "-c", "pass"])
+        gone.wait()
+        started = processes.created_at(os.getpid())
+        self.give_up("1" * 32, op="exec", cmd="make test", pid=gone.pid)
+        # This process's pid, but a process that started earlier: another one, gone, had it.
+        self.give_up("2" * 32, op="exec", cmd="make lint", pid=os.getpid(), pid_started=started - 3600)
+        self.reply("result", "1" * 32, exit=0, stdout="", stderr="")
+        self.reply("result", "2" * 32, exit=1, stdout="", stderr="")
+        self.assertEqual([e["text"] for e in inbox.unread(self.st)],
+                         [f"late result of exec `make test` (sent {self.clock}): exit 0",
+                          f"late result of exec `make lint` (sent {self.clock}): exit 1"])
 
     def test_only_the_worker_asked_may_answer(self):
         self.give_up("1" * 32, op="exec", cmd="make test")
@@ -280,6 +319,81 @@ class LateReplies(unittest.TestCase):
                                               f"(sent {self.clock}): out.txt (123 bytes, id {n}; `myous fetch {n}`)\n")
         self.assertIn(f"file from Sam's Mac: late reply to cp of /work/out.txt (sent {self.clock}): out.txt",
                       watcher.describe(get))
+
+    def history(self, json_out: bool = False) -> str:
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            cli.cmd_history(Agent(self.st), self.st, SimpleNamespace(with_=None, limit=50, json=json_out))
+        return out.getvalue()
+
+    def out(self, **entry) -> dict:
+        """A request (or message) this agent sent to the worker."""
+        return inbox.record(self.st, dict(entry, direction="out", peer=self.worker, alias="Sam's Mac"))
+
+    def test_history_shows_requests_and_replies_readably(self):
+        def line(e: dict, text: str) -> str:
+            return f"[{time.strftime('%Y-%m-%d %H:%M', time.localtime(e['at']))}] {text}"
+
+        exec_ = json.dumps({"myous": "exec", "id": "1" * 32, "cmd": "make test", "timeout": 120, "ttl": 150})
+        get = json.dumps({"myous": "get", "id": "2" * 32, "path": "/work/out.txt", "ttl": 300})
+        self.give_up("5" * 32, op="exec", cmd="sleep 900")
+        entries = [
+            self.out(type="message", text=exec_),
+            self.reply("result", "1" * 32, exit=0, stdout="ok\n", stderr="", truncated=False),
+            self.out(type="message", text=get),
+            self.reply("file", "2" * 32, name="out.txt", size=3),
+            self.out(type="file", name="in.pdf", size=5, w=["put", "3" * 32, "/work/in.pdf", "300"],
+                      text="sent file: in.pdf (5 bytes)"),
+            self.reply("ack", "3" * 32, ok=True, path="/work/in.pdf", size=5, sha256="00"),
+            self.reply("ack", "4" * 32, ok=False, error="refused by the owner"),
+            self.reply("result", "5" * 32, exit=0, stdout="", stderr=""),
+            self.out(type="message", text="hello"),
+            self.out(type="file", name="notes.txt", size=9, text="sent file: notes.txt (9 bytes)"),
+        ]
+        n = entries[3]["seq"]
+        self.assertEqual(self.history(), "\n".join([
+            line(entries[0], "me -> Sam's Mac: exec `make test` (request 11111111)"),
+            line(entries[1], "Sam's Mac: result of request 11111111: exit 0\nok"),
+            line(entries[2], "me -> Sam's Mac: cp of /work/out.txt (request 22222222)"),
+            line(entries[3], f"file from Sam's Mac: reply to request 22222222: out.txt (3 bytes, id {n}; `myous fetch {n}`)"),
+            line(entries[4], "file me -> Sam's Mac: cp of in.pdf to /work/in.pdf (5 bytes, request 33333333)"),
+            line(entries[5], "Sam's Mac: answer to request 33333333: written: /work/in.pdf (5 bytes)"),
+            line(entries[6], "Sam's Mac: answer to request 44444444: refused: refused by the owner"),
+            # A late reply exactly as the inbox shows it.
+            line(entries[7], f"Sam's Mac: late result of exec `sleep 900` (sent {self.clock}): exit 0"),
+            line(entries[8], "me -> Sam's Mac: hello"),
+            line(entries[9], "file me -> Sam's Mac: notes.txt (9 bytes)"),
+        ]) + "\n")
+        [late] = inbox.unread(self.st)   # the inbox shows the late one the same way
+        self.assertEqual(self.printed([late]), line(entries[7], f"Sam's Mac: {late['text']}") + "\n")
+        # --json keeps the entries as stored.
+        stored = json.loads(self.history(json_out=True))
+        self.assertEqual([e["text"] for e in stored], [e["text"] for e in entries])
+        self.assertNotIn("late", stored[7])
+
+    def test_poll_counts_and_lists_what_the_inbox_shows(self):
+        self.give_up("1" * 32, op="exec", cmd="make test")
+        new = [self.reply("result", "3" * 32, exit=0, stdout="mine", stderr=""),   # a waiting command's
+               self.reply("result", "1" * 32, exit=0, stdout="", stderr=""),       # late
+               self.incoming(type="file", name="notes.txt", size=9, key="00", nonce="00", text="file: notes.txt (9 bytes)"),
+               self.incoming(type="message", text="hi")]
+        agent = Agent(self.st)
+
+        async def poll():
+            return new
+
+        def run(**args) -> str:
+            out = io.StringIO()
+            with mock.patch.object(agent, "poll", poll), contextlib.redirect_stdout(out):
+                cli.cmd_poll(agent, self.st, SimpleNamespace(**dict(dict(json=False, quiet=False), **args)))
+            return out.getvalue()
+
+        self.assertEqual(run(), "3 new item(s); read them with `myous inbox`\n")
+        late, file, message = json.loads(run(json=True))
+        self.assertEqual((late["late"]["cmd"], late["text"]), ("make test", f"late result of exec `make test` (sent {self.clock}): exit 0"))
+        self.assertEqual((file["name"], message["text"]), ("notes.txt", "hi"))
+        self.assertNotIn("key", file)   # as in inbox --json: the key stays in the history
+        self.assertEqual([e["text"] for e in inbox.unread(self.st)], [late["text"], file["text"], "hi"])
 
     def test_give_up_keeps_requests_a_day_past_their_ttl(self):
         now = int(time.time())

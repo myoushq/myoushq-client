@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import io
 import json
+import os
 import time
 import unittest
 
@@ -11,7 +12,7 @@ try:
     from inbox_test import MemoryStorage  # unittest discover puts tests/ on the path
 except ModuleNotFoundError:
     from tests.inbox_test import MemoryStorage
-from myous import cli, contacts, inbox
+from myous import cli, contacts, inbox, processes
 from myous.agent import Agent, _Deliveries, timeout_text
 
 
@@ -252,11 +253,37 @@ class RequestTtl(unittest.TestCase):
             self.assertEqual({k: r[k] for k in what}, what)
             self.assertEqual((r["peer"], r["alias"]), (npub, "box"))
             self.assertTrue(before <= r["sent_at"] <= time.time())
-            self.assertEqual(r["expires"] - r["sent_at"], ttl)
+            self.assertEqual((r["expires"] - r["sent_at"], r["ttl"]), (ttl, ttl))
+            self.assertNotIn("pid", r)   # given up: no longer waited for
+        self.assertEqual((gave_up[exec_id]["wait"], gave_up[put_id]["wait"]), (150, 60))
+
+    def test_while_it_waits_the_request_names_this_process(self):
+        seen = []
+
+        async def await_reply(rid, timeout, npub, conn=None, expires=None):
+            seen.append(self.st.get("gave_up")[rid])
+            return {"type": "result", "id": rid, "exit": 0}
+
+        self.agent._await_reply = await_reply
+        asyncio.run(self.agent.exec("box", "ls"))
+        self.assertEqual((seen[0]["op"], seen[0]["cmd"], seen[0]["pid"]), ("exec", "ls", os.getpid()))
+        self.assertLess(abs(seen[0]["pid_started"] - processes.created_at(os.getpid())), 2)
 
     def test_a_reply_in_time_leaves_nothing_behind(self):
         asyncio.run(self.agent.exec("box", "ls"))
-        self.assertIsNone(self.st.get("gave_up"))
+        self.assertEqual(self.st.get("gave_up"), {})
+
+    def test_a_wait_ended_otherwise_gives_the_request_up(self):
+        # A caller's own timeout around exec cancels the wait; this process
+        # lives on, so the reply must not stay the command's.
+        async def cancelled(rid, timeout, npub, conn=None, expires=None):
+            raise asyncio.CancelledError
+
+        self.agent._await_reply = cancelled
+        with self.assertRaises(asyncio.CancelledError):
+            asyncio.run(self.agent.exec("box", "ls"))
+        [r] = self.st.get("gave_up").values()
+        self.assertNotIn("pid", r)
 
     def test_the_timeout_error_says_it(self):
         agent = Agent(MemoryStorage())
@@ -271,6 +298,26 @@ class RequestTtl(unittest.TestCase):
         with self.assertRaises(TimeoutError) as cm:
             asyncio.run(agent._await_reply("c" * 32, 0.1, "npub1worker", expires=time.time()))
         self.assertIn("it won't start this request any more", str(cm.exception))
+
+
+class RelayDown(unittest.TestCase):
+    def test_listen_keeps_since_when_no_relay_is_connected(self):
+        agent = Agent(MemoryStorage())
+        agent.hub.config = lambda refresh=False: {"relays": ["ws://127.0.0.1:9"]}
+
+        def unreachable(cfg=None):
+            raise OSError("connection refused")
+
+        agent._connect = unreachable
+        self.assertIsNone(agent.relay_down_since)
+        before = time.time()
+        with self.assertRaises(OSError):
+            asyncio.run(agent.listen())
+        since = agent.relay_down_since
+        self.assertTrue(before <= since <= time.time())
+        with self.assertRaises(OSError):
+            asyncio.run(agent.listen())
+        self.assertEqual(agent.relay_down_since, since)   # since the first time
 
 
 class CliTtl(unittest.TestCase):

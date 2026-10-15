@@ -345,6 +345,42 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(self.run_ok("bob", "inbox", "--local"), "no new messages\n")
         self.run_ok("alice", "inbox")
 
+    def test_9d_a_late_result_shows_when_the_command_was_killed(self):
+        """bob's exec is killed while it waits (an agent's tool may end a
+        command that runs long), so it never gives up: alice's worker, off
+        until then, runs the request within its ttl, and the result shows in
+        bob's inbox all the same."""
+        work = self.tmp / "alice-work"
+        work.mkdir(exist_ok=True)
+        self.run_ok("bob", "inbox")
+        env = dict(os.environ, MYOUS_HOME=str(self.tmp / "bob"))
+        req = subprocess.Popen([sys.executable, "-m", "myous", "exec", "alice", "--", "echo killed"], env=env,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        gave_up = self.tmp / "bob" / "gave_up.json"
+        try:
+            for _ in range(100):   # sent, and waiting
+                if gave_up.exists() and any(r.get("pid") == req.pid for r in json.loads(gave_up.read_text()).values()):
+                    break
+                time.sleep(0.1)
+            else:
+                self.fail("the request was never recorded as waited for")
+        finally:
+            req.kill()
+            req.wait()
+        w = self.start_worker("alice", work)
+        try:
+            for _ in range(40):
+                entries = json.loads(self.run_ok("bob", "inbox", "--peek", "--json"))
+                if entries:
+                    break
+                time.sleep(0.5)
+        finally:
+            w.terminate()
+            w.wait(timeout=10)
+        self.assertEqual([(e["type"], e["late"]["cmd"], e["stdout"]) for e in entries], [("result", "echo killed", "killed\n")])
+        self.run_ok("bob", "inbox")
+        self.run_ok("alice", "inbox")
+
     def test_6_identity_is_never_replaced(self):
         r = self.run_cli("alice", "init", "--alias", "alice")
         self.assertEqual(r.returncode, 0)

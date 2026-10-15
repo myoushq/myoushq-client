@@ -327,7 +327,7 @@ func TestWorkerExecTimeoutKillsTheCommand(t *testing.T) {
 	f := newWorkerFixture(t)
 	started := time.Now()
 	r := f.exec("sleep 30", "timeout", 1)
-	if r["exit"] != -1.0 || !strings.Contains(r["stderr"].(string), "killed after 1 seconds") || time.Since(started) > 10*time.Second {
+	if r["exit"] != -1.0 || !strings.Contains(r["stderr"].(string), "[myous: killed after 1 second]") || time.Since(started) > 10*time.Second {
 		t.Fatalf("%v after %v", r, time.Since(started))
 	}
 }
@@ -485,6 +485,153 @@ func TestWorkerQuitFileStopsTheWorker(t *testing.T) {
 	}
 	if exists(quit) {
 		t.Fatal("the quit file is still there")
+	}
+}
+
+func TestWorkerStoppingAnswersTheRequestsWaiting(t *testing.T) {
+	// Requests behind the running one (in its batch and in later ones)
+	// are already handled in the history, so a restart wouldn't see them:
+	// stopping answers them as stopped, records and logs them, runs none.
+	f := newWorkerFixture(t)
+	cmd, queued := "echo > started; sleep 60", "echo > ran"
+	if runtime.GOOS == "windows" {
+		cmd, queued = "New-Item started -ItemType File | Out-Null; Start-Sleep 60", "New-Item ran -ItemType File | Out-Null"
+	}
+	put := Entry{Type: "file", Direction: "in", Peer: testPeer, Alias: "muse", W: []string{"put", "q3", "in.txt", "600"}, Size: 5}
+	f.agent.listen = func(ctx context.Context, onNew func([]Entry)) error {
+		onNew([]Entry{request(map[string]any{"myous": "exec", "id": testRID, "cmd": cmd, "timeout": 120}),
+			request(map[string]any{"myous": "exec", "id": "q1", "cmd": queued})})
+		onNew([]Entry{request(map[string]any{"myous": "get", "id": "q2", "path": "x"}), textEntry("hello")})
+		onNew([]Entry{put})
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	done := make(chan error, 1)
+	go func() { done <- f.w.Run(context.Background()) }()
+	for deadline := time.Now().Add(60 * time.Second); !exists(filepath.Join(f.work, "started")); time.Sleep(50 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the command never started")
+		}
+	}
+	quit := filepath.Join(f.home, "commands", "quit")
+	os.MkdirAll(filepath.Dir(quit), 0o700)
+	os.WriteFile(quit, nil, 0o600)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("the worker didn't stop")
+	}
+	replies := f.replies()
+	if len(replies) != 4 {
+		t.Fatalf("replies: %v", replies)
+	}
+	if r := replies[0].(map[string]any); r["myous"] != "result" || r["id"] != testRID || r["stopped"] != true {
+		t.Fatalf("the running one: %v", r)
+	}
+	for i, id := range []string{"q1", "q2", "q3"} {
+		want := `{"myous": "ack", "id": "` + id + `", "ok": false, "error": "` + stoppingWhy + `"}`
+		if got := f.agent.sent[i+1][1]; got != want {
+			t.Fatalf("got %s, want %s", got, want)
+		}
+		rec := f.readJSON(filepath.Join(f.home, "requests", id+".json"))
+		if rec["decision"] != "stopped" || rec["stopped"] != true || rec["reason"] != stoppingWhy || rec["alias"] != "muse" ||
+			rec["done_at"] == nil {
+			t.Fatalf("%s's record: %v", id, rec)
+		}
+	}
+	if rec := f.readJSON(filepath.Join(f.home, "requests", "q3.json")); rec["op"] != "put" || rec["path"] != "in.txt" || rec["size"] != 5.0 {
+		t.Fatalf("the put's record: %v", rec)
+	}
+	var logged []string
+	for _, l := range f.logLines() {
+		if l["decision"] == "stopped" {
+			logged = append(logged, fmt.Sprint(l["op"], " ", l["id"], " ", l["reason"]))
+		}
+	}
+	if strings.Join(logged, "; ") != "exec q1 "+stoppingWhy+"; get q2 "+stoppingWhy+"; put q3 "+stoppingWhy {
+		t.Fatalf("worker.log: %v", logged)
+	}
+	if exists(filepath.Join(f.work, "ran")) || f.agent.fetches != 0 {
+		t.Fatal("a waiting request ran")
+	}
+}
+
+func TestWorkerRunReturnsAnErrorReconnectingCantFix(t *testing.T) {
+	// It used to wait for the request goroutine, which only a stop ended.
+	f := newWorkerFixture(t)
+	f.agent.listen = func(ctx context.Context, onNew func([]Entry)) error {
+		return &HubError{Status: 401, Message: "unknown key"}
+	}
+	done := make(chan error, 1)
+	go func() { done <- f.w.Run(context.Background()) }()
+	select {
+	case err := <-done:
+		var he *HubError
+		if !errors.As(err, &he) {
+			t.Fatalf("Run: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run didn't return")
+	}
+}
+
+func TestWorkerKeepsTickingWhileTheRelayIsUnreachable(t *testing.T) {
+	// Waiting to reconnect, it still writes worker.json (the apps take a
+	// stale one for a stopped worker) and takes the owner's commands, the
+	// quit file too.
+	tick, every := workerTick, statusEvery
+	workerTick, statusEvery = 200*time.Millisecond, 200*time.Millisecond
+	t.Cleanup(func() { workerTick, statusEvery = tick, every })
+	f := newWorkerFixture(t)
+	attempts := 0
+	f.agent.listen = func(ctx context.Context, onNew func([]Entry)) error {
+		f.agent.mu.Lock()
+		attempts++
+		f.agent.mu.Unlock()
+		return errors.New("could not connect to any relay (connection refused)")
+	}
+	started := time.Now()
+	done := make(chan error, 1)
+	go func() { done <- f.w.Run(context.Background()) }()
+	updated := map[any]bool{}
+	var last map[string]any
+	for time.Since(started) < 3500*time.Millisecond {
+		var s map[string]any
+		if raw, err := os.ReadFile(filepath.Join(f.home, "worker.json")); err == nil && json.Unmarshal(raw, &s) == nil {
+			updated[s["updated"]], last = true, s
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	commands := filepath.Join(f.home, "commands")
+	hello := filepath.Join(commands, "hello") // an unknown command: removed when commands are handled
+	os.MkdirAll(commands, 0o700)
+	os.WriteFile(hello, nil, 0o600)
+	for deadline := time.Now().Add(5 * time.Second); exists(hello) && time.Now().Before(deadline); {
+		time.Sleep(100 * time.Millisecond)
+	}
+	os.WriteFile(filepath.Join(commands, "quit"), nil, 0o600)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the worker didn't stop")
+	}
+	if attempts != 1 { // all of it while waiting to reconnect
+		t.Fatalf("%d connection attempts", attempts)
+	}
+	if len(updated) < 2 {
+		t.Fatalf("worker.json wasn't refreshed: %v", last)
+	}
+	if d, ok := last["relay_down_since"].(float64); !ok || math.Abs(d-float64(started.Unix())) > 2 || last["phase"] != "running" {
+		t.Fatalf("status: %v", last)
+	}
+	if exists(hello) {
+		t.Fatal("the owner's commands waited for the connection")
 	}
 }
 

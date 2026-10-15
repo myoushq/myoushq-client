@@ -8,6 +8,7 @@ import base64
 import os
 import signal
 import subprocess
+import time
 
 WINDOWS = os.name == "nt"
 
@@ -106,12 +107,13 @@ def alive(pid: int) -> bool:
 
 
 def created_at(pid: int) -> float | None:
-    """When the process with this pid started (Unix time), on Windows; None
-    elsewhere or if it can't be asked. Windows hands out pids again soon
-    (after a restart, often at once), so a pid saved earlier may now be
-    another program's."""
+    """When the process with this pid started (Unix time); None if it is
+    gone or can't be asked. Pids are handed out again (on Windows soon,
+    after a restart often at once; elsewhere once the numbers wrap), so a
+    pid saved earlier may now be another program's: its start time tells.
+    Linux reads /proc, other POSIX systems ask ps (whole seconds)."""
     if not WINDOWS:
-        return None
+        return _created_at_posix(pid)
     import ctypes
     from ctypes import wintypes
     k32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -136,6 +138,26 @@ def created_at(pid: int) -> float | None:
         return ticks / 1e7 - 11644473600
     finally:
         k32.CloseHandle(handle)
+
+
+def _created_at_posix(pid: int) -> float | None:
+    if os.path.exists("/proc/self/stat"):
+        try:
+            with open(f"/proc/{pid}/stat") as f:
+                fields = f.read().rpartition(")")[2].split()   # the name, in parentheses, may hold spaces
+            with open("/proc/stat") as f:
+                boot = next(int(line.split()[1]) for line in f if line.startswith("btime "))
+            if fields[0] == "Z":
+                return None   # exited, not yet waited for
+            return boot + int(fields[19]) / os.sysconf("SC_CLK_TCK")   # field 22: ticks after boot
+        except (OSError, ValueError, IndexError, StopIteration):
+            return None
+    try:
+        out = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], stdin=subprocess.DEVNULL, capture_output=True,
+                             text=True, timeout=10, env=dict(os.environ, LC_ALL="C")).stdout.strip()
+        return time.mktime(time.strptime(out, "%a %b %d %H:%M:%S %Y")) if out else None
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None
 
 
 def terminate(pid: int) -> None:

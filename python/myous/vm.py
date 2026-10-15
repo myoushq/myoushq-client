@@ -42,8 +42,7 @@ def run_hook(st: FileStorage, entries: list[dict]) -> None:
     """Run the agent's hook, if it set one, without waiting for it: for
     what the inbox shows, not for a reply a waiting command consumes."""
     command = st.get("settings", {}).get("on_message")
-    gave_up = st.get("gave_up", {})
-    entries = [e for e in entries if not inbox.consumed(e, gave_up)]
+    entries = inbox.to_show(st, entries)
     if not command or not entries:
         return
     log = open(st.path("hook.log"), "a")
@@ -81,7 +80,7 @@ def start_listener(st: FileStorage) -> None:
     pid = info.get("pid")
     if pid:
         # Stale or hung; but a process started after the listener's last
-        # heartbeat is another program that got its pid (Windows).
+        # heartbeat is another program that got its pid.
         created = processes.created_at(pid)
         if created is None or created <= info.get("heartbeat", 0) + 5:
             processes.terminate(pid)

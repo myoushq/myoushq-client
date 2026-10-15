@@ -13,6 +13,7 @@ exists, and logs every request; tightening is a matter of giving
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import importlib.util
 import json
 import math
@@ -41,6 +42,7 @@ HELP_INTERVAL = 60  # seconds between help replies to the same contact
 REVIEW_TIMEOUT = 150  # the hook may wait for the owner (worker/review.py: 120 s), inside an agent's default wait
 STATUS_EVERY = 5
 TICK = 5  # seconds between ticks: status writes and the owner's commands
+RECONNECT_WAIT = 10  # seconds between attempts to reach the relay
 REQUESTS_KEEP = 200  # request records kept in <home>/requests for the owner's app
 # A request is good for its ttl from when it was sent (protocol.md 7.1):
 # one the requester gave up on (this worker was off, or busy) never runs.
@@ -60,9 +62,10 @@ NOT_RECOGNIZED = "is not recognized as the name of a cmdlet"  # PowerShell's Com
 ID_RULE = re.compile(r"[A-Za-z0-9_-]{1,64}")
 BAD_ID = "bad request: the id must be 1 to 64 characters from A-Z, a-z, 0-9, - and _"
 # Stopping the worker (SIGTERM, SIGINT; CTRL_BREAK on Windows) ends the
-# command it is running, answers that request, then exits.
+# command it is running, answers that request and those waiting behind it
+# the same (stop_waiting), then exits.
 STOPPING = "stopped by the owner (the worker is shutting down)"
-SHUTDOWN_WAIT = 10  # seconds the request being handled has to be answered before the worker exits anyway
+SHUTDOWN_WAIT = 10  # seconds the requests have to be answered before the worker exits anyway
 
 
 def valid_id(rid) -> bool:
@@ -107,7 +110,8 @@ def expired_text(age: int, ttl: int) -> str:
         ago = f"{age // 60} minutes"
     else:
         ago = f"{age // 3600} hours"
-    return f"expired: sent {ago} ago, its ttl is {ttl} seconds; not run"
+    unit = "second" if ttl == 1 else "seconds"
+    return f"expired: sent {ago} ago, its ttl is {ttl} {unit}; not run"
 
 
 class Worker:
@@ -136,7 +140,9 @@ class Worker:
         self.invite: dict | None = None
         self.help_sent: dict[str, float] = {}
         self._status_written = 0.0
+        self._ticked = 0.0
         self._busy: asyncio.Lock | None = None  # one request at a time, whichever path delivered it
+        self._waiting: list[dict] = []   # entries delivered (on_new) and not yet taken up
         self.stopping = threading.Event()  # set by SIGTERM / SIGINT: finish the current request, then exit
 
     def _check_review_cmd(self, cmd: str | None) -> str | None:
@@ -192,9 +198,29 @@ class Worker:
                 while not self.stopping.is_set():
                     await asyncio.sleep(0.25)
                     if quit_file.exists():
-                        quit_file.unlink(missing_ok=True)
                         on_signal(None, None, "the owner's app asked (commands/quit)")
+                        with contextlib.suppress(OSError):   # on Windows the app may still have it open
+                            quit_file.unlink(missing_ok=True)
             watcher = loop.create_task(watch_quit())
+
+        async def tick_meanwhile():
+            # The connection ticks while it is up. While it isn't (waiting
+            # to reconnect, or connecting), this does: the status stays fresh
+            # (the apps take a stale one for a stopped worker) and the
+            # owner's commands are handled.
+            said = None
+            while not self.stopping.is_set():
+                await asyncio.sleep(1)
+                if time.time() - self._ticked < TICK:
+                    continue
+                try:
+                    self.tick()
+                except Exception as err:  # noqa: BLE001 - the hub may be down too (a new invite): the status still goes out
+                    self.write_status()
+                    if str(err) != said:
+                        self.say(f"while reconnecting: {err}")
+                    said = str(err)
+        ticker = loop.create_task(tick_meanwhile())
 
         installed = {}
         for name in ("SIGTERM", "SIGINT", "SIGBREAK"):
@@ -210,15 +236,17 @@ class Worker:
                 try:
                     await self.agent.listen(on_new=self.on_new, on_tick=self.tick, tick=TICK)
                 except (OSError, relay.RelayError) as e:
-                    self.say(f"connection lost ({e}); retrying in 10 seconds")
-                    await asyncio.sleep(10)
+                    self.say(f"connection lost ({e}); retrying in {RECONNECT_WAIT} seconds")
+                    await asyncio.sleep(RECONNECT_WAIT)
         except asyncio.CancelledError:
             if not self.stopping.is_set():
                 raise
         finally:
+            ticker.cancel()
             if watcher:
                 watcher.cancel()
-                quit_file.unlink(missing_ok=True)   # left by an app that also sent SIGTERM
+                with contextlib.suppress(OSError):
+                    quit_file.unlink(missing_ok=True)   # left by an app that also sent SIGTERM
             for sig, old in installed.items():
                 try:
                     signal.signal(sig, old)
@@ -227,16 +255,62 @@ class Worker:
 
     async def _shut_down(self, main: asyncio.Task, why: str) -> None:
         """After a stop signal: let the request being handled be answered
-        (its command is being ended), then end run()."""
+        (its command is being ended), answer those waiting behind it
+        (stop_waiting), then end run(); all within SHUTDOWN_WAIT."""
         self.say(f"stopping ({why})")
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + SHUTDOWN_WAIT
         if self._busy is not None:
             try:
                 await asyncio.wait_for(self._busy.acquire(), SHUTDOWN_WAIT)
             except asyncio.TimeoutError:
                 self.say("the current request wasn't answered in time; stopping anyway")
+        waiting, self._waiting = self._waiting, []
+        try:
+            await asyncio.wait_for(self.stop_waiting(waiting), max(0.0, deadline - loop.time()))
+        except asyncio.TimeoutError:
+            self.say("not every waiting request was answered in time; stopping anyway")
         main.cancel()
 
+    async def stop_waiting(self, entries: list[dict]) -> None:
+        """Answer the requests among entries, which the worker is stopping
+        before it got to, as it answers the one it was running: STOPPING.
+        They are already handled in the history, so a restart wouldn't see
+        them again, and their agents would wait in vain. Recorded as
+        "stopped" (the apps show "stopped by you", without the
+        notification a refusal gets). The Go worker does the same."""
+        for e in entries:
+            request = self.request_of(e)
+            if request is None or e.get("direction") == "out":
+                continue
+            now = int(time.time())
+            self.log(dict(request, decision="stopped", reason=STOPPING))
+            self.note(e, "stopped", False)
+            self.record(request["id"], **request, at=now, done_at=now, decision="stopped", stopped=True, reason=STOPPING)
+            try:
+                await self.reply(e, {"myous": "ack", "id": request["id"], "ok": False, "error": STOPPING})
+            except (OSError, relay.RelayError) as err:
+                self.say(f"could not answer request {request['id']}: {err}")
+
+    @staticmethod
+    def request_of(e: dict) -> dict | None:
+        """The request an entry carries, as the review gets it ({"op",
+        "id", "sender", "alias", "cmd"} or "path", and a put's "size"), or
+        None for anything else."""
+        head = {"sender": e.get("peer"), "alias": e.get("alias")}
+        if e["type"] == "file":
+            w = e.get("w") or []
+            if len(w) < 3 or w[0] != "put":
+                return None
+            return {"op": "put", "id": w[1], **head, "path": w[2], "size": e.get("size")}
+        req = e.get("request")
+        if not req:
+            return None
+        key = "cmd" if req["myous"] == "exec" else "path"
+        return {"op": req["myous"], "id": req["id"], **head, key: req.get(key)}
+
     def tick(self) -> None:
+        self._ticked = time.time()
         self.handle_commands()
         self.ensure_invite()
         if time.time() - self._status_written > STATUS_EVERY:
@@ -300,12 +374,17 @@ class Worker:
         self.write_status()
 
     async def on_new(self, entries: list[dict]) -> None:
+        # Queued before any wait, so that a stop finds them (_shut_down):
+        # they are already handled in the history, a restart wouldn't
+        # deliver them again.
+        self._waiting.extend(entries)
         if self._busy is None:
             self._busy = asyncio.Lock()
         async with self._busy:
-            for e in entries:
+            while self._waiting:
                 if self.stopping.is_set():
-                    return   # stopping: what is left waits for the next start
+                    return   # stopping: _shut_down answers what is left
+                e = self._waiting.pop(0)
                 if e.get("direction") == "out":
                     continue
                 if e["type"] == "paired":
@@ -572,6 +651,8 @@ class Worker:
             npub = self.agent.keys.public_key().to_bech32()
         except Exception:
             npub = None
+        # While no relay is connected: since when (the agent's listen() keeps it).
+        down = getattr(self.agent, "relay_down_since", None)
         self.st.put("worker", {
             "pid": os.getpid(), "started": self.started, "alias": self.agent.alias, "npub": npub,
             "phase": "paused" if self.paused() else "running",
@@ -581,6 +662,7 @@ class Worker:
                        if self.invite else None),
             "paused": self.paused(), "requests": self.requests, "last": self.last, "paired": self.paired, "work": str(self.work),
             "updated": int(time.time()), "version": __version__,
+            **({"relay_down_since": int(down)} if down else {}),
         })
         self._status_written = time.time()
 
@@ -642,7 +724,7 @@ def run_command(cmd: str, cwd: Path, timeout: int, stop_file: Path | None = None
                 stopped = True
                 note = "[myous: stopped by the owner]"
             elif time.time() >= deadline:
-                note = f"[myous: killed after {timeout} seconds]"
+                note = f"[myous: killed after {timeout} {'second' if timeout == 1 else 'seconds'}]"
             else:
                 continue
             processes.kill_tree(proc)

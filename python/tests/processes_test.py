@@ -87,12 +87,14 @@ class BackgroundTest(unittest.TestCase):
 
     def test_created_at(self):
         created = processes.created_at(os.getpid())
-        if not WIN:
-            self.assertIsNone(created)
-            return
-        # This process started before now, and not long before.
+        # This process started before now, and not long before; asked again, the same.
         self.assertLess(created, time.time() + 1)
         self.assertGreater(created, time.time() - 3600)
-        p = subprocess.Popen([sys.executable, "-c", "pass"])
-        p.wait()
+        self.assertLess(abs(processes.created_at(os.getpid()) - created), 1)
+        p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        try:
+            self.assertGreaterEqual(processes.created_at(p.pid), created - 1)   # started after this one
+        finally:
+            p.kill()
+            p.wait()
         self.assertIsNone(processes.created_at(p.pid))

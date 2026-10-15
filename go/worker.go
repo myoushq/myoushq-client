@@ -44,9 +44,7 @@ const (
 	workerDefaultTimeout = 120
 	helpInterval         = 60 * time.Second  // between help replies to the same contact
 	reviewTimeout        = 150 * time.Second // the hook may wait for the owner (120 s), inside an agent's default wait
-	statusEvery          = 5 * time.Second
-	workerTick           = 5 * time.Second // status writes and the owner's commands
-	requestsKeep         = 200             // request records kept in <home>/requests for the owner's app
+	requestsKeep         = 200               // request records kept in <home>/requests for the owner's app
 	stopFileMaxAge       = 600 * time.Second
 	reconnectWait        = 10 * time.Second
 
@@ -66,13 +64,19 @@ const (
 	requestMaxTTL = 86400 // a longer ttl counts as this: the relay keeps messages a day
 	badTTL        = "bad request: the ttl must be a number of seconds, at least 1"
 	// Stopping the worker (Run's context ending: SIGTERM, SIGINT) ends the
-	// command it is running and answers that request, then Run returns.
+	// command it is running and answers that request, answers the ones
+	// waiting behind it the same (stopWaiting), then Run returns.
 	stoppingWhy       = "stopped by the owner (the worker is shutting down)"
 	shutdownReplyWait = 10 * time.Second // how long an answer may take once the worker is stopping
 	// The owner's app can also stop the worker with commands/quit: the
 	// same as SIGTERM, and on Windows (no signals for a worker without a
 	// console) the only way short of killing it.
 	quitCommand = "quit"
+)
+
+var (
+	statusEvery = 5 * time.Second // tests shorten them
+	workerTick  = 5 * time.Second // status writes and the owner's commands
 )
 
 // validID is whether a request id is a plain name: 1 to 64 characters
@@ -149,15 +153,17 @@ type Worker struct {
 	execFn func(context.Context, Entry, map[string]any, string) error
 	getFn  func(context.Context, Entry, map[string]any, string) error
 
-	mu            sync.Mutex // what follows, and the owner's side (status, invite, commands)
-	requests      int
-	last          pyObj
-	paired        pyObj // the most recent pairing, with its verification code
-	invite        *Invite
-	helpSent      map[string]time.Time
-	statusWritten time.Time
-	python        pythonInfo
-	browserPy     browserPython
+	mu             sync.Mutex // what follows, and the owner's side (status, invite, commands)
+	requests       int
+	last           pyObj
+	paired         pyObj // the most recent pairing, with its verification code
+	invite         *Invite
+	helpSent       map[string]time.Time
+	statusWritten  time.Time
+	ticked         time.Time // the last tick, from the connection or tickMeanwhile
+	relayDownSince int64     // since when no relay is connected (Unix time); 0 while one is
+	python         pythonInfo
+	browserPy      browserPython
 
 	announce browserAnnounce // the browser announcement (announceBrowser)
 
@@ -276,6 +282,10 @@ func checkReviewCmd(cmd, work string, windows bool) (string, error) {
 func (w *Worker) Run(ctx context.Context) error {
 	ctx, quit := context.WithCancel(ctx)
 	defer quit()
+	// For the requests still waiting when the worker stops: answered
+	// within shutdownReplyWait of the stop.
+	answering, stopAnswering := answerContext(ctx)
+	defer stopAnswering()
 	if w.quitFile != "" {
 		w.dropStaleQuit()
 		defer os.Remove(w.quitFile) // left by an app that also sent SIGTERM
@@ -293,7 +303,9 @@ func (w *Worker) Run(ctx context.Context) error {
 
 	// Requests are handled one at a time, in order, away from the
 	// connection, which keeps receiving (and the tick keeps writing the
-	// status) while a command runs.
+	// status) while a command runs. Once the worker stops, those still
+	// waiting are answered as stopped: their entries are already handled
+	// in the history, so a restart wouldn't see them again.
 	q := &entryQueue{wake: make(chan struct{}, 1)}
 	var handling sync.WaitGroup
 	handling.Add(1)
@@ -301,10 +313,10 @@ func (w *Worker) Run(ctx context.Context) error {
 		defer handling.Done()
 		for {
 			for batch := q.pop(); batch != nil; batch = q.pop() {
-				if ctx.Err() != nil {
+				if left := w.onNew(ctx, batch); left != nil {
+					q.unpop(left)
 					return
 				}
-				w.onNew(ctx, batch)
 			}
 			select {
 			case <-ctx.Done():
@@ -313,13 +325,25 @@ func (w *Worker) Run(ctx context.Context) error {
 			}
 		}
 	}()
-	defer handling.Wait()
+	defer func() {
+		quit() // returning with an error stops the request goroutine too
+		handling.Wait()
+		w.stopWaiting(answering, q.drain()) // Listen has returned: nothing more comes
+	}()
 
+	handling.Add(1)
+	go func() { // the ticks while the connection is down
+		defer handling.Done()
+		w.tickMeanwhile(ctx)
+	}()
 	for {
 		lctx, cancel := context.WithCancel(ctx)
 		var tickMu sync.Mutex
 		var tickErr error
 		err := w.agent.Listen(lctx, q.push, func() {
+			w.mu.Lock()
+			w.relayDownSince = 0 // the connection ticks only while it is up
+			w.mu.Unlock()
 			if err := w.tick(lctx); err != nil && lctx.Err() == nil {
 				tickMu.Lock()
 				tickErr = err
@@ -340,6 +364,11 @@ func (w *Worker) Run(ctx context.Context) error {
 		if !retryable(err) {
 			return err
 		}
+		w.mu.Lock()
+		if w.relayDownSince == 0 {
+			w.relayDownSince = time.Now().Unix()
+		}
+		w.mu.Unlock()
 		w.say(fmt.Sprintf("connection lost (%v); retrying in 10 seconds", err))
 		select {
 		case <-ctx.Done():
@@ -387,27 +416,85 @@ func (q *entryQueue) pop() []Entry {
 	return batch
 }
 
-// tick: the owner's commands, a fresh invite while unpaired, the status,
-// then the browser announcement (outside w.mu: it looks up the Pythons).
+// unpop puts back what is left of a batch, first.
+func (q *entryQueue) unpop(entries []Entry) {
+	q.mu.Lock()
+	q.items = append([][]Entry{entries}, q.items...)
+	q.mu.Unlock()
+}
+
+// drain takes every entry left, in order.
+func (q *entryQueue) drain() []Entry {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	var all []Entry
+	for _, batch := range q.items {
+		all = append(all, batch...)
+	}
+	q.items = nil
+	return all
+}
+
+// tick: the owner's side (tickOwner), then the browser announcement
+// (outside w.mu: it looks up the Pythons).
 func (w *Worker) tick(ctx context.Context) error {
-	if err := func() error {
-		w.mu.Lock()
-		defer w.mu.Unlock()
-		if err := w.handleCommands(ctx); err != nil {
-			return err
-		}
-		if err := w.ensureInvite(ctx); err != nil {
-			return err
-		}
-		if time.Since(w.statusWritten) > statusEvery {
-			return w.writeStatus()
-		}
-		return nil
-	}(); err != nil {
+	if err := w.tickOwner(ctx); err != nil {
 		return err
 	}
 	w.announceBrowser(ctx)
 	return nil
+}
+
+// tickOwner: the owner's commands, a fresh invite while unpaired, the
+// status.
+func (w *Worker) tickOwner(ctx context.Context) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.ticked = time.Now()
+	if err := w.handleCommands(ctx); err != nil {
+		return err
+	}
+	if err := w.ensureInvite(ctx); err != nil {
+		return err
+	}
+	if time.Since(w.statusWritten) > statusEvery {
+		return w.writeStatus()
+	}
+	return nil
+}
+
+// tickMeanwhile ticks while the connection doesn't: it ticks only while it
+// is up, and in between (waiting to reconnect, connecting) worker.json
+// would go stale (the apps take that for a stopped worker) and the
+// owner's commands would wait. The browser announcement waits for the
+// connection.
+func (w *Worker) tickMeanwhile(ctx context.Context) {
+	t := time.NewTicker(time.Second)
+	defer t.Stop()
+	said := ""
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		w.mu.Lock()
+		due := time.Since(w.ticked) >= workerTick
+		w.mu.Unlock()
+		if !due {
+			continue
+		}
+		if err := w.tickOwner(ctx); err != nil && ctx.Err() == nil {
+			// The hub may be down too (a new invite): the status still goes out.
+			w.mu.Lock()
+			w.writeStatus()
+			w.mu.Unlock()
+			if err.Error() != said {
+				w.say("while reconnecting: " + err.Error())
+			}
+			said = err.Error()
+		}
+	}
 }
 
 // --- the owner's commands ------------------------------------------------
@@ -537,16 +624,17 @@ func (w *Worker) ensureInvite(ctx context.Context) error {
 }
 
 // onNew handles new entries: pairing results, cards, and requests, one at
-// a time.
-func (w *Worker) onNew(ctx context.Context, entries []Entry) {
+// a time. Once ctx ends it stops and returns the entries it didn't get
+// to, for stopWaiting; nil when it handled them all.
+func (w *Worker) onNew(ctx context.Context, entries []Entry) []Entry {
 	w.busy.Lock()
 	defer w.busy.Unlock()
-	for _, e := range entries {
+	for i, e := range entries {
 		if e.Direction == "out" {
 			continue
 		}
 		if ctx.Err() != nil {
-			return
+			return entries[i:]
 		}
 		switch e.Type {
 		case "paired":
@@ -572,6 +660,59 @@ func (w *Worker) onNew(ctx context.Context, entries []Entry) {
 		}
 		w.mu.Unlock()
 	}
+	return nil
+}
+
+// stopWaiting answers the requests among entries, which the worker is
+// stopping before it got to, as it answers the one it was running:
+// "stopped by the owner (the worker is shutting down)". They are already
+// handled in the history, so a restart wouldn't see them again, and their
+// agents would wait in vain. Recorded as "stopped" (the apps show
+// "stopped by you", without the notification a refusal gets). ctx bounds
+// the answers (Run's: shutdownReplyWait after the stop).
+func (w *Worker) stopWaiting(ctx context.Context, entries []Entry) {
+	for _, e := range entries {
+		rid, request, ok := requestOf(e)
+		if !ok || e.Direction == "out" {
+			continue
+		}
+		now := time.Now().Unix()
+		w.log(request.with("decision", "stopped").with("reason", stoppingWhy))
+		w.note(e, "stopped", false)
+		w.record(rid, append(append(pyObj(nil), request...), pyKV{"at", now}, pyKV{"done_at", now},
+			pyKV{"decision", "stopped"}, pyKV{"stopped", true}, pyKV{"reason", stoppingWhy}))
+		ack := pyDumps(pyObj{{"myous", "ack"}, {"id", rid}, {"ok", false}, {"error", stoppingWhy}}, false)
+		if _, err := w.agent.Send(ctx, e.Peer, ack); err != nil {
+			w.say(fmt.Sprintf("could not answer request %s: %v", rid, err))
+		}
+	}
+}
+
+// requestOf is the id of the request an entry carries, and the request
+// as the review gets it (op, id, sender, alias, then cmd, or path and for
+// a put its size); ok is false for anything else.
+func requestOf(e Entry) (rid string, request pyObj, ok bool) {
+	var op string
+	var fields pyObj
+	if e.Type == "file" {
+		if len(e.W) < 3 || e.W[0] != "put" {
+			return "", nil, false
+		}
+		op, rid, fields = "put", e.W[1], pyObj{{"path", e.W[2]}, {"size", e.Size}}
+	} else {
+		obj, isRequest := parseRequest(e.Text)
+		if !isRequest || (obj["myous"] != "exec" && obj["myous"] != "get") {
+			return "", nil, false
+		}
+		op, rid = obj["myous"].(string), obj["id"].(string)
+		key := "cmd"
+		if op == "get" {
+			key = "path"
+		}
+		fields = pyObj{{key, obj[key]}}
+	}
+	request = append(pyObj{{"op", op}, {"id", rid}, {"sender", e.Peer}, {"alias", e.Alias}}, fields...)
+	return rid, request, true
 }
 
 // badRequest is a failure caused by the request itself: it gets a
@@ -738,7 +879,11 @@ func expiredWhy(age, ttl int64) string {
 	case age >= 120:
 		ago = fmt.Sprintf("%d minutes", age/60)
 	}
-	return fmt.Sprintf("expired: sent %s ago, its ttl is %d seconds; not run", ago, ttl)
+	unit := "seconds"
+	if ttl == 1 {
+		unit = "second"
+	}
+	return fmt.Sprintf("expired: sent %s ago, its ttl is %d %s; not run", ago, ttl, unit)
 }
 
 // expire answers a request that was sent longer ago than its ttl, before
@@ -1234,12 +1379,16 @@ func (w *Worker) writeStatus() error {
 	if w.paused() {
 		phase = "paused"
 	}
-	err := w.st.Put("worker", pyObj{
+	status := pyObj{
 		{"pid", os.Getpid()}, {"started", w.started}, {"alias", w.agent.Alias()}, {"npub", npub},
 		{"phase", phase}, {"contacts", len(contacts)}, {"invite", invite}, {"paused", w.paused()},
 		{"requests", w.requests}, {"last", orNull(w.last)}, {"paired", orNull(w.paired)}, {"work", w.work},
 		{"updated", time.Now().Unix()}, {"version", Version},
-	})
+	}
+	if w.relayDownSince != 0 {
+		status = append(status, pyKV{"relay_down_since", w.relayDownSince})
+	}
+	err := w.st.Put("worker", status)
 	w.statusWritten = time.Now()
 	return err
 }

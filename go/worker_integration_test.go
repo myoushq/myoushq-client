@@ -161,7 +161,7 @@ func TestGoWorkerWithPythonAgent(t *testing.T) {
 		json.Unmarshal(raw, &rec)
 	}
 	if rec["decision"] != "expired" || !strings.HasPrefix(fmt.Sprint(rec["reason"]), "expired: sent ") ||
-		!strings.HasSuffix(fmt.Sprint(rec["reason"]), " ago, its ttl is 1 seconds; not run") {
+		!strings.HasSuffix(fmt.Sprint(rec["reason"]), " ago, its ttl is 1 second; not run") {
 		t.Fatalf("the stale request's record: %v\n%s", rec, logText())
 	}
 	if exists(filepath.Join(work, "stale.txt")) {
