@@ -93,19 +93,38 @@ func loadState(st Storage) (State, error) {
 
 // record appends to the history. Callers hold the "state" lock.
 func record(st Storage, e Entry) (Entry, error) {
-	s, err := loadState(st)
+	stored, err := recordMany(st, []Entry{e})
 	if err != nil {
 		return e, err
+	}
+	return stored[0], nil
+}
+
+// recordMany appends entries to the history, numbered in order: one
+// append and one update of the state for all of them (appendHistory).
+// Callers hold the "state" lock.
+func recordMany(st Storage, entries []Entry) ([]Entry, error) {
+	if len(entries) == 0 {
+		return nil, nil
+	}
+	s, err := loadState(st)
+	if err != nil {
+		return nil, err
 	}
 	if s.NextSeq == 0 {
 		s.NextSeq = 1
 	}
-	e.Seq, e.At = s.NextSeq, time.Now().Unix()
-	if err := st.AppendHistory(e); err != nil {
-		return e, err
+	now := time.Now().Unix()
+	stored := make([]Entry, len(entries))
+	for i, e := range entries {
+		e.Seq, e.At = s.NextSeq+i, now
+		stored[i] = e
 	}
-	s.NextSeq++
-	return e, st.Put("state", s)
+	if err := appendHistory(st, stored); err != nil {
+		return nil, err
+	}
+	s.NextSeq += len(stored)
+	return stored, st.Put("state", s)
 }
 
 // handleWraps stores messages from approved contacts and drops everything
@@ -127,13 +146,19 @@ func handleWraps(st Storage, sk string, wraps []*nostr.Event) ([]Entry, error) {
 		s.Seen[w.ID] = now
 		fresh = append(fresh, w)
 	}
+	forgot := false
 	for id, t := range s.Seen {
 		if now-t >= seenRetention {
 			delete(s.Seen, id)
+			forgot = true
 		}
 	}
-	if err := st.Put("state", s); err != nil {
-		return nil, err
+	// Written only when it changed: a relay sends everything it holds on
+	// every connect, all of it seen before.
+	if len(fresh) > 0 || forgot {
+		if err := st.Put("state", s); err != nil {
+			return nil, err
+		}
 	}
 
 	// Wrap timestamps are randomized, so put messages in the order they were written.
@@ -161,27 +186,32 @@ func handleWraps(st Storage, sk string, wraps []*nostr.Event) ([]Entry, error) {
 	var cfg HubConfig
 	st.Get("hub", &cfg)
 	changed := false
+	// What to store, all at once at the end (recordMany): one append and
+	// one state update for a whole backlog, not an fsync'd pair each. They
+	// are marked handled before they are stored, as before: a crash in
+	// between loses them rather than running a worker request twice.
 	var stored []Entry
+	known, err := loadContacts(st)
+	if err != nil {
+		return nil, err
+	}
 	keep := func(m message, incomplete bool) error {
-		c, err := approvedContact(st, m.sender)
-		if err != nil || c == nil {
-			return err // c == nil: not paired, or blocked: drop silently
+		c, ok := known[m.sender]
+		if !ok || c.Status != Approved {
+			return nil // not paired, or blocked: drop silently
 		}
 		if m.file != nil {
 			x, ok := blobURLHash(m.file.URL, cfg.BlobAPI)
 			if !ok || x != m.file.X {
 				return nil // not our hub's blob, or a URL that lies about the hash: drop it
 			}
-			e, err := record(st, Entry{
+			stored = append(stored, Entry{
 				Type: "file", Direction: "in", Peer: c.Npub, Alias: c.Alias, SentAt: m.sentAt,
 				Text: "file: " + m.file.Name, Name: m.file.Name, Mime: m.file.Mime, Size: m.file.Size,
 				X: m.file.X, Ox: m.file.Ox, URL: m.file.URL, Key: hex.EncodeToString(m.file.Key),
 				Nonce: hex.EncodeToString(m.file.Nonce), W: m.file.W,
 			})
-			if err == nil {
-				stored = append(stored, e)
-			}
-			return err
+			return nil
 		}
 		if m.part != nil {
 			changed = true
@@ -194,37 +224,44 @@ func handleWraps(st Storage, sk string, wraps []*nostr.Event) ([]Entry, error) {
 		entry := Entry{Type: "message", Direction: "in", Peer: c.Npub, Alias: c.Alias, Text: m.text, SentAt: m.sentAt, Incomplete: incomplete}
 		if name, about, ok := parseCard(m.text); ok {
 			// A card is kept on the contact; the entry says what changed.
-			_, line, err := receiveCard(st, m.sender, name, about, now)
+			c, line, err := receiveCard(st, m.sender, name, about, now)
 			if err != nil {
 				return err
 			}
+			known[m.sender] = c
 			entry.Type, entry.Name, entry.About, entry.Text = "card", name, about, line
 		} else if kind, id, ok := workerReply(m.text); ok {
 			entry.Type, entry.ID = kind, id
 		}
-		e, err := record(st, entry)
-		if err == nil {
-			stored = append(stored, e)
-		}
-		return err
+		stored = append(stored, entry)
+		return nil
+	}
+	store := func() ([]Entry, error) {
+		return recordMany(st, stored)
 	}
 	for _, m := range msgs {
 		if err := keep(m, false); err != nil {
-			return stored, err
+			entries, _ := store()
+			return entries, err
 		}
 	}
 	for _, m := range expireParts(buf, now) {
 		changed = true
 		if err := keep(m, true); err != nil {
-			return stored, err
+			entries, _ := store()
+			return entries, err
 		}
+	}
+	entries, err := store()
+	if err != nil {
+		return nil, err
 	}
 	if changed {
 		if err := st.Put("partials", buf); err != nil {
-			return stored, err
+			return entries, err
 		}
 	}
-	return stored, nil
+	return entries, nil
 }
 
 func unread(st Storage, markRead bool) ([]Entry, error) {

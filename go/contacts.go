@@ -263,17 +263,6 @@ func updateContact(st Storage, name string, change func(*Contact)) (Contact, err
 	return c, st.Put("contacts", contacts)
 }
 
-func approvedContact(st Storage, pubkey string) (*Contact, error) {
-	contacts, err := loadContacts(st)
-	if err != nil {
-		return nil, err
-	}
-	if c, ok := contacts[pubkey]; ok && c.Status == Approved {
-		return &c, nil
-	}
-	return nil, nil
-}
-
 func uniqueAlias(contacts map[string]Contact, alias string) string {
 	taken := map[string]bool{}
 	for _, c := range contacts {

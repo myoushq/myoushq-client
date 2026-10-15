@@ -40,6 +40,26 @@ type Storage interface {
 	ReadHistory() ([]Entry, error)
 }
 
+// HistoryAppender is optional. Implement it if appending several entries
+// at once is cheaper than one at a time (one write, one sync): a poll or a
+// listener's backlog stores its messages with one call.
+type HistoryAppender interface {
+	AppendHistoryMany(entries []Entry) error
+}
+
+// appendHistory is AppendHistoryMany, or AppendHistory for each entry.
+func appendHistory(st Storage, entries []Entry) error {
+	if a, ok := st.(HistoryAppender); ok {
+		return a.AppendHistoryMany(entries)
+	}
+	for _, e := range entries {
+		if err := st.AppendHistory(e); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // Locker is optional. Implement it if two runs of the same agent can
 // overlap (a listener and a poll, or concurrent invocations). Lock returns
 // ok=false instead of blocking when wait is false and the lock is taken.
@@ -151,15 +171,27 @@ func (s *FileStorage) Names(prefix string) ([]string, error) {
 }
 
 func (s *FileStorage) AppendHistory(e Entry) error {
-	b, err := json.Marshal(e)
-	if err != nil {
-		return err
+	return s.AppendHistoryMany([]Entry{e})
+}
+
+// AppendHistoryMany appends entries with one write and one sync.
+func (s *FileStorage) AppendHistoryMany(entries []Entry) error {
+	var lines []byte
+	for _, e := range entries {
+		b, err := json.Marshal(e)
+		if err != nil {
+			return err
+		}
+		lines = append(append(lines, b...), '\n')
+	}
+	if len(lines) == 0 {
+		return nil
 	}
 	f, err := os.OpenFile(s.Path("messages.jsonl"), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
 	if err != nil {
 		return err
 	}
-	if _, err := f.Write(append(b, '\n')); err != nil {
+	if _, err := f.Write(lines); err != nil {
 		f.Close()
 		return err
 	}
@@ -218,28 +250,38 @@ func (s *FileStorage) Lock(name string, wait bool) (func(), bool, error) {
 	}, true, nil
 }
 
-// writePrivate writes atomically, readable only by this user.
+// writePrivate writes atomically, readable only by this user. The
+// temporary file is this write's own (name.json.<random>.tmp): two
+// processes writing the same document at once (the hub's cached config,
+// refreshed by whichever command finds it stale) must not share one, or
+// one's rename fails and the other's content lands torn in the document.
 func writePrivate(path string, data []byte) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp") // 0600
 	if err != nil {
 		return err
 	}
-	if _, err := f.Write(data); err != nil {
-		f.Close()
-		return err
+	tmp := f.Name()
+	err = func() error {
+		if _, err := f.Write(data); err != nil {
+			f.Close()
+			return err
+		}
+		if err := f.Sync(); err != nil {
+			f.Close()
+			return err
+		}
+		if err := f.Close(); err != nil {
+			return err
+		}
+		return os.Rename(tmp, path)
+	}()
+	if err != nil {
+		os.Remove(tmp)
 	}
-	if err := f.Sync(); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	return err
 }
 
 // lock takes a lock if the storage supports it.
