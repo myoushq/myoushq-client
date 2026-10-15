@@ -488,6 +488,96 @@ func TestWorkerQuitFileStopsTheWorker(t *testing.T) {
 	}
 }
 
+func TestWorkerStoppingAnswersTheRequestsWaiting(t *testing.T) {
+	// Requests behind the running one (in its batch and in later ones)
+	// are already handled in the history, so a restart wouldn't see them:
+	// stopping answers them as stopped, records and logs them, runs none.
+	f := newWorkerFixture(t)
+	cmd, queued := "echo > started; sleep 60", "echo > ran"
+	if runtime.GOOS == "windows" {
+		cmd, queued = "New-Item started -ItemType File | Out-Null; Start-Sleep 60", "New-Item ran -ItemType File | Out-Null"
+	}
+	put := Entry{Type: "file", Direction: "in", Peer: testPeer, Alias: "muse", W: []string{"put", "q3", "in.txt", "600"}, Size: 5}
+	f.agent.listen = func(ctx context.Context, onNew func([]Entry)) error {
+		onNew([]Entry{request(map[string]any{"myous": "exec", "id": testRID, "cmd": cmd, "timeout": 120}),
+			request(map[string]any{"myous": "exec", "id": "q1", "cmd": queued})})
+		onNew([]Entry{request(map[string]any{"myous": "get", "id": "q2", "path": "x"}), textEntry("hello")})
+		onNew([]Entry{put})
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	done := make(chan error, 1)
+	go func() { done <- f.w.Run(context.Background()) }()
+	for deadline := time.Now().Add(60 * time.Second); !exists(filepath.Join(f.work, "started")); time.Sleep(50 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the command never started")
+		}
+	}
+	quit := filepath.Join(f.home, "commands", "quit")
+	os.MkdirAll(filepath.Dir(quit), 0o700)
+	os.WriteFile(quit, nil, 0o600)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("the worker didn't stop")
+	}
+	replies := f.replies()
+	if len(replies) != 4 {
+		t.Fatalf("replies: %v", replies)
+	}
+	if r := replies[0].(map[string]any); r["myous"] != "result" || r["id"] != testRID || r["stopped"] != true {
+		t.Fatalf("the running one: %v", r)
+	}
+	for i, id := range []string{"q1", "q2", "q3"} {
+		want := `{"myous": "ack", "id": "` + id + `", "ok": false, "error": "` + stoppingWhy + `"}`
+		if got := f.agent.sent[i+1][1]; got != want {
+			t.Fatalf("got %s, want %s", got, want)
+		}
+		rec := f.readJSON(filepath.Join(f.home, "requests", id+".json"))
+		if rec["decision"] != "stopped" || rec["stopped"] != true || rec["reason"] != stoppingWhy || rec["alias"] != "muse" ||
+			rec["done_at"] == nil {
+			t.Fatalf("%s's record: %v", id, rec)
+		}
+	}
+	if rec := f.readJSON(filepath.Join(f.home, "requests", "q3.json")); rec["op"] != "put" || rec["path"] != "in.txt" || rec["size"] != 5.0 {
+		t.Fatalf("the put's record: %v", rec)
+	}
+	var logged []string
+	for _, l := range f.logLines() {
+		if l["decision"] == "stopped" {
+			logged = append(logged, fmt.Sprint(l["op"], " ", l["id"], " ", l["reason"]))
+		}
+	}
+	if strings.Join(logged, "; ") != "exec q1 "+stoppingWhy+"; get q2 "+stoppingWhy+"; put q3 "+stoppingWhy {
+		t.Fatalf("worker.log: %v", logged)
+	}
+	if exists(filepath.Join(f.work, "ran")) || f.agent.fetches != 0 {
+		t.Fatal("a waiting request ran")
+	}
+}
+
+func TestWorkerRunReturnsAnErrorReconnectingCantFix(t *testing.T) {
+	// It used to wait for the request goroutine, which only a stop ended.
+	f := newWorkerFixture(t)
+	f.agent.listen = func(ctx context.Context, onNew func([]Entry)) error {
+		return &HubError{Status: 401, Message: "unknown key"}
+	}
+	done := make(chan error, 1)
+	go func() { done <- f.w.Run(context.Background()) }()
+	select {
+	case err := <-done:
+		var he *HubError
+		if !errors.As(err, &he) {
+			t.Fatalf("Run: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run didn't return")
+	}
+}
+
 func TestWorkerQuitFileFromBeforeItStartedIsDropped(t *testing.T) {
 	// A quit file the last worker never took (it was killed first) must
 	// not stop the next one; one written since it started does.

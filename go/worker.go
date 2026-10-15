@@ -66,7 +66,8 @@ const (
 	requestMaxTTL = 86400 // a longer ttl counts as this: the relay keeps messages a day
 	badTTL        = "bad request: the ttl must be a number of seconds, at least 1"
 	// Stopping the worker (Run's context ending: SIGTERM, SIGINT) ends the
-	// command it is running and answers that request, then Run returns.
+	// command it is running and answers that request, answers the ones
+	// waiting behind it the same (stopWaiting), then Run returns.
 	stoppingWhy       = "stopped by the owner (the worker is shutting down)"
 	shutdownReplyWait = 10 * time.Second // how long an answer may take once the worker is stopping
 	// The owner's app can also stop the worker with commands/quit: the
@@ -276,6 +277,10 @@ func checkReviewCmd(cmd, work string, windows bool) (string, error) {
 func (w *Worker) Run(ctx context.Context) error {
 	ctx, quit := context.WithCancel(ctx)
 	defer quit()
+	// For the requests still waiting when the worker stops: answered
+	// within shutdownReplyWait of the stop.
+	answering, stopAnswering := answerContext(ctx)
+	defer stopAnswering()
 	if w.quitFile != "" {
 		w.dropStaleQuit()
 		defer os.Remove(w.quitFile) // left by an app that also sent SIGTERM
@@ -293,7 +298,9 @@ func (w *Worker) Run(ctx context.Context) error {
 
 	// Requests are handled one at a time, in order, away from the
 	// connection, which keeps receiving (and the tick keeps writing the
-	// status) while a command runs.
+	// status) while a command runs. Once the worker stops, those still
+	// waiting are answered as stopped: their entries are already handled
+	// in the history, so a restart wouldn't see them again.
 	q := &entryQueue{wake: make(chan struct{}, 1)}
 	var handling sync.WaitGroup
 	handling.Add(1)
@@ -301,10 +308,10 @@ func (w *Worker) Run(ctx context.Context) error {
 		defer handling.Done()
 		for {
 			for batch := q.pop(); batch != nil; batch = q.pop() {
-				if ctx.Err() != nil {
+				if left := w.onNew(ctx, batch); left != nil {
+					q.unpop(left)
 					return
 				}
-				w.onNew(ctx, batch)
 			}
 			select {
 			case <-ctx.Done():
@@ -313,7 +320,11 @@ func (w *Worker) Run(ctx context.Context) error {
 			}
 		}
 	}()
-	defer handling.Wait()
+	defer func() {
+		quit() // returning with an error stops the request goroutine too
+		handling.Wait()
+		w.stopWaiting(answering, q.drain()) // Listen has returned: nothing more comes
+	}()
 
 	for {
 		lctx, cancel := context.WithCancel(ctx)
@@ -385,6 +396,25 @@ func (q *entryQueue) pop() []Entry {
 	batch := q.items[0]
 	q.items = q.items[1:]
 	return batch
+}
+
+// unpop puts back what is left of a batch, first.
+func (q *entryQueue) unpop(entries []Entry) {
+	q.mu.Lock()
+	q.items = append([][]Entry{entries}, q.items...)
+	q.mu.Unlock()
+}
+
+// drain takes every entry left, in order.
+func (q *entryQueue) drain() []Entry {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	var all []Entry
+	for _, batch := range q.items {
+		all = append(all, batch...)
+	}
+	q.items = nil
+	return all
 }
 
 // tick: the owner's commands, a fresh invite while unpaired, the status,
@@ -537,16 +567,17 @@ func (w *Worker) ensureInvite(ctx context.Context) error {
 }
 
 // onNew handles new entries: pairing results, cards, and requests, one at
-// a time.
-func (w *Worker) onNew(ctx context.Context, entries []Entry) {
+// a time. Once ctx ends it stops and returns the entries it didn't get
+// to, for stopWaiting; nil when it handled them all.
+func (w *Worker) onNew(ctx context.Context, entries []Entry) []Entry {
 	w.busy.Lock()
 	defer w.busy.Unlock()
-	for _, e := range entries {
+	for i, e := range entries {
 		if e.Direction == "out" {
 			continue
 		}
 		if ctx.Err() != nil {
-			return
+			return entries[i:]
 		}
 		switch e.Type {
 		case "paired":
@@ -572,6 +603,59 @@ func (w *Worker) onNew(ctx context.Context, entries []Entry) {
 		}
 		w.mu.Unlock()
 	}
+	return nil
+}
+
+// stopWaiting answers the requests among entries, which the worker is
+// stopping before it got to, as it answers the one it was running:
+// "stopped by the owner (the worker is shutting down)". They are already
+// handled in the history, so a restart wouldn't see them again, and their
+// agents would wait in vain. Recorded as "stopped" (the apps show
+// "stopped by you", without the notification a refusal gets). ctx bounds
+// the answers (Run's: shutdownReplyWait after the stop).
+func (w *Worker) stopWaiting(ctx context.Context, entries []Entry) {
+	for _, e := range entries {
+		rid, request, ok := requestOf(e)
+		if !ok || e.Direction == "out" {
+			continue
+		}
+		now := time.Now().Unix()
+		w.log(request.with("decision", "stopped").with("reason", stoppingWhy))
+		w.note(e, "stopped", false)
+		w.record(rid, append(append(pyObj(nil), request...), pyKV{"at", now}, pyKV{"done_at", now},
+			pyKV{"decision", "stopped"}, pyKV{"stopped", true}, pyKV{"reason", stoppingWhy}))
+		ack := pyDumps(pyObj{{"myous", "ack"}, {"id", rid}, {"ok", false}, {"error", stoppingWhy}}, false)
+		if _, err := w.agent.Send(ctx, e.Peer, ack); err != nil {
+			w.say(fmt.Sprintf("could not answer request %s: %v", rid, err))
+		}
+	}
+}
+
+// requestOf is the id of the request an entry carries, and the request
+// as the review gets it (op, id, sender, alias, then cmd, or path and for
+// a put its size); ok is false for anything else.
+func requestOf(e Entry) (rid string, request pyObj, ok bool) {
+	var op string
+	var fields pyObj
+	if e.Type == "file" {
+		if len(e.W) < 3 || e.W[0] != "put" {
+			return "", nil, false
+		}
+		op, rid, fields = "put", e.W[1], pyObj{{"path", e.W[2]}, {"size", e.Size}}
+	} else {
+		obj, isRequest := parseRequest(e.Text)
+		if !isRequest || (obj["myous"] != "exec" && obj["myous"] != "get") {
+			return "", nil, false
+		}
+		op, rid = obj["myous"].(string), obj["id"].(string)
+		key := "cmd"
+		if op == "get" {
+			key = "path"
+		}
+		fields = pyObj{{key, obj[key]}}
+	}
+	request = append(pyObj{{"op", op}, {"id", rid}, {"sender", e.Peer}, {"alias", e.Alias}}, fields...)
+	return rid, request, true
 }
 
 // badRequest is a failure caused by the request itself: it gets a

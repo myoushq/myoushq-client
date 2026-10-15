@@ -248,7 +248,8 @@ of this.
 - **Stop:** `docker compose -p myous-worker down` (keeps identity, logins
   and files). A command the worker is running is ended, and the agent
   that sent it gets the answer "stopped by the owner (the worker is
-  shutting down)". Start it again with the `up -d` command from section 3.
+  shutting down)", as do the agents of requests waiting behind it, which
+  don't run. Start it again with the `up -d` command from section 3.
   Requests sent while it was stopped wait on the relay; when it starts,
   it runs those still within their ttl (by default, as long as the agent
   waited for the answer) and answers the others "expired" without
@@ -313,7 +314,8 @@ list knows PowerShell's reading commands.
 
 Stop in an app ends the command the worker is running, with everything
 it started, and the agent that asked gets "stopped by the owner" as its
-result. The app asks the worker to stop (a `commands/quit` file, and
+result; requests waiting behind it get the same answer and don't run.
+The app asks the worker to stop (a `commands/quit` file, and
 SIGTERM outside Windows) and ends it if it is still there ten seconds
 later.
 

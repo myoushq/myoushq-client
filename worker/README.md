@@ -110,7 +110,9 @@ a request whose id isn't 1 to 64 characters from A-Z, a-z, 0-9, - and _
 **Stopping the worker.** On SIGTERM or SIGINT (`docker compose down`,
 the apps' Stop) or a `quit` file, the worker ends the command it is
 running with everything it started, answers that request "stopped by the
-owner (the worker is shutting down)", and exits. The apps give a worker
+owner (the worker is shutting down)", gives the requests waiting behind
+it the same answer without running them (their records say `stopped`),
+and exits. The apps give a worker
 running without a container ten seconds for this, then kill it; on
 Windows, where there is no SIGTERM, myous for Linux and Windows asks with
 the `quit` file.

@@ -260,6 +260,53 @@ class WorkerTest(WorkerFixture):
         self.run_(both())
         self.assertEqual(marks.read_text().split(), ["start1", "end1", "start2", "end2"])
 
+    def test_stopping_answers_the_requests_waiting(self):
+        # Requests behind the running one (in its batch, and in deliveries
+        # waiting their turn) are already handled in the history, so a
+        # restart wouldn't see them: stopping answers them as stopped,
+        # records and logs them, and runs none.
+        running = message(json.dumps({"myous": "exec", "id": RID, "cmd": "echo > started; sleep 60", "timeout": 120}))
+        q1 = message(json.dumps({"myous": "exec", "id": "q1", "cmd": "echo > ran"}))
+        q2 = message(json.dumps({"myous": "get", "id": "q2", "path": "x"}))
+        q3 = {"type": "file", "direction": "in", "peer": PEER, "alias": "muse", "w": ["put", "q3", "in.txt", "600"],
+              "size": 5, "x": "blob", "seq": 4, "at": 0}
+        self.agent.blobs["blob"] = b"hello"
+
+        async def listen(on_new, on_tick, tick):
+            # As two paths of the agent's listen deliver: the later ones wait for the first.
+            await asyncio.gather(on_new([running, q1]), on_new([q2, message("hello")]), on_new([q3]))
+            await asyncio.sleep(3600)
+
+        def quit_once_started():
+            deadline = time.time() + 20
+            while not (self.work / "started").exists() and time.time() < deadline:
+                time.sleep(0.05)
+            (self.home / "commands").mkdir(exist_ok=True)
+            (self.home / "commands" / "quit").touch()
+
+        self.agent.listen = listen
+        threading.Thread(target=quit_once_started).start()
+        started = time.time()
+        self.run_(self.w.run())
+        self.assertLess(time.time() - started, 20)
+        replies = self.replies()
+        self.assertEqual(len(replies), 4, replies)
+        self.assertEqual((replies[0]["myous"], replies[0]["id"], replies[0]["stopped"]), ("result", RID, True))
+        for i, rid in enumerate(("q1", "q2", "q3"), 1):
+            self.assertEqual(self.agent.sent[i][1],
+                             json.dumps({"myous": "ack", "id": rid, "ok": False, "error": worker.STOPPING}))
+            rec = json.loads((self.home / "requests" / f"{rid}.json").read_text())
+            self.assertEqual((rec["decision"], rec["stopped"], rec["reason"], rec["alias"]),
+                             ("stopped", True, worker.STOPPING, "muse"))
+            self.assertIn("done_at", rec)
+        rec = json.loads((self.home / "requests" / "q3.json").read_text())
+        self.assertEqual((rec["op"], rec["path"], rec["size"]), ("put", "in.txt", 5))
+        log = [json.loads(line) for line in (self.home / "worker.log").read_text().splitlines()]
+        self.assertEqual([(r["op"], r["id"], r["reason"]) for r in log if r.get("decision") == "stopped"],
+                         [("exec", "q1", worker.STOPPING), ("get", "q2", worker.STOPPING), ("put", "q3", worker.STOPPING)])
+        self.assertFalse((self.work / "ran").exists() or (self.work / "in.txt").exists())
+        self.assertEqual(self.agent.files, [])
+
     def test_review_hook_refuses(self):
         hook = Path(self.tmp.name) / "review.py"
         hook.write_text("import json,sys\nr=json.load(sys.stdin)\n"

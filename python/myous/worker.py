@@ -60,9 +60,10 @@ NOT_RECOGNIZED = "is not recognized as the name of a cmdlet"  # PowerShell's Com
 ID_RULE = re.compile(r"[A-Za-z0-9_-]{1,64}")
 BAD_ID = "bad request: the id must be 1 to 64 characters from A-Z, a-z, 0-9, - and _"
 # Stopping the worker (SIGTERM, SIGINT; CTRL_BREAK on Windows) ends the
-# command it is running, answers that request, then exits.
+# command it is running, answers that request and those waiting behind it
+# the same (stop_waiting), then exits.
 STOPPING = "stopped by the owner (the worker is shutting down)"
-SHUTDOWN_WAIT = 10  # seconds the request being handled has to be answered before the worker exits anyway
+SHUTDOWN_WAIT = 10  # seconds the requests have to be answered before the worker exits anyway
 
 
 def valid_id(rid) -> bool:
@@ -138,6 +139,7 @@ class Worker:
         self.help_sent: dict[str, float] = {}
         self._status_written = 0.0
         self._busy: asyncio.Lock | None = None  # one request at a time, whichever path delivered it
+        self._waiting: list[dict] = []   # entries delivered (on_new) and not yet taken up
         self.stopping = threading.Event()  # set by SIGTERM / SIGINT: finish the current request, then exit
 
     def _check_review_cmd(self, cmd: str | None) -> str | None:
@@ -228,14 +230,59 @@ class Worker:
 
     async def _shut_down(self, main: asyncio.Task, why: str) -> None:
         """After a stop signal: let the request being handled be answered
-        (its command is being ended), then end run()."""
+        (its command is being ended), answer those waiting behind it
+        (stop_waiting), then end run(); all within SHUTDOWN_WAIT."""
         self.say(f"stopping ({why})")
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + SHUTDOWN_WAIT
         if self._busy is not None:
             try:
                 await asyncio.wait_for(self._busy.acquire(), SHUTDOWN_WAIT)
             except asyncio.TimeoutError:
                 self.say("the current request wasn't answered in time; stopping anyway")
+        waiting, self._waiting = self._waiting, []
+        try:
+            await asyncio.wait_for(self.stop_waiting(waiting), max(0.0, deadline - loop.time()))
+        except asyncio.TimeoutError:
+            self.say("not every waiting request was answered in time; stopping anyway")
         main.cancel()
+
+    async def stop_waiting(self, entries: list[dict]) -> None:
+        """Answer the requests among entries, which the worker is stopping
+        before it got to, as it answers the one it was running: STOPPING.
+        They are already handled in the history, so a restart wouldn't see
+        them again, and their agents would wait in vain. Recorded as
+        "stopped" (the apps show "stopped by you", without the
+        notification a refusal gets). The Go worker does the same."""
+        for e in entries:
+            request = self.request_of(e)
+            if request is None or e.get("direction") == "out":
+                continue
+            now = int(time.time())
+            self.log(dict(request, decision="stopped", reason=STOPPING))
+            self.note(e, "stopped", False)
+            self.record(request["id"], **request, at=now, done_at=now, decision="stopped", stopped=True, reason=STOPPING)
+            try:
+                await self.reply(e, {"myous": "ack", "id": request["id"], "ok": False, "error": STOPPING})
+            except (OSError, relay.RelayError) as err:
+                self.say(f"could not answer request {request['id']}: {err}")
+
+    @staticmethod
+    def request_of(e: dict) -> dict | None:
+        """The request an entry carries, as the review gets it ({"op",
+        "id", "sender", "alias", "cmd"} or "path", and a put's "size"), or
+        None for anything else."""
+        head = {"sender": e.get("peer"), "alias": e.get("alias")}
+        if e["type"] == "file":
+            w = e.get("w") or []
+            if len(w) < 3 or w[0] != "put":
+                return None
+            return {"op": "put", "id": w[1], **head, "path": w[2], "size": e.get("size")}
+        req = e.get("request")
+        if not req:
+            return None
+        key = "cmd" if req["myous"] == "exec" else "path"
+        return {"op": req["myous"], "id": req["id"], **head, key: req.get(key)}
 
     def tick(self) -> None:
         self.handle_commands()
@@ -301,12 +348,17 @@ class Worker:
         self.write_status()
 
     async def on_new(self, entries: list[dict]) -> None:
+        # Queued before any wait, so that a stop finds them (_shut_down):
+        # they are already handled in the history, a restart wouldn't
+        # deliver them again.
+        self._waiting.extend(entries)
         if self._busy is None:
             self._busy = asyncio.Lock()
         async with self._busy:
-            for e in entries:
+            while self._waiting:
                 if self.stopping.is_set():
-                    return   # stopping: what is left waits for the next start
+                    return   # stopping: _shut_down answers what is left
+                e = self._waiting.pop(0)
                 if e.get("direction") == "out":
                     continue
                 if e["type"] == "paired":
