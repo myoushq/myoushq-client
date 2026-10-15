@@ -16,8 +16,8 @@ What's here:
 | `browser.py` | keeps a Chromium with a persistent profile running, reachable on port 9222 |
 | `forward.py` | with the browser on the host (`MYOUS_BROWSER=host`), relays port 9222 in the container to it |
 | `review.py` | the review hook: honours the pause file, then the review level in `review.json` (`trust`: everything runs; `changes`: reads run, the rest asks the owner; `all`: everything asks) by writing a question to `approvals/` and waiting for the answer the desktop app writes |
-| `mac/` | myous for Mac, the owner's app (see `mac/README.md`) |
-| `desktop/` | myous for Linux and Windows, the same app (see `desktop/README.md`) |
+| `desktop/` | myous for Mac, Linux and Windows, the owner's app (see `desktop/README.md`) |
+| `mac/` | the earlier Objective-C myous for Mac, superseded by `desktop/` and no longer released (`mac/README.md`); its `notarize.sh`, `make-dmg.sh` and `compose-image.yml` are still used |
 | `build-worker.sh` | builds the Go worker the myous apps carry (`myous-worker`) for running without a container |
 
 ## Docker mode (recommended)
@@ -45,7 +45,7 @@ Then:
 - **Pause** (refuse every request until you say otherwise):
   `touch ~/.myous-worker/worker.paused`; remove the file to resume.
 - **See what it did:** `~/.myous-worker/worker.log` (every request,
-  allowed or refused) and `docker compose logs`.
+  allowed, refused or expired) and `docker compose logs`.
 - **Another alias** than "Desktop worker": `MYOUS_ALIAS="Max's Mac" docker compose up -d`.
 
 Where things are:
@@ -81,39 +81,40 @@ tab, quit) stay with it.
 **The browser on the host.** `MYOUS_BROWSER=host` makes the entrypoint
 skip the container's browser and run `forward.py`, which relays
 `127.0.0.1:9222` inside the container to the port named in
-`~/.myous-worker/browser.json` (`{"host": "host.docker.internal", "port":
-N}`), written by whatever runs the browser on the host. myous for Mac does
-this ("Browser: on this Mac": a real Chrome with the worker's own
-profile, sandboxed to its folder; `mac/README.md`). Scripts connect to
-`http://localhost:9222` either way, and there is no browser view: the
-owner logs in in that browser's own window. Either way the browser is
-started as a plain process, never through Playwright: a
-Playwright-launched browser carries the automation mark
-(`navigator.webdriver` is true on every page) for as long as Playwright
-is attached, and sites that screen for bots refuse it even while the
-owner drives it by hand. A script's `connect_over_cdp` does not set the
-mark. `MYOUS_TZ` and `MYOUS_LANG` (e.g. `America/Chicago`, `en-US`) give
-the container's browser the owner's clock and language.
+`~/.myous-worker/browser.json` (`{"host": "host.docker.internal",
+"port": N}`), written by whatever runs the browser on the host. myous
+for Mac does this when Set up's "Where should its browser run?" (or
+Settings) says on this Mac: a real Chrome, Edge, Brave or Chromium with
+the worker's own profile, sandboxed to its folder (`desktop/README.md`,
+"On a Mac"). Scripts connect to `http://localhost:9222` either way, and
+there is no browser view: the owner logs in in that browser's own
+window. Either way the browser is started as a plain process, never
+through Playwright: a Playwright-launched browser carries the automation
+mark (`navigator.webdriver` is true on every page) for as long as
+Playwright is attached, and sites that screen for bots refuse it even
+while the owner drives it by hand. A script's `connect_over_cdp` does
+not set the mark. `MYOUS_TZ` and `MYOUS_LANG` (e.g. `America/Chicago`,
+`en-US`) give the container's browser the owner's clock and language.
 
 **Command files.** Files dropped in `~/.myous-worker/commands/` are
 picked up by the worker: `new-code` (a fresh pairing code while
-unpaired), `unpair` (drop every contact and offer a code) and
+unpaired), `unpair` (drop every contact and offer a code),
 `stop-<request id>` (end the command running under that id; its result
-says `stopped by the owner`) and `quit` (stop the worker as SIGTERM does:
-the command running is ended, its agent told, and the worker exits). The
-apps use the first three; myous for Linux and Windows also writes `quit`
-when it stops a worker without a container (on Windows the only way to
-stop one gracefully). Request ids name these files, so the worker refuses
-a request whose id isn't 1 to 64 characters from A-Z, a-z, 0-9, - and _
-(protocol.md, 7.1).
+says `stopped by the owner`) and `quit` (stop the worker as SIGTERM
+does: the command running is ended, its agent told, and the worker
+exits). The app uses all four: it writes `quit` whenever it stops a
+worker without a container, on every system (on Windows the only way to
+stop one gracefully). Request ids name these files, so the worker
+refuses a request whose id isn't 1 to 64 characters from A-Z, a-z,
+0-9, - and _ (protocol.md, 7.1).
 
 **Stopping the worker.** On SIGTERM or SIGINT (`docker compose down`,
-the apps' Stop) or a `quit` file, the worker ends the command it is
-running with everything it started, answers that request "stopped by the
-owner (the worker is shutting down)", and exits. The apps give a worker
-running without a container ten seconds for this, then kill it; on
-Windows, where there is no SIGTERM, myous for Linux and Windows asks with
-the `quit` file.
+the app's Stop for a worker in a container) or a `quit` file, the worker
+ends the command it is running with everything it started, answers that
+request "stopped by the owner (the worker is shutting down)", and exits.
+For a worker without a container the app writes the `quit` file on every
+system and, outside Windows, sends SIGTERM too; it gives the worker ten
+seconds, then kills it.
 
 **Questions to the owner.** At the `changes` and `all` review levels, a
 request that needs the owner is written to
@@ -155,7 +156,7 @@ The browser still needs Python and Playwright (`browser.py`).
 Scripts attach to the browser the same way as in the container
 (`connect_over_cdp("http://localhost:9222")`). To keep it running after
 you log out, wrap the last two commands in a launchd agent, or use the
-apps (`mac/`, `desktop/`).
+app (`desktop/`).
 
 ## Security
 

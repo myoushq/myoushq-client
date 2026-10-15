@@ -5,7 +5,7 @@
 > Mac is the Tauri app in
 > [`worker/desktop`](../desktop/README.md) (one codebase for Mac, Linux
 > and Windows): the release builds it, and `/download/mac` serves it under
-> the same name, `myous-<version>.dmg`. This Objective-C app is kept, not
+> the same name, `myous-v<version>.dmg`. This Objective-C app is kept, not
 > built by CI or released any more, until the Tauri app has shipped and
 > been tried; the owner decides when to delete it. `notarize.sh` and
 > `make-dmg.sh` here are still used by the Tauri app's build
