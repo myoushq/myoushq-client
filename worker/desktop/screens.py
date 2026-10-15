@@ -2,7 +2,8 @@
 """Renders every screen of the window in a headless browser, from ui/dist
 with made-up data (the page's own preview mode: no Tauri, no worker), and
 fails on any script error. The screenshots and the tray menu of each go to
-OUTDIR for a look. Needs Playwright for Python with Chromium.
+OUTDIR for a look, and the dialogs in DIALOGS as screens of their own.
+Needs Playwright for Python with Chromium.
 
     npm run build:ui && python3 screens.py OUTDIR [--os windows|macos] [--engine webkit]
 
@@ -25,6 +26,10 @@ STATES = ["checking", "couldntcheck", "setup", "hubdown", "noruntime", "installi
           "directnoplaywright", "found", "directinstalling", "directoff", "directstarting", "directrunning", "directbrowserclosed", "directbrowserlater", "starting",
           "failed", "pair", "paired", "running", "macbrowser", "paused", "stopping", "stopped", "approval", "busy", "agents", "agent", "pairlocal",
           "workers"]
+
+# Dialogs drawn as screens: (name, state, the made-up containers kept (None: all), the menu entry
+# that opens it). Remove stale containers with one container of each kind (two workers), and with none.
+DIALOGS = [("stale", "workers", None, "m:Remove stale containers…"), ("stale-none", "running", [], "m:Remove stale containers…")]
 
 
 def main() -> int:
@@ -79,12 +84,29 @@ def main() -> int:
                 if errors:
                     failures.append(f"{state}: {errors}")
                 page.set_viewport_size(size)
+            for name, state, keep, entry in DIALOGS:
+                errors.clear()
+                page.goto(f"http://127.0.0.1:{port}/index.html?state={state}&os={os_name}")
+                page.wait_for_function("window.myous && window.myous.model")
+                if keep is not None:
+                    page.evaluate(f"(b => b.containers = b.containers.filter(c => {json.dumps(keep)}.includes(c.name)))(window.myous.backend)")
+                if not mac and state == "workers":
+                    page.set_viewport_size({"width": 840, "height": 700})
+                page.evaluate(f"window.myous.backend.emit('tray', {json.dumps(entry)})")
+                page.wait_for_selector("#dlg[open]")
+                if mac:
+                    fit(page)
+                file = f"{os_name}-{name}" + ("" if scheme == "light" else "-dark")
+                page.screenshot(path=str(out / f"{file}.png"), full_page=True)
+                if errors:
+                    failures.append(f"{name}: {errors}")
+                page.set_viewport_size(size)
             page.close()
         browser.close()
     server.shutdown()
     for f in failures:
         print("FAIL", f)
-    print(f"{len(STATES) + 2} screens in {out}" if not failures else f"{len(failures)} failed")
+    print(f"{len(STATES) + 2 + 2 * len(DIALOGS)} screens in {out}" if not failures else f"{len(failures)} failed")
     return 1 if failures else 0
 
 
