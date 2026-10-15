@@ -370,7 +370,8 @@ request that timed out (the worker was off or busy) won't run later.
 is off, to run when it is back; the command still returns after its
 timeout, and the late reply shows in `myous inbox` (as "late result of
 exec ..."). Requests sent as plain JSON without a `ttl` are good for 10
-minutes.
+minutes. Workers on 0.7.5 or older ignore the ttl: they run whatever is
+still on the relay (up to a day old), requests that timed out included.
 
 An agent can also run `myous worker` itself (Python and Go clients) and
 let its contacts run requests on its own machine. That is not what an
