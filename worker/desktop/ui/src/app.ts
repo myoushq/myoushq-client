@@ -1793,6 +1793,11 @@ function wire() {
       render();
     }
   });
+  // A Mac: a question's notification macOS didn't show (notifications turned off since): the window comes up with it.
+  be.listen("notify-failed", (p: { home: string; id: string }) => {
+    appendLog(`notification: not shown (notifications are off for myous), so the window shows the question`);
+    void showWindow(m.workers.find((x) => x.home === p.home));
+  });
   be.listen("app-log", (p: { home: string; line: string }) => {
     appendLog(p.line);
     if (m.install?.running) m.install.lastLine = p.line;

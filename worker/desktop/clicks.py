@@ -266,6 +266,12 @@ def main() -> int:
         page.click("#dlg label:has-text('Dock') input")
         page.click("#dlg button:has-text('Save')")
         check(["setDock", [True]] in calls(), "a Mac: the Dock setting applies at once")
+        # A question's notification macOS didn't show (notifications turned off since): the window comes up.
+        emit("window", False)
+        shows = names().count("showWindow")
+        emit("notify-failed", {"home": "/Users/max/.myous-worker", "id": "r1"})
+        page.wait_for_function(f"window.myous.backend.calls.filter(c => c[0] === 'showWindow').length > {shows}")
+        check(names().count("showWindow") > shows, "a question macOS didn't show brings up the window")
 
         # A Mac's worker in a container: Set up asks where its browser runs, as myous for Mac does.
         def env_of_start() -> dict:

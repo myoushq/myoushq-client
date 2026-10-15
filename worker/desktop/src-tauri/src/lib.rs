@@ -1053,9 +1053,19 @@ fn notification_response<R: Runtime>(app: &AppHandle<R>, response: usernotify::R
         verdict: String,
         error: String,
     }
+    #[derive(Clone, Serialize)]
+    struct NotShown {
+        home: String,
+        id: String,
+    }
     let (id, verdict) = match response {
         usernotify::Response::Open => return show_window(app.clone()),
         usernotify::Response::Answer { id, verdict } => (id, verdict),
+        // The window brings itself up on that worker, with the question.
+        usernotify::Response::NotShown { home, id } => {
+            let _ = app.emit("notify-failed", NotShown { home, id });
+            return;
+        }
     };
     let home = if files::valid_id(&id) {
         paths::all_homes()
