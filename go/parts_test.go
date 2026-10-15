@@ -1,8 +1,11 @@
 package myous
 
 import (
+	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/nbd-wtf/go-nostr"
 )
 
 func TestSplitMessage(t *testing.T) {
@@ -56,5 +59,36 @@ func TestReassembly(t *testing.T) {
 	}
 	if len(buf) != maxUnfinished {
 		t.Fatalf("holding %d unfinished messages from one sender", len(buf))
+	}
+}
+
+// A listener hands each wrap over on its own: every part must be saved as
+// it comes, or the message is lost once its wraps count as seen.
+func TestPartsInSeparateDeliveries(t *testing.T) {
+	ci := newCardInbox(t)
+	pk, _ := nostr.GetPublicKey(ci.sk)
+	texts := []string{"first ", "second ", "third"}
+	for i, text := range texts {
+		w, err := ci.peer.wrap(pk, kindChat, text, nostr.Tags{{"part", "ab12", strconv.Itoa(i + 1), "3"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		stored, err := handleWraps(ci.st, ci.sk, []*nostr.Event{&w})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i < 2 {
+			buf := map[string]*unfinished{}
+			if _, err := ci.st.Get("partials", &buf); err != nil || len(stored) != 0 {
+				t.Fatalf("part %d: stored %d, %v", i+1, len(stored), err)
+			}
+			if u := buf[ci.peerPK+":ab12"]; u == nil || len(u.Parts) != i+1 {
+				t.Fatalf("part %d not saved: %+v", i+1, u)
+			}
+			continue
+		}
+		if len(stored) != 1 || stored[0].Text != "first second third" || stored[0].Incomplete {
+			t.Fatalf("got %+v", stored)
+		}
 	}
 }
