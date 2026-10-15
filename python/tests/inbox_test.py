@@ -199,6 +199,31 @@ class Inbox(unittest.TestCase):
         self.assertEqual(self.handle(wraps[2]), [])
         self.assertEqual([e["text"] for e in self.handle(wraps[0], wraps[1])], ["".join(texts)])
 
+    def test_a_batch_is_stored_with_one_append_and_two_state_writes(self):
+        writes = []
+        put, append = self.st.put, self.st.append_history_many
+
+        def counting_put(name, value):
+            writes.append(name)
+            put(name, value)
+
+        def counting_append(entries):
+            writes.append(("history", len(entries)))
+            append(entries)
+
+        self.st.put, self.st.append_history_many = counting_put, counting_append
+        before = self.st.get("state", {}).get("next_seq", 1)
+        wraps = [wrap(self.peer, self.me, relay.KIND_CHAT, f"m{i}", []) for i in range(20)]
+        stored = self.handle(*wraps)
+        self.assertEqual([e["seq"] for e in stored], list(range(before, before + 20)))
+        self.assertEqual([e["text"] for e in self.st.read_history()[-20:]], [f"m{i}" for i in range(20)])
+        # what was handled, then the entries, then the next seq: not two writes per message
+        self.assertEqual(writes, ["state", ("history", 20), "state"])
+        self.assertEqual(self.st.get("state")["next_seq"], before + 20)
+        writes.clear()
+        self.assertEqual(self.handle(*wraps), [])
+        self.assertEqual(writes, [])   # nothing new: nothing written (a poll with nothing waiting)
+
     def test_consumed(self):
         self.assertTrue(inbox.consumed({"type": "result"}))
         self.assertTrue(inbox.consumed({"type": "ack"}))

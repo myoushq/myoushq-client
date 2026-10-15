@@ -65,6 +65,12 @@ class Storage(abc.ABC):
     def append_history(self, entry: dict) -> None:
         """Append one record to the message history."""
 
+    def append_history_many(self, entries: list[dict]) -> None:
+        """Append several records at once; a store that can makes it one
+        write. This default appends them one by one."""
+        for entry in entries:
+            self.append_history(entry)
+
     @abc.abstractmethod
     def read_history(self) -> list[dict]:
         """The whole message history, oldest first."""
@@ -156,9 +162,14 @@ class FileStorage(Storage):
         return [f"{directory}/{n}" if directory else n for n in found]
 
     def append_history(self, entry: dict) -> None:
+        self.append_history_many([entry])
+
+    def append_history_many(self, entries: list[dict]) -> None:
+        if not entries:
+            return
         fd = os.open(self.path("messages.jsonl"), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
         with os.fdopen(fd, "a") as f:
-            f.write(json.dumps(entry, sort_keys=True) + "\n")
+            f.write("".join(json.dumps(e, sort_keys=True) + "\n" for e in entries))
             f.flush()
             os.fsync(f.fileno())
 

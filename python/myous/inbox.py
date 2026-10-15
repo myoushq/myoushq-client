@@ -62,12 +62,21 @@ TTL_MARGIN = 10
 
 
 def record(st: Storage, entry: dict) -> dict:
+    return record_many(st, [entry])[0]
+
+
+def record_many(st: Storage, entries: list[dict]) -> list[dict]:
+    """Store entries in the history, numbered in order: one append and one
+    update of the state for all of them."""
+    if not entries:
+        return []
     state = st.get("state", {})
-    entry = dict(entry, seq=state.get("next_seq", 1), at=int(time.time()))
-    st.append_history(entry)
-    state["next_seq"] = entry["seq"] + 1
+    first, now = state.get("next_seq", 1), int(time.time())
+    entries = [dict(e, seq=first + i, at=now) for i, e in enumerate(entries)]
+    st.append_history_many(entries)
+    state["next_seq"] = first + len(entries)
     st.put("state", state)
-    return entry
+    return entries
 
 
 def parse_request(text: str) -> dict | None:
@@ -100,8 +109,11 @@ def handle_wraps(st: Storage, keys: Keys, wraps: list[Event]) -> list[dict]:
             continue
         seen[wrap_id] = now
         fresh.append(wrap)
-    state["seen"] = {k: t for k, t in seen.items() if now - t < SEEN_RETENTION}
-    st.put("state", state)
+    if fresh or any(now - t >= SEEN_RETENTION for t in seen.values()):
+        # Marked handled before anything is stored: a crash in between
+        # loses these messages rather than running a worker request twice.
+        state["seen"] = {k: t for k, t in seen.items() if now - t < SEEN_RETENTION}
+        st.put("state", state)
 
     # Wrap timestamps are randomized, so put messages in the order they were written.
     unwrapped = (relay.unwrap(keys, w) for w in fresh)
@@ -113,9 +125,15 @@ def handle_wraps(st: Storage, keys: Keys, wraps: list[Event]) -> list[dict]:
     # which a shallow copy would share, so a part arriving on its own (as a
     # listener gets them) would be marked seen yet never saved.
     before = copy.deepcopy(buffer)
-    stored = []
+    stored = []   # entries to record, all at once at the end
+    known = contacts.load(st)
+
+    def approved(sender: str) -> dict | None:
+        c = known.get(sender)
+        return c if c and c["status"] == contacts.APPROVED else None
+
     for m in messages:
-        contact = contacts.approved(st, m.sender)
+        contact = approved(m.sender)
         if contact is None:
             continue  # not paired, or blocked: drop silently
         base = {"direction": "in", "peer": contact["npub"], "alias": contact["alias"], "sent_at": m.sent_at}
@@ -125,7 +143,7 @@ def handle_wraps(st: Storage, keys: Keys, wraps: list[Event]) -> list[dict]:
                 continue  # malformed, or not on our hub: drop it
             entry = dict(base, type="file", **fields)
             entry["text"] = "file: " + describe_file(entry)
-            stored.append(record(st, entry))
+            stored.append(entry)
             continue
         text = m.content
         if m.part:
@@ -134,14 +152,18 @@ def handle_wraps(st: Storage, keys: Keys, wraps: list[Event]) -> list[dict]:
                 continue  # waiting for the other parts
             text, sent_at, _ = done
             base["sent_at"] = sent_at
-        stored.append(record(st, _text_entry(st, base, text, m.sender, now)))
+        entry = _text_entry(st, base, text, m.sender, now)
+        if entry["type"] == "card":
+            known = contacts.load(st)   # receive_card stored the card on the contact
+        stored.append(entry)
     for sender, text, sent_at in parts.expire(buffer, now):
-        contact = contacts.approved(st, sender)
+        contact = approved(sender)
         if contact:
-            stored.append(record(st, {
+            stored.append({
                 "type": "message", "direction": "in", "peer": contact["npub"],
                 "alias": contact["alias"], "text": text, "sent_at": sent_at, "incomplete": True,
-            }))
+            })
+    stored = record_many(st, stored)
     if buffer != before:
         st.put("partials", buffer)
     return stored
