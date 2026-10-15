@@ -107,7 +107,8 @@ def expired_text(age: int, ttl: int) -> str:
         ago = f"{age // 60} minutes"
     else:
         ago = f"{age // 3600} hours"
-    return f"expired: sent {ago} ago, its ttl is {ttl} seconds; not run"
+    unit = "second" if ttl == 1 else "seconds"
+    return f"expired: sent {ago} ago, its ttl is {ttl} {unit}; not run"
 
 
 class Worker:

@@ -155,6 +155,9 @@ func TestWorkerExpiredText(t *testing.T) {
 	if got := expiredWhy(1500, 150); got != "expired: sent 25 minutes ago, its ttl is 150 seconds; not run" {
 		t.Error(got)
 	}
+	if got := expiredWhy(2, 1); got != "expired: sent 2 seconds ago, its ttl is 1 second; not run" {
+		t.Error(got)
+	}
 	now := time.Unix(1_000_000, 900_000_000)
 	for sentAt, want := range map[int64]int64{1_000_000 - 59: 59, 1_000_000: 0, 1_000_000 + 30: 0} {
 		if got := requestAge(sentAt, now); got != want {

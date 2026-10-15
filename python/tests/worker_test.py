@@ -494,11 +494,13 @@ class ExpiryTest(WorkerFixture):
 
     def test_the_age_in_the_error(self):
         for age, ttl, ago in ((59, 30, "59 seconds"), (150, 30, "2 minutes"), (1500, 150, "25 minutes"),
-                              (3 * 3600, 600, "3 hours"), (119, 1, "119 seconds"), (120, 1, "2 minutes"),
-                              (7199, 1, "119 minutes"), (7200, 1, "2 hours")):
+                              (3 * 3600, 600, "3 hours"), (119, 2, "119 seconds"), (120, 2, "2 minutes"),
+                              (7199, 2, "119 minutes"), (7200, 2, "2 hours")):
             self.run_(self.w.handle(self.exec_(age=age, ttl=ttl)))
             self.assertEqual(self.replies()[-1]["error"], f"expired: sent {ago} ago, its ttl is {ttl} seconds; not run")
         self.assertEqual(worker.expired_text(1500, 150), "expired: sent 25 minutes ago, its ttl is 150 seconds; not run")
+        self.run_(self.w.handle(self.exec_(age=2, ttl=1)))
+        self.assertEqual(self.replies()[-1]["error"], "expired: sent 2 seconds ago, its ttl is 1 second; not run")
         self.assertFalse((self.work / "ran").exists())
 
     def test_within_its_ttl_a_request_runs(self):

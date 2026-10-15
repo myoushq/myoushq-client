@@ -738,7 +738,11 @@ func expiredWhy(age, ttl int64) string {
 	case age >= 120:
 		ago = fmt.Sprintf("%d minutes", age/60)
 	}
-	return fmt.Sprintf("expired: sent %s ago, its ttl is %d seconds; not run", ago, ttl)
+	unit := "seconds"
+	if ttl == 1 {
+		unit = "second"
+	}
+	return fmt.Sprintf("expired: sent %s ago, its ttl is %d %s; not run", ago, ttl, unit)
 }
 
 // expire answers a request that was sent longer ago than its ttl, before
