@@ -23,6 +23,7 @@ import abc
 import contextlib
 import json
 import os
+import secrets
 import sys
 import time
 from pathlib import Path
@@ -212,15 +213,23 @@ class FileStorage(Storage):
 
     @staticmethod
     def write_private(p: Path, text: str) -> None:
-        """Atomic write, readable only by this user."""
+        """Atomic write, readable only by this user. The temporary file is
+        this write's own: two processes writing the same document (the
+        hub's settings, refreshed by whichever command finds them stale)
+        must not share one, or one's rename fails and the other's content
+        lands torn in the document."""
         p.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        tmp = p.with_name(p.name + ".tmp")
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w") as f:
-            f.write(text)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, p)
+        tmp = p.with_name(f"{p.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
+        try:
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w") as f:
+                f.write(text)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, p)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
 
 
 def _lock(fd: int, wait: bool) -> bool:
