@@ -1089,9 +1089,9 @@ const menuActions: MenuActions = {
   show: (w) => void showWindow(w),
   showAgent: (a) => {
     // The agent as the window has it now, by its folder; none once it is gone.
-    const now = (m.agents ?? []).find((x) => x.home === a.home);
-    if (!now) return;
-    m.selectedAgent = now;
+    const agent = (m.agents ?? []).find((x) => x.home === a.home);
+    if (!agent) return;
+    m.selectedAgent = agent;
     void showWindow();
   },
   openBrowser: (w) => void openBrowserView(w),
@@ -1606,7 +1606,7 @@ async function openSettings() {
   app.showAgents = agents.checked;
   if (dockChanged) void be.setDock(app.dock).catch((e) => appendLog(`Dock icon: ${e}`));
   if (m.fake) return render();
-  // Both writes start before either is awaited, so neither waits on a read that could undo the other.
+  // The worker's app.json and the first worker's (the app's settings), each once, both at once.
   const first = m.workers[0];
   await Promise.all([...(kept ? [saveConfig(w)] : []), ...(first !== w ? [saveConfig(first)] : [])]);
   if (kept && review.value !== w.review) {
