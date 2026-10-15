@@ -117,6 +117,44 @@ test("real files drive the screens through a start and a stop", () => {
   assert.equal(w.attention, "the hub refused the key");
 });
 
+test("a worker still running 90 s after Stop: the window says it didn't stop, for half a minute", () => {
+  const m = model();
+  let now = T;
+  m.now = () => now;
+  const needy: string[] = [];
+  m.needsAttention = (w) => needy.push(w.attention);
+  const files = (): WorkerFiles => ({ home: "/h", folder: "h", is_default: true, project: "p", config: { name: "Max's PC" },
+    status: { phase: "running", contacts: 1 }, status_modified: now, requests: [], approvals: [], paused: false, review: "trust" });
+  const look = (secs: number) => {
+    for (let t = 0; t < secs; t += 2) {
+      now += 2;
+      m.load([files()]);
+      evaluate(m);
+    }
+  };
+  look(2);
+  const w = m.current;
+  // Stop pressed; compose down never ends and the worker keeps writing.
+  w.stopping = true;
+  w.stoppedAt = now;
+  const pressed = now;
+  look(88);
+  assert.equal(w.screen, "stopping");
+  look(4);
+  assert.equal(w.screen, "running");
+  assert.equal(w.attention, "The worker didn't stop. The log says why.");
+  assert.equal(w.attentionButton, "Show log");
+  assert.equal(w.stateWord, "Needs attention");
+  assert.deepEqual(needy, ["The worker didn't stop. The log says why."], "news: the window comes up");
+  look(120 - (now - pressed) - 2);
+  assert.ok(now - pressed < 120);
+  assert.equal(w.screen, "running");
+  assert.notEqual((w as Worker).attention, "", "until two minutes after Stop");
+  look(2);
+  assert.equal(w.attention, "");
+  assert.equal(w.stateWord, "Running");
+});
+
 test("only a request waiting for an answer is urgent", () => {
   const m = model();
   const sent: [string, boolean][] = [];

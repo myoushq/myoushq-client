@@ -289,6 +289,8 @@ export class Worker {
   launchedAt = 0;
   stoppedAt = 0;
   stopDoneAt = 0;
+  /** When a Stop it outlived was pressed (still running 90 s on; 0 none): "didn't stop" until 120 s after. */
+  stopFailedAt = 0;
   stopping = false;
   wasRunning = false;
   stoppedByUs = false;
@@ -620,8 +622,10 @@ export class Model {
     if (alive && !w.stopping) w.launchedAt = 0;
     if (alive && stoppingFor > 90) {
       w.stopping = false;
+      w.stopFailedAt = w.stoppedAt;
       w.stoppedAt = 0;
     }
+    if (!alive) w.stopFailedAt = 0;
     // An install from before names were a setting: take the worker's.
     if (!w.config.name && str(w.status?.alias) && !this.fake) {
       w.config.name = str(w.status?.alias);
@@ -643,7 +647,7 @@ export class Model {
       if (w.contacts === 0 && str(invite?.code)) screen = "pair";
       else if (paired && num(paired.at) > w.config.seenPairedAt) screen = "paired";
       else screen = "running";
-      if (w.stoppedAt !== 0 && now - w.stoppedAt > 90 && now - w.stoppedAt < 120) {
+      if (w.stopFailedAt !== 0 && now - w.stopFailedAt < 120) {
         attention = "The worker didn't stop. The log says why.";
         button = "Show log";
       }
