@@ -74,6 +74,9 @@ class Agent:
         self.hub = Hub(storage)
         self._keys: Keys | None = None
         self._live: relay.Connection | None = None  # the connection listen() holds, while it runs
+        # Since when listen() has had no relay connected (Unix time); None
+        # while one is, or before it tried. A worker writes it in its status.
+        self.relay_down_since: float | None = None
 
     # --- identity ----------------------------------------------------------
 
@@ -495,8 +498,15 @@ class Agent:
         connection is lost for good or the task is cancelled. Calls
         on_new(entries) for new messages and pairing results, and on_tick()
         every `tick` seconds (3 while a pairing is pending)."""
-        async with self._connect() as conn:
-            await self._listen_on(conn, on_new, on_tick, tick)
+        # The hub's settings off the event loop: refreshing them may wait
+        # for a hub that doesn't answer, and the loop must keep running.
+        cfg = await asyncio.get_running_loop().run_in_executor(None, self.hub.config)
+        try:
+            async with self._connect(cfg) as conn:
+                await self._listen_on(conn, on_new, on_tick, tick)
+        except (OSError, relay.RelayError):
+            self.relay_down_since = self.relay_down_since or time.time()
+            raise
 
     async def _listen_on(self, conn: relay.Connection, on_new=None, on_tick=None, tick: float = 20) -> None:
         """listen() on a connection already open. While it runs, sends from
@@ -520,6 +530,7 @@ class Agent:
                     states = [r.status() for r in (await conn.client.relays()).values()]
                     connected = any(s == RelayStatus.CONNECTED for s in states)
                     down_since = None if connected else (down_since or loop.time())
+                    self.relay_down_since = None if connected else (self.relay_down_since or time.time())
                     if down_since and loop.time() - down_since > 120:
                         raise ConnectionError("relay connection lost")
                     if on_tick:

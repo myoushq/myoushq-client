@@ -326,6 +326,45 @@ class WorkerTest(WorkerFixture):
             self.run_(asyncio.wait_for(self.w.run(), 10))
         self.assertTrue(self.w.stopping.is_set())
 
+    def test_while_the_relay_is_unreachable_it_keeps_ticking(self):
+        # Waiting to reconnect, it still writes its status (the apps take a
+        # stale one for a stopped worker) and takes the owner's commands.
+        attempts = []
+
+        async def listen(on_new, on_tick, tick):
+            attempts.append(time.time())
+            self.agent.relay_down_since = self.agent.relay_down_since or time.time()   # as Agent.listen does
+            raise OSError("connection refused")
+
+        status, commands = self.home / "worker.json", self.home / "commands"
+        seen = []
+
+        def owner():
+            deadline = time.time() + 3.5
+            while time.time() < deadline:
+                try:
+                    seen.append(json.loads(status.read_text()))
+                except (OSError, ValueError):
+                    pass
+                time.sleep(0.2)
+            commands.mkdir(exist_ok=True)
+            (commands / "hello").touch()   # an unknown command: removed when commands are handled
+            deadline = time.time() + 5
+            while (commands / "hello").exists() and time.time() < deadline:
+                time.sleep(0.1)
+            (commands / "quit").touch()
+
+        self.agent.listen = listen
+        self.agent.relay_down_since = None
+        threading.Thread(target=owner).start()
+        with mock.patch.object(worker, "TICK", 0.2), mock.patch.object(worker, "STATUS_EVERY", 0.2):
+            self.run_(asyncio.wait_for(self.w.run(), 20))
+        self.assertEqual(len(attempts), 1)   # all of it while waiting to reconnect
+        self.assertGreaterEqual(len({s["updated"] for s in seen}), 2, seen)
+        self.assertLessEqual(abs(seen[-1]["relay_down_since"] - attempts[0]), 1)
+        self.assertEqual(seen[-1]["phase"], "running")
+        self.assertFalse((commands / "hello").exists())
+
     def test_review_hook_refuses(self):
         hook = Path(self.tmp.name) / "review.py"
         hook.write_text("import json,sys\nr=json.load(sys.stdin)\n"

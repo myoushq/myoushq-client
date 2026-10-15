@@ -42,6 +42,7 @@ HELP_INTERVAL = 60  # seconds between help replies to the same contact
 REVIEW_TIMEOUT = 150  # the hook may wait for the owner (worker/review.py: 120 s), inside an agent's default wait
 STATUS_EVERY = 5
 TICK = 5  # seconds between ticks: status writes and the owner's commands
+RECONNECT_WAIT = 10  # seconds between attempts to reach the relay
 REQUESTS_KEEP = 200  # request records kept in <home>/requests for the owner's app
 # A request is good for its ttl from when it was sent (protocol.md 7.1):
 # one the requester gave up on (this worker was off, or busy) never runs.
@@ -139,6 +140,7 @@ class Worker:
         self.invite: dict | None = None
         self.help_sent: dict[str, float] = {}
         self._status_written = 0.0
+        self._ticked = 0.0
         self._busy: asyncio.Lock | None = None  # one request at a time, whichever path delivered it
         self._waiting: list[dict] = []   # entries delivered (on_new) and not yet taken up
         self.stopping = threading.Event()  # set by SIGTERM / SIGINT: finish the current request, then exit
@@ -201,6 +203,25 @@ class Worker:
                             quit_file.unlink(missing_ok=True)
             watcher = loop.create_task(watch_quit())
 
+        async def tick_meanwhile():
+            # The connection ticks while it is up. While it isn't (waiting
+            # to reconnect, or connecting), this does: the status stays fresh
+            # (the apps take a stale one for a stopped worker) and the
+            # owner's commands are handled.
+            said = None
+            while not self.stopping.is_set():
+                await asyncio.sleep(1)
+                if time.time() - self._ticked < TICK:
+                    continue
+                try:
+                    self.tick()
+                except Exception as err:  # noqa: BLE001 - the hub may be down too (a new invite): the status still goes out
+                    self.write_status()
+                    if str(err) != said:
+                        self.say(f"while reconnecting: {err}")
+                    said = str(err)
+        ticker = loop.create_task(tick_meanwhile())
+
         installed = {}
         for name in ("SIGTERM", "SIGINT", "SIGBREAK"):
             sig = getattr(signal, name, None)
@@ -215,12 +236,13 @@ class Worker:
                 try:
                     await self.agent.listen(on_new=self.on_new, on_tick=self.tick, tick=TICK)
                 except (OSError, relay.RelayError) as e:
-                    self.say(f"connection lost ({e}); retrying in 10 seconds")
-                    await asyncio.sleep(10)
+                    self.say(f"connection lost ({e}); retrying in {RECONNECT_WAIT} seconds")
+                    await asyncio.sleep(RECONNECT_WAIT)
         except asyncio.CancelledError:
             if not self.stopping.is_set():
                 raise
         finally:
+            ticker.cancel()
             if watcher:
                 watcher.cancel()
                 with contextlib.suppress(OSError):
@@ -288,6 +310,7 @@ class Worker:
         return {"op": req["myous"], "id": req["id"], **head, key: req.get(key)}
 
     def tick(self) -> None:
+        self._ticked = time.time()
         self.handle_commands()
         self.ensure_invite()
         if time.time() - self._status_written > STATUS_EVERY:
@@ -628,6 +651,8 @@ class Worker:
             npub = self.agent.keys.public_key().to_bech32()
         except Exception:
             npub = None
+        # While no relay is connected: since when (the agent's listen() keeps it).
+        down = getattr(self.agent, "relay_down_since", None)
         self.st.put("worker", {
             "pid": os.getpid(), "started": self.started, "alias": self.agent.alias, "npub": npub,
             "phase": "paused" if self.paused() else "running",
@@ -637,6 +662,7 @@ class Worker:
                        if self.invite else None),
             "paused": self.paused(), "requests": self.requests, "last": self.last, "paired": self.paired, "work": str(self.work),
             "updated": int(time.time()), "version": __version__,
+            **({"relay_down_since": int(down)} if down else {}),
         })
         self._status_written = time.time()
 

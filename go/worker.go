@@ -44,9 +44,7 @@ const (
 	workerDefaultTimeout = 120
 	helpInterval         = 60 * time.Second  // between help replies to the same contact
 	reviewTimeout        = 150 * time.Second // the hook may wait for the owner (120 s), inside an agent's default wait
-	statusEvery          = 5 * time.Second
-	workerTick           = 5 * time.Second // status writes and the owner's commands
-	requestsKeep         = 200             // request records kept in <home>/requests for the owner's app
+	requestsKeep         = 200               // request records kept in <home>/requests for the owner's app
 	stopFileMaxAge       = 600 * time.Second
 	reconnectWait        = 10 * time.Second
 
@@ -74,6 +72,11 @@ const (
 	// same as SIGTERM, and on Windows (no signals for a worker without a
 	// console) the only way short of killing it.
 	quitCommand = "quit"
+)
+
+var (
+	statusEvery = 5 * time.Second // tests shorten them
+	workerTick  = 5 * time.Second // status writes and the owner's commands
 )
 
 // validID is whether a request id is a plain name: 1 to 64 characters
@@ -150,15 +153,17 @@ type Worker struct {
 	execFn func(context.Context, Entry, map[string]any, string) error
 	getFn  func(context.Context, Entry, map[string]any, string) error
 
-	mu            sync.Mutex // what follows, and the owner's side (status, invite, commands)
-	requests      int
-	last          pyObj
-	paired        pyObj // the most recent pairing, with its verification code
-	invite        *Invite
-	helpSent      map[string]time.Time
-	statusWritten time.Time
-	python        pythonInfo
-	browserPy     browserPython
+	mu             sync.Mutex // what follows, and the owner's side (status, invite, commands)
+	requests       int
+	last           pyObj
+	paired         pyObj // the most recent pairing, with its verification code
+	invite         *Invite
+	helpSent       map[string]time.Time
+	statusWritten  time.Time
+	ticked         time.Time // the last tick, from the connection or tickMeanwhile
+	relayDownSince int64     // since when no relay is connected (Unix time); 0 while one is
+	python         pythonInfo
+	browserPy      browserPython
 
 	announce browserAnnounce // the browser announcement (announceBrowser)
 
@@ -326,11 +331,19 @@ func (w *Worker) Run(ctx context.Context) error {
 		w.stopWaiting(answering, q.drain()) // Listen has returned: nothing more comes
 	}()
 
+	handling.Add(1)
+	go func() { // the ticks while the connection is down
+		defer handling.Done()
+		w.tickMeanwhile(ctx)
+	}()
 	for {
 		lctx, cancel := context.WithCancel(ctx)
 		var tickMu sync.Mutex
 		var tickErr error
 		err := w.agent.Listen(lctx, q.push, func() {
+			w.mu.Lock()
+			w.relayDownSince = 0 // the connection ticks only while it is up
+			w.mu.Unlock()
 			if err := w.tick(lctx); err != nil && lctx.Err() == nil {
 				tickMu.Lock()
 				tickErr = err
@@ -351,6 +364,11 @@ func (w *Worker) Run(ctx context.Context) error {
 		if !retryable(err) {
 			return err
 		}
+		w.mu.Lock()
+		if w.relayDownSince == 0 {
+			w.relayDownSince = time.Now().Unix()
+		}
+		w.mu.Unlock()
 		w.say(fmt.Sprintf("connection lost (%v); retrying in 10 seconds", err))
 		select {
 		case <-ctx.Done():
@@ -417,27 +435,66 @@ func (q *entryQueue) drain() []Entry {
 	return all
 }
 
-// tick: the owner's commands, a fresh invite while unpaired, the status,
-// then the browser announcement (outside w.mu: it looks up the Pythons).
+// tick: the owner's side (tickOwner), then the browser announcement
+// (outside w.mu: it looks up the Pythons).
 func (w *Worker) tick(ctx context.Context) error {
-	if err := func() error {
-		w.mu.Lock()
-		defer w.mu.Unlock()
-		if err := w.handleCommands(ctx); err != nil {
-			return err
-		}
-		if err := w.ensureInvite(ctx); err != nil {
-			return err
-		}
-		if time.Since(w.statusWritten) > statusEvery {
-			return w.writeStatus()
-		}
-		return nil
-	}(); err != nil {
+	if err := w.tickOwner(ctx); err != nil {
 		return err
 	}
 	w.announceBrowser(ctx)
 	return nil
+}
+
+// tickOwner: the owner's commands, a fresh invite while unpaired, the
+// status.
+func (w *Worker) tickOwner(ctx context.Context) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.ticked = time.Now()
+	if err := w.handleCommands(ctx); err != nil {
+		return err
+	}
+	if err := w.ensureInvite(ctx); err != nil {
+		return err
+	}
+	if time.Since(w.statusWritten) > statusEvery {
+		return w.writeStatus()
+	}
+	return nil
+}
+
+// tickMeanwhile ticks while the connection doesn't: it ticks only while it
+// is up, and in between (waiting to reconnect, connecting) worker.json
+// would go stale (the apps take that for a stopped worker) and the
+// owner's commands would wait. The browser announcement waits for the
+// connection.
+func (w *Worker) tickMeanwhile(ctx context.Context) {
+	t := time.NewTicker(time.Second)
+	defer t.Stop()
+	said := ""
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		w.mu.Lock()
+		due := time.Since(w.ticked) >= workerTick
+		w.mu.Unlock()
+		if !due {
+			continue
+		}
+		if err := w.tickOwner(ctx); err != nil && ctx.Err() == nil {
+			// The hub may be down too (a new invite): the status still goes out.
+			w.mu.Lock()
+			w.writeStatus()
+			w.mu.Unlock()
+			if err.Error() != said {
+				w.say("while reconnecting: " + err.Error())
+			}
+			said = err.Error()
+		}
+	}
 }
 
 // --- the owner's commands ------------------------------------------------
@@ -1322,12 +1379,16 @@ func (w *Worker) writeStatus() error {
 	if w.paused() {
 		phase = "paused"
 	}
-	err := w.st.Put("worker", pyObj{
+	status := pyObj{
 		{"pid", os.Getpid()}, {"started", w.started}, {"alias", w.agent.Alias()}, {"npub", npub},
 		{"phase", phase}, {"contacts", len(contacts)}, {"invite", invite}, {"paused", w.paused()},
 		{"requests", w.requests}, {"last", orNull(w.last)}, {"paired", orNull(w.paired)}, {"work", w.work},
 		{"updated", time.Now().Unix()}, {"version", Version},
-	})
+	}
+	if w.relayDownSince != 0 {
+		status = append(status, pyKV{"relay_down_since", w.relayDownSince})
+	}
+	err := w.st.Put("worker", status)
 	w.statusWritten = time.Now()
 	return err
 }

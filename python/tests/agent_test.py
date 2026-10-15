@@ -300,6 +300,26 @@ class RequestTtl(unittest.TestCase):
         self.assertIn("it won't start this request any more", str(cm.exception))
 
 
+class RelayDown(unittest.TestCase):
+    def test_listen_keeps_since_when_no_relay_is_connected(self):
+        agent = Agent(MemoryStorage())
+        agent.hub.config = lambda refresh=False: {"relays": ["ws://127.0.0.1:9"]}
+
+        def unreachable(cfg=None):
+            raise OSError("connection refused")
+
+        agent._connect = unreachable
+        self.assertIsNone(agent.relay_down_since)
+        before = time.time()
+        with self.assertRaises(OSError):
+            asyncio.run(agent.listen())
+        since = agent.relay_down_since
+        self.assertTrue(before <= since <= time.time())
+        with self.assertRaises(OSError):
+            asyncio.run(agent.listen())
+        self.assertEqual(agent.relay_down_since, since)   # since the first time
+
+
 class CliTtl(unittest.TestCase):
     """--ttl on `myous exec` and `myous cp` reaches the request."""
 

@@ -578,6 +578,63 @@ func TestWorkerRunReturnsAnErrorReconnectingCantFix(t *testing.T) {
 	}
 }
 
+func TestWorkerKeepsTickingWhileTheRelayIsUnreachable(t *testing.T) {
+	// Waiting to reconnect, it still writes worker.json (the apps take a
+	// stale one for a stopped worker) and takes the owner's commands, the
+	// quit file too.
+	tick, every := workerTick, statusEvery
+	workerTick, statusEvery = 200*time.Millisecond, 200*time.Millisecond
+	t.Cleanup(func() { workerTick, statusEvery = tick, every })
+	f := newWorkerFixture(t)
+	attempts := 0
+	f.agent.listen = func(ctx context.Context, onNew func([]Entry)) error {
+		f.agent.mu.Lock()
+		attempts++
+		f.agent.mu.Unlock()
+		return errors.New("could not connect to any relay (connection refused)")
+	}
+	started := time.Now()
+	done := make(chan error, 1)
+	go func() { done <- f.w.Run(context.Background()) }()
+	updated := map[any]bool{}
+	var last map[string]any
+	for time.Since(started) < 3500*time.Millisecond {
+		var s map[string]any
+		if raw, err := os.ReadFile(filepath.Join(f.home, "worker.json")); err == nil && json.Unmarshal(raw, &s) == nil {
+			updated[s["updated"]], last = true, s
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	commands := filepath.Join(f.home, "commands")
+	hello := filepath.Join(commands, "hello") // an unknown command: removed when commands are handled
+	os.MkdirAll(commands, 0o700)
+	os.WriteFile(hello, nil, 0o600)
+	for deadline := time.Now().Add(5 * time.Second); exists(hello) && time.Now().Before(deadline); {
+		time.Sleep(100 * time.Millisecond)
+	}
+	os.WriteFile(filepath.Join(commands, "quit"), nil, 0o600)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the worker didn't stop")
+	}
+	if attempts != 1 { // all of it while waiting to reconnect
+		t.Fatalf("%d connection attempts", attempts)
+	}
+	if len(updated) < 2 {
+		t.Fatalf("worker.json wasn't refreshed: %v", last)
+	}
+	if d, ok := last["relay_down_since"].(float64); !ok || math.Abs(d-float64(started.Unix())) > 2 || last["phase"] != "running" {
+		t.Fatalf("status: %v", last)
+	}
+	if exists(hello) {
+		t.Fatal("the owner's commands waited for the connection")
+	}
+}
+
 func TestWorkerQuitFileFromBeforeItStartedIsDropped(t *testing.T) {
 	// A quit file the last worker never took (it was killed first) must
 	// not stop the next one; one written since it started does.

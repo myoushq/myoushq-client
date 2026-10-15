@@ -228,7 +228,9 @@ docker compose -p myous-worker ps && cat ~/.myous-worker/worker.json
 
 `worker.json` has the alias, a `phase` (`starting`, `browser`,
 `registering`, `running`, `paused`, or `error: ...`), the number of
-paired contacts, the last request and when, and the worker's `version`.
+paired contacts, the last request and when, and the worker's `version`;
+while it can't reach the relay, `relay_down_since` (Unix time; it keeps
+retrying, and keeps `worker.json` fresh meanwhile).
 The log of every request, allowed, refused or expired (sent longer ago
 than its agent waits for the answer, so not run), is `worker.log` in the
 worker folder, and `requests/` there keeps one JSON record per recent
