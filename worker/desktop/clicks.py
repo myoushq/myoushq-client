@@ -317,6 +317,70 @@ def main() -> int:
         check("Its browser" not in text("#dlg") and "hidden" not in text("#dlg"), "Linux: no browser choice in Settings")
         page.click("#dlg button:has-text('Cancel')")
 
+        # Remove stale containers: a dialog that lists the worker containers and asks which go.
+        stale_id = "m:Remove stale containers…"
+
+        def stale_dialog(state: str, keep: list[str] | None = None) -> dict:
+            go(state)
+            if keep is not None:
+                page.evaluate(f"(b => b.containers = b.containers.filter(c => {json.dumps(keep)}.includes(c.name)))(window.myous.backend)")
+            ids = {c["name"]: c["id"] for c in page.evaluate("window.myous.backend.containers")}
+            emit("tray", stale_id)
+            page.wait_for_selector("#dlg[open]")
+            return ids
+
+        def removed() -> list:
+            return [c[1] for c in calls() if c[0] == "removeContainers"]
+
+        # Two workers: one container of each kind. The default removes just the stopped ones, with a plain rm.
+        ids = stale_dialog("workers")
+        dlg = text("#dlg")
+        check("Remove stale containers" in dlg and all(n in dlg for n in ids) and "Just the stopped ones (2)" in dlg
+              and "All, running ones too (3)" in dlg and page.is_checked("#dlg label:has-text('Just the stopped') input"),
+              "the dialog lists every worker container; just the stopped ones by default")
+        check("Also remove Max's PC's container: it runs myous 0.6.0, this app is 0.6.1. The worker stops; Start runs it on 0.6.1." in dlg
+              and not page.is_checked("#dlg label:has-text('Also remove') input")
+              and "Max's PC for Codex's container is kept: it runs this app's version." in dlg
+              and "Also remove Max's PC for Codex" not in dlg, "this app's older worker is asked about, unticked; its current one is kept")
+        page.click("#dlg button:has-text('Remove')")
+        page.wait_for_selector("#dlg", state="hidden")
+        check(removed() == [[[ids["myous-worker-3-worker-1"], ids["myous-worker"]], []]], "Remove: the stopped ones, without force")
+        # All, and the older worker ticked (from the ⋯ menu this time): the others and it, with force; the worker
+        # shows Stopped a minute on, not "stopped on its own".
+        go("workers")
+        ids = {c["name"]: c["id"] for c in page.evaluate("window.myous.backend.containers")}
+        page.click("#more")
+        page.click("#more-menu button:has-text('Remove stale containers…')")
+        page.wait_for_selector("#dlg[open]")
+        page.click("#dlg label:has-text('All, running ones too') input")
+        page.click("#dlg label:has-text('Also remove') input")
+        # A minute on; the second worker still writes its status.
+        page.evaluate("(() => { const m = window.myous.model, t = m.now() + 60; m.now = () => t; m.workers[1].statusModified = t; })()")
+        page.click("#dlg button:has-text('Remove')")
+        page.wait_for_selector("#dlg", state="hidden")
+        check(removed() == [[[ids["myous-worker-3-worker-1"], ids["myous-worker"]],
+                             [ids["myous-desktop-e2e-1791700000-worker-1"], ids["myous-worker-worker-1"]]]],
+              "All with the older worker ticked: the others and it, with force")
+        page.wait_for_function("window.myous.model.workers[0].screen === 'stopped'")
+        first = page.evaluate("(({stateWord, attention}) => ({stateWord, attention}))(window.myous.model.workers[0])")
+        check(first == {"stateWord": "Stopped", "attention": ""} and page.is_visible("#stopped-start") and page.is_hidden("#banner"),
+              f"its worker shows Stopped with Start, no Needs attention {first}")
+        tray = [i.get("label") for i in page.evaluate("window.myous.backend.tray.items")]
+        check("Max's PC · Stopped" in tray, f"the tray says Stopped too {tray}")
+        # Only this app's older worker running: nothing to remove until it is ticked.
+        stale_dialog("running", ["myous-worker-worker-1"])
+        check("Just the stopped ones (0)" in text("#dlg") and "All, running ones too (0)" in text("#dlg")
+              and page.is_disabled("#stale-remove"), "nothing chosen: Remove is disabled")
+        page.click("#dlg label:has-text('Also remove') input")
+        check(page.is_enabled("#stale-remove"), "ticked: Remove is enabled")
+        page.click("#dlg button:has-text('Cancel')")
+        check(removed() == [], "Cancel removes nothing")
+        # None at all: said so, with OK.
+        stale_dialog("running", [])
+        buttons = page.eval_on_selector_all("#dlg button", "bs => bs.map(b => b.textContent)")
+        check("No worker containers found." in text("#dlg") and buttons == ["OK"], "no worker containers: said so, OK")
+        page.click("#dlg button:has-text('OK')")
+
         check(not errors, f"no script errors {errors}")
         browser.close()
     server.shutdown()

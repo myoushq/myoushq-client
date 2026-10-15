@@ -66,9 +66,10 @@ approved contacts, one request at a time, after its review allows them.
 It is a port of the Python worker and serves the same worker folder the
 same way, so the desktop apps can run either: the same replies, `help`
 text and pairing message, `worker.json` (the status and phase, the open
-pairing code), `worker.log`, `requests/<id>.json` (the newest 200), and
-`commands/` (`new-code`, `unpair`, `stop-<id>`). `--alias` is needed the
-first time; `--work` defaults to `./work` or `$MYOUS_WORK`.
+pairing code, the version), `worker.log`, `requests/<id>.json` (the
+newest 200), and `commands/` (`new-code`, `unpair`, `stop-<id>`).
+`--alias` is needed the first time; `--work` defaults to `./work` or
+`$MYOUS_WORK`.
 The myous apps carry this worker inside themselves as `myous-worker`
 (built by `worker/build-worker.sh`, the app's own version) and run it for
 a worker without a container, so that needs no Python.

@@ -666,11 +666,26 @@ async fn container_logs(compose_file: String, project: String) -> String {
     .unwrap_or_default()
 }
 
+/// The worker containers, for Remove stale containers to offer.
 #[tauri::command]
-async fn remove_stale_containers() -> String {
-    tauri::async_runtime::spawn_blocking(engine::remove_all)
+async fn list_containers() -> Result<Vec<engine::Container>, String> {
+    tauri::async_runtime::spawn_blocking(engine::containers)
         .await
-        .unwrap_or_default()
+        .map_err(err)?
+}
+
+/// Removes what the owner picked: `stopped` without force, `running` with it.
+#[tauri::command]
+async fn remove_containers(
+    stopped: Vec<engine::Container>,
+    running: Vec<engine::Container>,
+) -> engine::Removal {
+    tauri::async_runtime::spawn_blocking(move || engine::remove(&stopped, &running))
+        .await
+        .unwrap_or_else(|e| engine::Removal {
+            log: format!("remove containers: {e}"),
+            removed: Vec::new(),
+        })
 }
 
 #[tauri::command]
@@ -1140,7 +1155,8 @@ pub fn run() {
             compose_run,
             browser_port,
             container_logs,
-            remove_stale_containers,
+            list_containers,
+            remove_containers,
             read_agents,
             agent_run,
             latest_release,

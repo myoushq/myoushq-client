@@ -1238,7 +1238,7 @@ func (w *Worker) writeStatus() error {
 		{"pid", os.Getpid()}, {"started", w.started}, {"alias", w.agent.Alias()}, {"npub", npub},
 		{"phase", phase}, {"contacts", len(contacts)}, {"invite", invite}, {"paused", w.paused()},
 		{"requests", w.requests}, {"last", orNull(w.last)}, {"paired", orNull(w.paired)}, {"work", w.work},
-		{"updated", time.Now().Unix()},
+		{"updated", time.Now().Unix()}, {"version", Version},
 	})
 	w.statusWritten = time.Now()
 	return err

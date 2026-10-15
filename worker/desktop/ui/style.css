@@ -175,8 +175,15 @@ dialog > input { margin-top: 6px; }
 .check input { width: auto; margin: 0; flex: none; }
 .check input:focus { box-shadow: none; outline: 2px solid var(--accent); outline-offset: 2px; }
 .indent { margin-left: 24px; }
-.settings { flex: 1 1 auto; min-height: 0; overflow: auto; padding-right: 4px; margin-right: -4px; }
+.settings, .stale { flex: 1 1 auto; min-height: 0; overflow: auto; padding-right: 4px; margin-right: -4px; }
 .settings > label:first-child { margin-top: 4px; }
+/* Remove stale containers: the containers, then the choices; a long choice wraps beside its box. */
+.stale p { margin: 6px 0; }
+.stale ul { margin: 4px 0 10px; padding-left: 20px; }
+.stale li { margin: 2px 0; overflow-wrap: anywhere; }
+.stale .name { font: 12px var(--mono); }
+.check.wrap { align-items: flex-start; }
+.check.wrap input { margin-top: 3px; }
 [hidden] { display: none !important; }
 .browser-row { margin: 8px 0 8px; padding: 0 0 10px; border-bottom: 1px solid var(--line); }
 .browser-row p { margin: 4px 0; }

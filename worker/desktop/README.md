@@ -54,6 +54,21 @@ you choose (see "On a Mac"); without one it runs on the computer (below).
 On Linux and Windows notifications have no buttons: a question brings up
 the window, which has Allow and Refuse.
 
+**Remove stale containers…** (Advanced in the tray's menu, the ⋯ menu,
+a Mac's app menu) lists the worker containers (labelled
+`com.myoushq.worker`, whichever project started them): each one's name,
+whether it runs, its version and, for one of this app's workers, the
+worker. It removes just the stopped ones (the default) or all, running
+ones too; never this app's own running workers that way. One of those
+on an older version than the app (the version in its `worker.json`, else
+its image's tag; one that says neither counts as older) has a box of its
+own, unticked: removing its container stops the worker, which then
+shows Stopped, and Start runs it on the app's version. One on the app's
+version is kept. Stopped containers are removed with a plain `rm`, so
+one that started in the meantime is refused, not stopped; running ones
+the owner chose are stopped first, as Stop does, then removed. The log
+says what was removed and what wasn't.
+
 ## The first launch
 
 The window draws at once and checks the computer in parallel: whether
@@ -211,7 +226,7 @@ machines; a web view has no such need.
 | `src-tauri/src/lib.rs` | The commands the window calls; the tray; notifications, dialogs, clipboard, open at login. |
 | `src-tauri/src/files.rs`, `paths.rs` | The worker folders and the files in them (`worker.json`, `requests/`, `approvals/`, `app.json`, `review.json`, command files). |
 | `ui/src/setup.ts` | The first launch's words: the checklist, the runtime cards, the hub's red line, Needs attention. |
-| `src-tauri/src/engine.rs` | Finding programs (`which`, `search_path`) and starting them with that PATH (`command`). Docker or Podman: the runtime check (ok, missing, not running, no permission, no compose, its own error), `compose up` and `down` with the output streamed to the log, the browser view's port, stale containers. |
+| `src-tauri/src/engine.rs` | Finding programs (`which`, `search_path`) and starting them with that PATH (`command`). Docker or Podman: the runtime check (ok, missing, not running, no permission, no compose, its own error), `compose up` and `down` with the output streamed to the log, the browser view's port, the worker containers (`inspect`, Docker's and Podman's) and removing the stale ones. |
 | `src-tauri/src/install.rs` | Which runtimes this system can have and whether the app can install each (winget, Homebrew, apt/dnf/pacman through pkexec), starting Docker Engine, compose's package. |
 | `src-tauri/src/hub.rs` | Whether the hub answers (`/config.json`), and the newest release. |
 | `src-tauri/src/agents.rs` | The agents on this computer, read with their own client's `myous status --json`; accepting a pairing code as one of them. |
@@ -318,11 +333,13 @@ directnovenv, directnoplaywright, found, directinstalling, directoff,
 directstarting, directrunning, directbrowserclosed, directbrowserlater,
 starting, failed, pair, paired, running, paused, stopping, stopped,
 approval, busy, agents, agent, pairlocal, workers, macbrowser (`screens.py`
-renders all 40, and two of them dark too). The app itself takes the same names in
-`MYOUS_FAKE_STATE`. In a plain browser the page's backend only records
-what the buttons ask for (`window.myous.backend.calls`), and
-`window.myous.backend.emit(event, payload)` plays what Rust would send (an
-install's end, a log line), so the buttons can be clicked in tests.
+renders all 40, and two of them dark too, and the Remove stale containers
+dialog with a container of each kind and with none, light and dark). The
+app itself takes the same names in `MYOUS_FAKE_STATE`. In a plain
+browser the page's backend only records what the buttons ask for
+(`window.myous.backend.calls`), and `window.myous.backend.emit(event,
+payload)` plays what Rust would send (an install's end, a log line), so
+the buttons can be clicked in tests.
 
 Other environment variables, for tests: `MYOUS_WORKER_HOME` (another
 worker folder), `MYOUS_COMPOSE_PROJECT` (the first worker's compose
@@ -357,3 +374,10 @@ does, and checks it ends with the worker. `cargo test -- --ignored
 playwright_install` makes the Python environment and installs Playwright
 for real in a temporary folder (`MYOUS_E2E_SYSTEM_PYTHON` names the
 Python 3.10+ to make it with).
+
+`MYOUS_TEST_IMAGE=alpine:3.22 cargo test -- --ignored real_engine` lists
+and removes two containers of its own on the real runtime (one created,
+one running, from an image already pulled): a plain `rm` refuses the
+running one, which is then stopped (`sleep` ignores the stop signal, so
+the runtime kills it after its 10 seconds) and removed with `rm -f`. No
+other container is touched.

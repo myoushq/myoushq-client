@@ -3,8 +3,8 @@
 // preview of ui/dist, the screenshots, the tests), a stand-in that does
 // nothing and reports a fake state from the page's address.
 
-import { previewBrowserCheck, previewMacBrowsers, previewOptions } from "./fake.js";
-import type { Agent, BrowserCheck, Capability, MacBrowsers, RuntimeOptions, WorkerFiles } from "./model.js";
+import { previewBrowserCheck, previewContainers, previewMacBrowsers, previewOptions } from "./fake.js";
+import type { Agent, BrowserCheck, Capability, Container, MacBrowsers, RuntimeOptions, WorkerFiles } from "./model.js";
 
 export interface AppInfo {
   version: string;
@@ -34,6 +34,12 @@ export interface TrayItem {
   children?: TrayItem[];
 }
 
+/** What Remove stale containers did (engine.rs's `remove`). */
+export interface Removal {
+  log: string;
+  removed: string[];
+}
+
 type Handler = (payload: any) => void;
 
 export interface Backend {
@@ -56,7 +62,11 @@ export interface Backend {
   composeRun(home: string, composeFile: string, project: string, args: string[], env: Record<string, string>, op: string): Promise<void>;
   browserPort(composeFile: string, project: string, legacy: boolean): Promise<string>;
   containerLogs(composeFile: string, project: string): Promise<string>;
-  removeStaleContainers(): Promise<string>;
+  /** Every worker container (labelled com.myoushq.worker), running or not; rejects when the runtime doesn't answer. */
+  listContainers(): Promise<Container[]>;
+  /** Removes `stopped` without force (one that started meanwhile is refused) and `running` with it:
+   * the line for the log, and the ids removed. */
+  removeContainers(stopped: Container[], running: Container[]): Promise<Removal>;
   readAgents(extra: string[]): Promise<Agent[]>;
   agentRun(home: string, binary: string, args: string[]): Promise<{ status: number; output: string }>;
   latestRelease(): Promise<string>;
@@ -135,7 +145,8 @@ class TauriBackend implements Backend {
   }
   browserPort(composeFile: string, project: string, legacy: boolean) { return this.invoke("browser_port", { composeFile, project, legacy }); }
   containerLogs(composeFile: string, project: string) { return this.invoke("container_logs", { composeFile, project }); }
-  removeStaleContainers() { return this.invoke("remove_stale_containers"); }
+  listContainers() { return this.invoke("list_containers"); }
+  removeContainers(stopped: Container[], running: Container[]) { return this.invoke("remove_containers", { stopped, running }); }
   readAgents(extra: string[]) { return this.invoke("read_agents", { extra }); }
   agentRun(home: string, binary: string, args: string[]) { return this.invoke("agent_run", { home, binary, args }); }
   latestRelease() { return this.invoke("latest_release"); }
@@ -209,7 +220,16 @@ export class PreviewBackend implements Backend {
   composeRun(...a: [string, string, string, string[], Record<string, string>, string]) { return this.rec("composeRun", a, undefined); }
   browserPort(...a: [string, string, boolean]) { return this.rec("browserPort", a, "32768"); }
   containerLogs(...a: [string, string]) { return this.rec("containerLogs", a, "worker-1  | running"); }
-  removeStaleContainers() { return this.rec("removeStaleContainers", [], "no worker containers found"); }
+  /** The worker containers the runtime reports (a test sets it). */
+  containers: Container[] = previewContainers(this.info.version ?? "0.6.1");
+  listContainers() { return this.rec("listContainers", [], this.containers); }
+  /** Recorded as the ids, stopped and running; each one is removed. */
+  removeContainers(stopped: Container[], running: Container[]) {
+    const gone = [...stopped, ...running];
+    this.containers = this.containers.filter((c) => !gone.some((g) => g.id === c.id));
+    return this.rec("removeContainers", [stopped.map((c) => c.id), running.map((c) => c.id)],
+      { log: gone.length ? `removed: ${gone.map((c) => c.name).join(" ")}` : "no containers removed", removed: gone.map((c) => c.id) });
+  }
   readAgents(...a: [string[]]) { return this.rec("readAgents", a, [] as Agent[]); }
   agentRun(...a: [string, string, string[]]) { return this.rec("agentRun", a, { status: 0, output: "paired" }); }
   latestRelease() { return this.rec("latestRelease", [], "v0.6.1"); }

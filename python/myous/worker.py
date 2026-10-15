@@ -28,7 +28,7 @@ import threading
 import time
 from pathlib import Path
 
-from myous import files, inbox, processes, relay
+from myous import __version__, files, inbox, processes, relay
 from myous.agent import Agent
 from myous.storage import Storage
 
@@ -580,7 +580,7 @@ class Worker:
                         "message": pairing_message(self.invite["code"], self.agent.alias, self.agent.card)}
                        if self.invite else None),
             "paused": self.paused(), "requests": self.requests, "last": self.last, "paired": self.paired, "work": str(self.work),
-            "updated": int(time.time()),
+            "updated": int(time.time()), "version": __version__,
         })
         self._status_written = time.time()
 

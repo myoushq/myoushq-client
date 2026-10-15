@@ -96,7 +96,7 @@ export function buildMenu(m: Model, windowShown: boolean, act: MenuActions, sys 
     item("Show app log", act.showLog),
     item(c.isDirect ? "Show worker log" : "Show container log", act.containerLog),
     item("Open worker folder", act.openFolder),
-    ...(off ? [] : [item("Remove stale containers", act.removeContainers)]),
+    ...(off ? [] : [item("Remove stale containers…", act.removeContainers)]),
     sep,
     item("Add a worker…", act.addWorker),
     item("Add an agent's folder…", act.addAgentHome),
@@ -163,7 +163,7 @@ function browserEntries(m: Model, act: MenuActions): Entry[] {
 function toolEntries(m: Model, act: MenuActions): Entry[] {
   return [
     ["Show app log", act.showLog], [m.current.config.isDirect ? "Show worker log" : "Show container log", act.containerLog],
-    ["Open worker folder", act.openFolder], ...(m.appConfig.containersOff ? [] : [["Remove stale containers", act.removeContainers] as Entry]), null,
+    ["Open worker folder", act.openFolder], ...(m.appConfig.containersOff ? [] : [["Remove stale containers…", act.removeContainers] as Entry]), null,
     ["Add a worker…", act.addWorker], ["Add an agent's folder…", act.addAgentHome], null,
     ...modeEntries(m.current, m.appConfig.containersOff, act),
   ];

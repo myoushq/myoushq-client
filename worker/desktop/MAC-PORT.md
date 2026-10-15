@@ -268,3 +268,7 @@ notarization rejects the app, Apple's log is in the job's output.
 - New: the first-launch checks, the runtime install cards, the app
   menu's worker items (myous for Mac has them under the menu bar icon's
   Advanced).
+- Remove stale containers… asks which containers go (just the stopped
+  ones, or all; this app's own worker only when it runs an older
+  version, and only when ticked). The Objective-C app removed every
+  worker container, the running worker's too.

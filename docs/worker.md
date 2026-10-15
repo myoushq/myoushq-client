@@ -228,11 +228,12 @@ docker compose -p myous-worker ps && cat ~/.myous-worker/worker.json
 
 `worker.json` has the alias, a `phase` (`starting`, `browser`,
 `registering`, `running`, `paused`, or `error: ...`), the number of
-paired contacts, the last request and when. The log of every request,
-allowed, refused or expired (sent longer ago than its agent waits for
-the answer, so not run), is `worker.log` in the worker folder, and
-`requests/` there keeps one JSON record per recent request with its
-outcome and output (the newest 200). The apps show all of this.
+paired contacts, the last request and when, and the worker's `version`.
+The log of every request, allowed, refused or expired (sent longer ago
+than its agent waits for the answer, so not run), is `worker.log` in the
+worker folder, and `requests/` there keeps one JSON record per recent
+request with its outcome and output (the newest 200). The apps show all
+of this.
 
 - **Pause:** `touch ~/.myous-worker/worker.paused` refuses every request
   until the file is removed (the apps' Pause does this). The user can do

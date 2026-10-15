@@ -4,9 +4,9 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { applyFake, fakeStates, previewBrowserCheck } from "./fake.js";
+import { applyFake, fakeStates, previewBrowserCheck, previewContainers } from "./fake.js";
 import { appMenu, browserItems, buildMenu, MenuActions, moreMenu } from "./menu.js";
-import { ADVANCE_SHOWS, Check, isAdvance, isUrgent, Model, Screen, UNKNOWN_AFTER, Worker, WorkerFiles } from "./model.js";
+import { ADVANCE_SHOWS, Check, classifyContainers, Container, isAdvance, isUrgent, Model, Screen, staleChoice, UNKNOWN_AFTER, Worker, WorkerFiles } from "./model.js";
 import { advanceWords, attentionCard, browserAdvance, browserCard, browserRow, checkAdvance, checklist, hubHost, hubLine, installLine, macBrowserHint, macBrowserQuestion, runtimeCard } from "./setup.js";
 import { byteCount, countdown, dayLabel, defaultDescription, isDefaultDescription, newer, pairingMessage, plural, setHostOs, timeAgo } from "./text.js";
 
@@ -230,7 +230,7 @@ test("the ⋯ menu, and on a Mac the app menu with the same entries", () => {
   evaluate(m);
   const more = moreMenu(m, noop).map((e) => (e ? e[0] : "----"));
   assert.deepEqual(more, ["Open browser", "----", "Settings…", "Check for updates…", "----", "Show app log", "Show container log", "Open worker folder",
-    "Remove stale containers", "----", "Add a worker…", "Add an agent's folder…", "----", "Use a checkout…", "Run without a container…", "----", "Quit myous"]);
+    "Remove stale containers…", "----", "Add a worker…", "Add an agent's folder…", "----", "Use a checkout…", "Run without a container…", "----", "Quit myous"]);
   const { items, actions } = appMenu(m, noop);
   const l = labels(items);
   assert.deepEqual(l.slice(0, 5), ["Settings…", "Check for updates…", "----", "Open browser", "----"]);
@@ -260,6 +260,7 @@ test("the tray menu offers what the state allows", () => {
   assert.ok(actions.has("open"));
   // Ids name their entries: a click on a menu built before the last change still runs the right action.
   assert.ok(actions.has("m:Settings…") && actions.has("m:Stop") && actions.has("m:Add a worker…"));
+  assert.ok(actions.has("m:Remove stale containers…"), "it opens a dialog");
   applyFake(m, "stopped");
   evaluate(m);
   ({ items } = buildMenu(m, false, noop));
@@ -297,6 +298,99 @@ test("the tray menu offers what the state allows", () => {
   assert.ok(items[5].enabled, "an agent opens");
   assert.equal(l4.filter((x, i) => x === "----" && l4[i + 1] === "----").length, 0, "no double separators");
   assert.equal(labels(buildMenu(m, false, noop, "this computer").items)[4], "AGENTS ON THIS COMPUTER");
+});
+
+test("remove stale containers: stopped, another's running, this app's older and current", () => {
+  const m = model();
+  const f = (home: string, project: string, extra: Partial<WorkerFiles> = {}): WorkerFiles => ({ home, folder: home, is_default: home === "/a",
+    project, config: { name: `worker ${home}` }, status: { phase: "running", contacts: 1 }, status_modified: T, requests: [], approvals: [],
+    paused: false, review: "trust", ...extra });
+  m.load([
+    f("/a", "myous-worker"),                                                         // reports no version (from before it did)
+    f("/b", "myous-worker-2", { status: { phase: "running", contacts: 1, version: "0.6.1" } }),  // reports this app's version
+    f("/c", "myous-worker-3", { status: { phase: "running", contacts: 1, version: "0.6.1" }, status_modified: T - 3600 }), // not alive
+    f("/d", "myous-worker-4", { config: { name: "direct", mode: "direct" } }),       // runs without a container
+    f("/e", "myous-worker-5", { status: { phase: "running", contacts: 1, version: "v0.10.0" } }),
+  ]);
+  evaluate(m);
+  const c = (name: string, running: boolean, project: string, version = ""): Container =>
+    ({ id: `id-${name}`, name, state: running ? "running" : "exited", running, image: version ? `ghcr.io/myoushq/worker:${version}` : "local", project, version });
+  const list = classifyContainers([
+    c("a", true, "myous-worker"),              // neither the worker nor the image (a checkout's) says: unknown, older
+    c("b", true, "myous-worker-2", "0.5.0"),   // the image says older, the worker says current: current
+    c("c", true, "myous-worker-3", "0.5.9"),   // the worker isn't alive: its image's version, older
+    c("c2", false, "myous-worker-3", "0.6.1"), // stopped, though it is the app's worker's
+    c("d", true, "myous-worker-4", "0.4.0"),   // a direct worker's leftover: another's
+    c("e", true, "myous-worker-5", "0.6.1"),   // newer than this app: current
+    c("x", true, "worker"),                    // a checkout's test: another's
+    c("y", false, ""),                         // stopped, no project
+  ], m.workers, m.version);
+  assert.deepEqual(list.map((e) => [e.container.name, e.kind, e.worker?.home ?? "", e.version]), [
+    ["a", "older", "/a", ""],
+    ["b", "current", "/b", "0.6.1"],
+    ["c", "older", "/c", "0.5.9"],
+    ["c2", "stopped", "/c", "0.6.1"],
+    ["d", "other", "", "0.4.0"],
+    ["e", "current", "/e", "v0.10.0"],
+    ["x", "other", "", ""],
+    ["y", "stopped", "", ""],
+  ]);
+  // A worker that says nothing: its image's tag decides.
+  const byTag = (v: string) => classifyContainers([c("a", true, "myous-worker", v)], m.workers, m.version)[0];
+  assert.deepEqual([byTag("0.6.1").kind, byTag("0.6.0").kind, byTag("0.6.0").version], ["current", "older", "0.6.0"]);
+  const ids = (cs: Container[]) => cs.map((x) => x.name);
+  // Just the stopped ones (the default); All adds the others; an older worker of this app only when ticked; never a current one.
+  assert.deepEqual(staleChoice(list, false, new Set()), { stopped: list.filter((e) => e.kind === "stopped").map((e) => e.container), running: [] });
+  assert.deepEqual(ids(staleChoice(list, false, new Set()).stopped), ["c2", "y"]);
+  assert.deepEqual(ids(staleChoice(list, true, new Set()).running), ["d", "x"]);
+  assert.deepEqual(ids(staleChoice(list, true, new Set(["id-a"])).running), ["d", "x", "a"]);
+  assert.deepEqual(ids(staleChoice(list, false, new Set(["id-c", "id-b", "id-e"])).running), ["c"], "a current one can't be ticked in");
+  // The previews: with two workers, one of each kind; with one, the second worker's is another's.
+  applyFake(m, "workers");
+  evaluate(m);
+  assert.deepEqual(classifyContainers(previewContainers(m.version), m.workers, m.version).map((e) => e.kind),
+    ["older", "current", "other", "stopped", "stopped"]);
+  applyFake(m, "running");
+  evaluate(m);
+  assert.deepEqual(classifyContainers(previewContainers(m.version), m.workers, m.version).map((e) => e.kind),
+    ["older", "other", "other", "stopped", "stopped"]);
+});
+
+test("a worker whose container the owner removed is stopped, not stopped on its own", () => {
+  const m = model();
+  let now = T;
+  m.now = () => now;
+  const sent: string[] = [];
+  const needy: string[] = [];
+  m.notify = (kind) => sent.push(kind);
+  m.needsAttention = (w) => needy.push(w.attention);
+  m.ticks = 5;
+  const files = (): WorkerFiles => ({ home: "/h", folder: "h", is_default: true, project: "myous-worker", config: { name: "Max's PC" },
+    status: { phase: "running", contacts: 1 }, status_modified: T, requests: [], approvals: [], paused: false, review: "trust" });
+  m.load([files()]);
+  const w = m.current;
+  evaluate(m);
+  assert.equal(w.screen, "running");
+  // Removed a second later: its status file is still fresh, but the worker is gone.
+  now += 1;
+  w.removedByOwner(now);
+  m.load([files()]);
+  evaluate(m);
+  assert.equal(w.screen, "stopped");
+  assert.equal(w.stateWord, "Stopped");
+  now += 60;
+  evaluate(m);
+  assert.equal(w.attention, "");
+  assert.deepEqual([sent, needy], [[], []]);
+  // Start runs it again (on this app's version), and a stop after that on its own is news again.
+  w.launchedAt = now;
+  w.stopDoneAt = 0;
+  m.load([{ ...files(), status_modified: now }]);
+  evaluate(m);
+  assert.equal(w.screen, "running");
+  now += 60;
+  evaluate(m);
+  assert.equal(w.attention, "The worker stopped on its own.");
 });
 
 test("words and numbers", () => {
