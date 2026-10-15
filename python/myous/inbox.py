@@ -12,24 +12,27 @@ History records, oldest first:
                                             a contact's card (what it says about itself), or ours sent to it
   {"seq", "type": "fetched", "direction": "out", "of": <seq>, "path", "text", "at"}
 The "state" document keeps the last seq read and the gift wraps already
-handled; "gave_up" the requests a command stopped waiting for (give_up).
+handled; "gave_up" the requests sent to a worker whose command is waiting
+for the reply (waiting) or stopped waiting (give_up).
 
 Replies to blocking requests (result, ack, and files tagged ["w", "file"])
 are consumed by the command that waits for them, so `unread` skips them.
-A reply to a request the command gave up on is shown instead, once, as a
-late reply; an "expired" answer to it stays hidden.
+A reply to a request whose command gave up on it, or was killed while it
+waited, is shown instead, once, as a late reply; an "expired" answer to it
+only when the agent was told the worker might still run the request.
 
 Callers hold `storage.lock()` around `record` and `handle_wraps`.
 """
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 
 from nostr_sdk import Event, Keys
 
-from myous import contacts, files, parts, relay
+from myous import contacts, files, parts, processes, relay
 from myous.storage import Storage
 
 SEEN_RETENTION = 3 * 86400  # longer than relay retention plus timestamp jitter
@@ -159,12 +162,46 @@ def _text_entry(st: Storage, base: dict, text: str, sender: str, now: int) -> di
 def give_up(st: Storage, rid: str, request: dict) -> None:
     """Remember a request whose command stopped waiting for the reply:
     {"op": "exec"|"put"|"get", "peer", "alias", "cmd" (exec) or "remote"
-    and "local" (put, get), "sent_at", "expires" (when its ttl runs out)}.
-    Its reply, if one comes, is then shown as a late reply."""
+    and "local" (put, get), "sent_at", "expires" (when its ttl runs out),
+    "ttl", "wait" (how long the command waited)}. Its reply, if one comes,
+    is then shown as a late reply."""
     now = time.time()
     gave_up = {k: r for k, r in st.get("gave_up", {}).items() if r.get("expires", 0) > now - GAVE_UP_KEEP}
     gave_up[rid] = request
     st.put("gave_up", gave_up)
+
+
+def waiting(st: Storage, rid: str, request: dict) -> None:
+    """Remember a request just sent, while this process waits for the
+    reply: as give_up, with the process's pid and when it started (a later
+    process may get the same pid). Its reply stays the command's while the
+    process runs; if it is killed instead of giving up (an agent's tool may
+    end a command that runs long), the reply shows as a late reply."""
+    request = dict(request, pid=os.getpid())
+    started = processes.created_at(os.getpid())
+    if started is not None:
+        request["pid_started"] = started
+    give_up(st, rid, request)
+
+
+def answered(st: Storage, rid: str) -> None:
+    """Forget a request whose reply came while its command waited."""
+    gave_up = st.get("gave_up", {})
+    if gave_up.pop(rid, None) is not None:
+        st.put("gave_up", gave_up)
+
+
+def _still_waiting(r: dict) -> bool:
+    """Whether the process that sent a request (waiting) still waits for
+    its reply: it runs, and it is that process, not a later one with its
+    pid."""
+    pid = r.get("pid")
+    if not isinstance(pid, int) or isinstance(pid, bool) or not processes.alive(pid):
+        return False
+    if r.get("pid_started") is None:
+        return True   # when it started couldn't be told: running is all there is
+    started = processes.created_at(pid)
+    return started is not None and abs(started - r["pid_started"]) < 2
 
 
 def _answers(e: dict) -> str | None:
@@ -179,22 +216,33 @@ def _answers(e: dict) -> str | None:
 
 
 def late_request(e: dict, gave_up: dict) -> dict | None:
-    """The given-up request (give_up) that this reply answers, or None.
-    The sender is checked too: no other contact may answer a request."""
+    """The request this reply answers if its command no longer waits for
+    it (it gave up, or was killed), or None. The sender is checked too: no
+    other contact may answer a request."""
     rid = _answers(e)
     r = gave_up.get(rid) if rid else None
-    return r if r and r.get("peer") == e.get("peer") else None
+    return r if r and r.get("peer") == e.get("peer") and not _still_waiting(r) else None
 
 
 def consumed(e: dict, gave_up: dict | None = None) -> bool:
     """Whether an entry is a reply that a blocking command waits for,
-    rather than something to show the agent. A reply to a request the
-    command gave up on (`gave_up`, the document give_up writes) is shown,
-    unless it says the request expired: the agent knows it gave up."""
+    rather than something to show the agent. A reply to a request whose
+    command no longer waits (`gave_up`, the document give_up and waiting
+    write) is shown; one that says the request expired only when its ttl
+    was longer than the wait: the agent was then told the worker might
+    still run it, otherwise that it won't."""
     if _answers(e) is None:
         return False
-    if late_request(e, gave_up or {}) is None:
+    r = late_request(e, gave_up or {})
+    if r is None:
         return True
+    if not _expired(e):
+        return False
+    ttl, wait = r.get("ttl"), r.get("wait")
+    return not (isinstance(ttl, (int, float)) and isinstance(wait, (int, float)) and ttl > wait)
+
+
+def _expired(e: dict) -> bool:
     return e.get("type") == "ack" and not e.get("ok") and (e.get("error") or "").startswith("expired")
 
 
@@ -260,7 +308,9 @@ def _reply_text(e: dict, late: str, what: str) -> str:
         if e.get("truncated"):
             lines.append("(the output was cut to fit the message)")
         return "\n".join(lines)
-    if not e.get("ok"):
+    if _expired(e):
+        answer = e["error"]
+    elif not e.get("ok"):
         answer = "refused: " + (e.get("error") or "no reason given")
     elif "path" in e:
         answer = f"written: {e['path']} ({e.get('size')} bytes)"

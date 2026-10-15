@@ -3,6 +3,9 @@
 import contextlib
 import io
 import json
+import os
+import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -11,7 +14,7 @@ from unittest import mock
 
 from nostr_sdk import EventBuilder, Keys, Kind, Tag, nip59_make_gift_wrap
 
-from myous import cli, contacts, files, inbox, relay, vm
+from myous import cli, contacts, files, inbox, processes, relay, vm
 from myous.agent import Agent
 from myous.muse import watcher
 from myous.storage import FileStorage, Storage
@@ -243,12 +246,44 @@ class LateReplies(unittest.TestCase):
         self.assertEqual(e["text"], f"late result of exec `ls` (sent {self.clock}): exit 0\na")
 
     def test_an_expired_answer_stays_hidden_a_refusal_shows(self):
-        self.give_up("1" * 32, op="exec", cmd="make test")
-        self.give_up("2" * 32, op="exec", cmd="rm -rf build")
-        self.reply("ack", "1" * 32, ok=False, error="expired: sent 4000 seconds ago, its ttl is 3600 seconds; not run")
+        self.give_up("1" * 32, op="exec", cmd="make test", ttl=150, wait=150)
+        self.give_up("2" * 32, op="exec", cmd="rm -rf build", ttl=150, wait=150)
+        self.reply("ack", "1" * 32, ok=False, error="expired: sent 4000 seconds ago, its ttl is 150 seconds; not run")
         self.reply("ack", "2" * 32, ok=False, error="refused by the owner")
         self.assertEqual([e["text"] for e in inbox.unread(self.st)],
                          [f"late answer to exec `rm -rf build` (sent {self.clock}): refused: refused by the owner"])
+
+    def test_an_expired_answer_shows_when_the_ttl_outlived_the_wait(self):
+        # The timeout said the worker might still run it until its ttl ran out.
+        self.give_up("1" * 32, op="exec", cmd="make test", ttl=3600, wait=150)
+        self.give_up("2" * 32, op="exec", cmd="make lint")   # from before ttl and wait were kept: hidden
+        why = "expired: sent 2 hours ago, its ttl is 3600 seconds; not run"
+        self.reply("ack", "1" * 32, ok=False, error=why)
+        self.reply("ack", "2" * 32, ok=False, error=why)
+        self.assertEqual([e["text"] for e in inbox.unread(self.st)],
+                         [f"late answer to exec `make test` (sent {self.clock}): {why}"])
+
+    def test_a_reply_its_command_still_waits_for_stays_the_commands(self):
+        inbox.waiting(self.st, "1" * 32, {"op": "exec", "cmd": "make test", "peer": self.worker, "alias": "Sam's Mac",
+                                          "sent_at": self.sent, "expires": self.sent + 3600})
+        self.assertEqual(self.st.get("gave_up")["1" * 32]["pid"], os.getpid())
+        self.reply("result", "1" * 32, exit=0, stdout="", stderr="")
+        self.assertEqual(inbox.unread(self.st), [])
+        inbox.answered(self.st, "1" * 32)   # the command took it
+        self.assertEqual(self.st.get("gave_up"), {})
+
+    def test_a_reply_whose_command_was_killed_shows(self):
+        gone = subprocess.Popen([sys.executable, "-c", "pass"])
+        gone.wait()
+        started = processes.created_at(os.getpid())
+        self.give_up("1" * 32, op="exec", cmd="make test", pid=gone.pid)
+        # This process's pid, but a process that started earlier: another one, gone, had it.
+        self.give_up("2" * 32, op="exec", cmd="make lint", pid=os.getpid(), pid_started=started - 3600)
+        self.reply("result", "1" * 32, exit=0, stdout="", stderr="")
+        self.reply("result", "2" * 32, exit=1, stdout="", stderr="")
+        self.assertEqual([e["text"] for e in inbox.unread(self.st)],
+                         [f"late result of exec `make test` (sent {self.clock}): exit 0",
+                          f"late result of exec `make lint` (sent {self.clock}): exit 1"])
 
     def test_only_the_worker_asked_may_answer(self):
         self.give_up("1" * 32, op="exec", cmd="make test")

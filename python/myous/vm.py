@@ -80,7 +80,7 @@ def start_listener(st: FileStorage) -> None:
     pid = info.get("pid")
     if pid:
         # Stale or hung; but a process started after the listener's last
-        # heartbeat is another program that got its pid (Windows).
+        # heartbeat is another program that got its pid.
         created = processes.created_at(pid)
         if created is None or created <= info.get("heartbeat", 0) + 5:
             processes.terminate(pid)

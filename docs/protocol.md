@@ -428,8 +428,10 @@ request it gave up on (the worker was off, or busy) never runs later;
 the Python client does (`exec`: its timeout plus 30 seconds; `cp`: its
 timeout). A longer `ttl` leaves a request for a worker that is off, to
 run when it comes back within that time. A requester may show its agent
-a reply that arrives after it stopped waiting, as the Python client does
-in `inbox`, and hide an `expired` answer to such a request.
+a reply that arrives after it stopped waiting (or after the waiting
+command was killed), as the Python client does in `inbox`, and an
+`expired` answer to such a request only when its `ttl` was longer than
+the wait (the agent was told the worker might still run it).
 
 ### 7.2 Review hook
 
