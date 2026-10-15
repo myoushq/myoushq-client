@@ -95,6 +95,7 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with: { node-version: "22" }
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        with: { components: rustfmt }
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with: { python-version: "3.12" }
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
@@ -107,6 +108,10 @@ jobs:
       # (Tauri's externalBin: the Rust build needs it in place).
       - run: sh worker/build-worker.sh x86_64-unknown-linux-gnu worker/desktop/src-tauri/binaries "$(node -p 'require("./worker/desktop/package.json").version')"
       - run: cd worker/desktop && npm ci && npm test && npm run build:ui
+      # Formatting is the same everywhere. Clippy runs on Windows and the
+      # Mac (below), not yet here: it hasn't been checked warning-free for
+      # Linux's cfg.
+      - run: cd worker/desktop/src-tauri && cargo fmt --check
       - run: cd worker/desktop/src-tauri && cargo test -- --nocapture
       - name: every screen renders
         run: |
@@ -143,11 +148,16 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with: { node-version: "22" }
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        with: { components: "clippy, rustfmt" }
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with: { go-version-file: go/go.mod, cache-dependency-path: go/go.sum }
       - run: sh worker/build-worker.sh x86_64-pc-windows-msvc worker/desktop/src-tauri/binaries "$(node -p 'require("./worker/desktop/package.json").version')"
         shell: bash
       - run: cd worker/desktop && npm ci && npm test && npm run build:ui
+      # Clippy on the app, not yet its tests: two test helpers in direct.rs
+      # (Lines, recorder) are unused on Windows. --all-targets once they're
+      # gated as the tests that use them are.
+      - run: cd worker/desktop/src-tauri && cargo fmt --check && cargo clippy -- -D warnings
       - run: cd worker/desktop/src-tauri && cargo test -- --nocapture
       - run: cd worker/desktop && npx tauri build --bundles nsis
   mac-app:
@@ -161,10 +171,12 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with: { node-version: "22" }
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        with: { components: "clippy, rustfmt" }
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with: { go-version-file: go/go.mod, cache-dependency-path: go/go.sum }
       - run: sh worker/build-worker.sh host worker/desktop/src-tauri/binaries "$(node -p 'require("./worker/desktop/package.json").version')"
       - run: cd worker/desktop && npm ci && npm test && npm run build:ui
+      - run: cd worker/desktop/src-tauri && cargo fmt --check && cargo clippy --all-targets -- -D warnings
       - run: cd worker/desktop/src-tauri && cargo test -- --nocapture
       - run: cd worker/desktop && ./make-mac.sh
   audit:
