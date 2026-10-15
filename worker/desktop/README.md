@@ -65,8 +65,9 @@ its image's tag; one that says neither counts as older) has a box of its
 own, unticked: removing its container stops the worker, which then
 shows Stopped, and Start runs it on the app's version. One on the app's
 version is kept. Stopped containers are removed with a plain `rm`, so
-one that started in the meantime is refused, not stopped; the log says
-what was removed and what wasn't.
+one that started in the meantime is refused, not stopped; running ones
+the owner chose are stopped first, as Stop does, then removed. The log
+says what was removed and what wasn't.
 
 ## The first launch
 
@@ -377,4 +378,6 @@ Python 3.10+ to make it with).
 `MYOUS_TEST_IMAGE=alpine:3.22 cargo test -- --ignored real_engine` lists
 and removes two containers of its own on the real runtime (one created,
 one running, from an image already pulled): a plain `rm` refuses the
-running one, `rm -f` removes it. No other container is touched.
+running one, which is then stopped (`sleep` ignores the stop signal, so
+the runtime kills it after its 10 seconds) and removed with `rm -f`. No
+other container is touched.

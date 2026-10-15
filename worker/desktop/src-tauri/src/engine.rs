@@ -826,12 +826,19 @@ pub struct Removal {
 
 /// Removes the containers the owner picked: the stopped ones with a plain
 /// `rm`, so one that started in the meantime is refused rather than
-/// stopped; the running ones (each chosen as such) with `rm -f`.
+/// stopped; the running ones (each chosen as such) stopped first, as Stop's
+/// `compose down` does (the worker answers a request it is running "stopped
+/// by the owner"; the runtime kills it after its grace period), then `rm -f`.
 pub fn remove(stopped: &[Container], running: &[Container]) -> Removal {
     let b = bin();
     let (mut removed, mut names, mut refused) = (Vec::new(), Vec::new(), Vec::new());
     let picked = stopped.iter().map(|c| (c, false));
     for (c, force) in picked.chain(running.iter().map(|c| (c, true))) {
+        if force {
+            let mut stop = command(&b);
+            stop.args(["stop", &c.id]);
+            run_capture(stop, Duration::from_secs(60));
+        }
         let mut cmd = command(&b);
         cmd.arg("rm");
         if force {
