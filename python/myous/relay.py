@@ -97,11 +97,19 @@ class Connection:
         return any(s == RelayStatus.CONNECTED for s in statuses)
 
     async def publish(self, event: Event, relays: list[RelayUrl] | None = None) -> None:
+        if not await self.connected():
+            raise RelayError(self._unreachable())
         target = SendEventTarget.to(relays or self.relays)
         out = await self.client.send_event(event, target)
         if not out.success:
-            reasons = "; ".join(f"{url}: {why}" for url, why in out.failed.items())
-            raise RelayError(f"no relay accepted the event ({reasons or 'no response'})")
+            reasons = "; ".join(f"{url}: {why}" for url, why in out.failed.items()) or "no response"
+            if not await self.connected():
+                raise RelayError(self._unreachable(reasons))
+            raise RelayError(f"no relay accepted the event ({reasons})")
+
+    def _unreachable(self, why: str | None = None) -> str:
+        why = why or "; ".join(f"{u}: {self.failures.get(str(u), 'not connected')}" for u in self.relays)
+        return f"network problem: couldn't reach the relay ({why}); nothing was sent, try again"
 
     async def register(self, alias: str, difficulty: int, about: str = "myoushq agent") -> None:
         """Publish our profile. The first one, with proof of work, registers us."""

@@ -141,7 +141,7 @@ func run(ctx context.Context, cmd string, args []string) error {
 			}
 		}
 		if !agent.IsRegistered() {
-			fmt.Printf("registering with %s (proof of work, a few seconds)...\n", agent.Hub.URL)
+			fmt.Printf("registering with %s (proof of work: seconds, up to a minute on a slow machine)...\n", agent.Hub.URL)
 		}
 		if err := agent.Register(ctx, *alias); err != nil {
 			return err

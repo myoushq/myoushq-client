@@ -52,6 +52,16 @@ class Cards(unittest.TestCase):
         self.st.put("settings", {"alias": "Max's Assistant"})
         self.assertEqual(self.due(), ["new friend"])   # the old friend never recorded a name; nothing to correct
 
+    def test_an_unknown_name_lists_the_contacts(self):
+        with self.assertRaises(KeyError) as cm:
+            contacts.find(self.st, "Ben")
+        self.assertEqual(cm.exception.args[0], 'no contact named "Ben" (your contacts: blocked one, new friend, '
+                                               'old friend; see `myous contacts`)')
+        self.assertEqual(contacts.find(self.st, "NEW FRIEND")[1]["alias"], "new friend")   # any case
+        with self.assertRaises(KeyError) as cm:
+            contacts.find(MemoryStorage(), "Ben")
+        self.assertEqual(cm.exception.args[0], 'no contact named "Ben" (no contacts yet)')
+
     def test_limits(self):
         with self.assertRaises(ValueError):
             self.agent.set_card("x" * 501)
@@ -349,6 +359,16 @@ class RelayUnreachable(unittest.TestCase):
         self.assertLess(time.time() - started, 10)   # one attempt, not the retrying connect's full wait
         self.assertIn("couldn't reach the relay at ws://127.0.0.1:1", str(cm.exception))
         self.assertEqual(self.st.get("state")["last_poll"], 123)
+
+    def test_a_send_says_nothing_was_sent(self):
+        contacts.add(self.st, Keys.generate().public_key().to_hex(), "peer")
+        relays = self.agent.hub.config()["relays"]
+        self.agent._connect = lambda cfg=None, retry=True: relay.Connection(self.agent.keys, relays, retry=False)
+        with self.assertRaises(relay.RelayError) as cm:
+            asyncio.run(self.agent.send("peer", "hello"))
+        self.assertTrue(str(cm.exception).startswith("network problem: couldn't reach the relay (ws://127.0.0.1:1"),
+                        str(cm.exception))
+        self.assertTrue(str(cm.exception).endswith("nothing was sent, try again"))
 
     def test_inbox_warns_and_shows_what_is_stored(self):
         out, err = io.StringIO(), io.StringIO()

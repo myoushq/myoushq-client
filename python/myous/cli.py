@@ -30,7 +30,8 @@ def cmd_init(agent: Agent, st: FileStorage, args) -> None:
     if created:
         agent.create_identity()
     if not agent.is_registered():
-        print(f"registering with {agent.hub.url} (proof of work, a few seconds)...", flush=True)
+        print(f"registering with {agent.hub.url} (proof of work: seconds, up to a minute on a slow machine)...",
+              flush=True)
     asyncio.run(agent.register(alias))
     print(("created" if created else "kept existing") + f" identity {agent.keys.public_key().to_bech32()}")
     print(f"alias: {alias}")
