@@ -5,8 +5,11 @@ import contextlib
 import io
 import json
 import os
+import sys
+import tempfile
 import time
 import unittest
+from unittest import mock
 
 try:
     from inbox_test import MemoryStorage  # unittest discover puts tests/ on the path
@@ -376,6 +379,41 @@ class HubConfigBackoff(unittest.TestCase):
         self.assertEqual(len(calls), 2)
 
 
+class StdinHasData(unittest.TestCase):
+    """cli.stdin_has_data: input piped or redirected in, never a hang or a
+    false alarm on a terminal, /dev/null or an empty pipe."""
+
+    def check(self, f):
+        with f, mock.patch.object(sys, "stdin", f):
+            return cli.stdin_has_data()
+
+    def pipe(self, data, close=True):
+        r, w = os.pipe()
+        if data:
+            os.write(w, data)
+        if close:
+            os.close(w)
+        else:
+            self.addCleanup(os.close, w)
+        return open(r)
+
+    def test_pipes(self):
+        self.assertTrue(self.check(self.pipe(b"print(1)\n")))
+        self.assertFalse(self.check(self.pipe(None)))                  # closed, nothing written
+        started = time.time()
+        self.assertFalse(self.check(self.pipe(None, close=False)))     # open, nothing written: an agent's shell
+        self.assertLess(time.time() - started, 2)
+
+    def test_files_and_devices(self):
+        with tempfile.NamedTemporaryFile("w", delete=False) as f:
+            f.write("print(1)\n")
+        self.addCleanup(os.unlink, f.name)
+        self.assertTrue(self.check(open(f.name)))
+        open(f.name, "w").close()
+        self.assertFalse(self.check(open(f.name)))                     # an empty file
+        self.assertFalse(self.check(open(os.devnull)))
+
+
 class CliTtl(unittest.TestCase):
     """--ttl on `myous exec` and `myous cp` reaches the request."""
 
@@ -400,6 +438,11 @@ class CliTtl(unittest.TestCase):
         contacts.add(self.st, "d" * 64, "box")
         self.agent = self.FakeAgent(self.st)
         self.parser = cli.build_parser()
+        devnull = open(os.devnull)
+        self.addCleanup(devnull.close)
+        patcher = mock.patch.object(sys, "stdin", devnull)   # whatever the test runner's stdin holds
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def run_cli(self, *argv):
         args = self.parser.parse_args(argv)
@@ -409,6 +452,17 @@ class CliTtl(unittest.TestCase):
             except SystemExit as e:
                 self.assertEqual(e.code, 0)
         return self.agent.calls[-1]
+
+    def test_exec_refuses_input_it_would_drop(self):
+        # `myous exec W -- python3 - <<'EOF'` feeds the script to this
+        # command, not to the worker: refuse instead of running `python3 -`
+        # on nothing.
+        args = self.parser.parse_args(["exec", "box", "--", "python3", "-"])
+        with mock.patch.object(cli, "stdin_has_data", lambda: True), self.assertRaises(SystemExit) as cm:
+            args.func(self.agent, self.st, args)
+        self.assertIn("doesn't send its input to the worker", str(cm.exception.code))
+        self.assertIn("myous exec \"box\" -- 'python3 - <<\"EOF\"", str(cm.exception.code))
+        self.assertEqual(self.agent.calls, [])
 
     def test_ttl_passes_through(self):
         self.assertEqual(self.run_cli("exec", "--ttl", "3600", "box", "--", "ls"), ("exec", "box", "ls", 120, 3600))

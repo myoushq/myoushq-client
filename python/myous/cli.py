@@ -307,11 +307,58 @@ def _exec_options(args) -> None:
     args.cmd = args.cmd[cut:]
 
 
+def stdin_has_data(wait: float = 0.2) -> bool:
+    """Whether something was piped or redirected into this command's
+    stdin: a file or a here-document, or a pipe with data in it. Waits at
+    most `wait` seconds for a pipe's writer; a terminal, /dev/null, and a
+    pipe that is empty (closed, or open with nothing written, as agents'
+    shells often leave it) are no data. A pipe can't be peeked at, so a
+    byte may be read: call this only where the input is refused anyway."""
+    import stat
+    try:
+        fd = sys.stdin.fileno()
+        if os.isatty(fd):
+            return False
+        mode = os.fstat(fd).st_mode
+        if stat.S_ISREG(mode):
+            return os.lseek(fd, 0, os.SEEK_CUR) < os.fstat(fd).st_size
+        if not (stat.S_ISFIFO(mode) or stat.S_ISSOCK(mode)):
+            return False   # /dev/null, or another device
+        if os.name == "nt":
+            return _windows_pipe_has_data(fd, wait)
+        import select
+        if not select.select([fd], [], [], wait)[0]:
+            return False   # nothing written (yet): not ours to wait for
+        return os.read(fd, 1) != b""   # readable: data, or the end of an empty pipe
+    except (AttributeError, OSError, ValueError):
+        return False
+
+
+def _windows_pipe_has_data(fd: int, wait: float) -> bool:
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+    peek = ctypes.windll.kernel32.PeekNamedPipe
+    peek.argtypes = [wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD, ctypes.c_void_p,
+                     ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p]
+    handle, avail, deadline = msvcrt.get_osfhandle(fd), wintypes.DWORD(0), time.monotonic() + wait
+    while True:
+        if not peek(handle, None, 0, None, ctypes.byref(avail), None):
+            return False   # closed, or not a pipe we can look into
+        if avail.value or time.monotonic() >= deadline:
+            return bool(avail.value)
+        time.sleep(0.02)
+
+
 def cmd_exec(agent: Agent, st: FileStorage, args) -> None:
     _exec_options(args)
     cmd = " ".join(args.cmd[1:] if args.cmd[:1] == ["--"] else args.cmd)
     if not cmd.strip():
         sys.exit("give the command to run: myous exec CONTACT -- CMD...")
+    if stdin_has_data():
+        sys.exit("error: myous exec doesn't send its input to the worker, and something was piped or redirected "
+                 "into it (a here-document?). Put the script inside the command, as one quoted argument:\n"
+                 f"  myous exec \"{args.contact}\" -- 'python3 - <<\"EOF\"\n  print(\"hello\")\n  EOF'")
     try:
         result = asyncio.run(agent.exec(args.contact, cmd, timeout=args.timeout, ttl=args.ttl))
     except TimeoutError as e:

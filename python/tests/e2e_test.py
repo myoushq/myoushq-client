@@ -68,10 +68,11 @@ class EndToEnd(unittest.TestCase):
         shutil.rmtree(cls.tmp, ignore_errors=True)
 
     @classmethod
-    def run_cli(cls, agent: str, *args: str) -> subprocess.CompletedProcess:
+    def run_cli(cls, agent: str, *args: str, input: str | None = None) -> subprocess.CompletedProcess:
         env = dict(os.environ, MYOUS_HOME=str(cls.tmp / agent))
+        stdin = {"input": input} if input is not None else {"stdin": subprocess.DEVNULL}
         return subprocess.run([sys.executable, "-m", "myous", *args], env=env,
-                              capture_output=True, text=True, timeout=120)
+                              capture_output=True, text=True, timeout=120, **stdin)
 
     @classmethod
     def run_ok(cls, agent: str, *args: str) -> str:
@@ -268,6 +269,18 @@ class EndToEnd(unittest.TestCase):
             self.assertEqual(self.run_ok("bob", "exec", "alice", "--", "echo", "hi").strip(), "hi")
             r = self.run_cli("bob", "exec", "alice", "--", "exit 7")
             self.assertEqual(r.returncode, 7)
+
+            # An inline script as skill.md writes it: the here-document inside one quoted argument.
+            inline = ("exec bob_myous exec alice -- 'python3 - <<\"EOF\"\n"
+                      "import sys\nprint(\"inline\", sys.version_info[0], \"$HOME\")\nEOF'\n")   # neither shell expands it
+            r = subprocess.run(["sh", "-c", inline.replace("bob_myous", f"'{sys.executable}' -m myous")],
+                               env=dict(os.environ, MYOUS_HOME=str(self.tmp / "bob")), stdin=subprocess.DEVNULL,
+                               capture_output=True, text=True, timeout=120)
+            self.assertEqual((r.returncode, r.stdout), (0, "inline 3 $HOME\n"), r.stderr)
+            # The here-document outside the argument would go to bob's myous, not the worker: refused.
+            r = self.run_cli("bob", "exec", "alice", "--", "python3", "-", input="print(1)\n")
+            self.assertEqual(r.returncode, 1)
+            self.assertIn("doesn't send its input to the worker", r.stderr)
 
             src = self.tmp / "in.txt"
             src.write_text("in via cp\n")
