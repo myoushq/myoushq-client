@@ -56,7 +56,12 @@ objc2-app-kit = { version = "0.3", default-features = false, features = ["std", 
 objc2-user-notifications = { version = "0.3.2", default-features = false, features = ["std", "block2", "bitflags", "UNNotification", "UNNotificationAction", "UNNotificationCategory", "UNNotificationContent", "UNNotificationRequest", "UNNotificationResponse", "UNNotificationSettings", "UNNotificationSound", "UNNotificationTrigger", "UNUserNotificationCenter"] }
 auto-launch = "0.6"
 
+# Thin LTO with the default 16 codegen units: in CI the app's own crate
+# with fat LTO and one codegen unit took about 3 of the 6 minutes of each
+# release build (2m51s on Linux, 3m19s on Windows, 2026-10-14; the Mac's
+# universal build does it once per architecture), for an app whose
+# installers are 6 to 9 MB. Expect the binary a little larger (compare
+# the bundles of the first run) and each build minutes shorter.
 [profile.release]
 strip = true
-lto = true
-codegen-units = 1
+lto = "thin"
