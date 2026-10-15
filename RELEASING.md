@@ -72,8 +72,9 @@ Current release key: `SHA256:PevPZ8ORUnoGw3hg9Febw7KjXxCUv+sMkAXzw+rjQuk` (ED255
    tests and the audit (PyPI and the image for the Python tests, crates.io
    for Rust's, npm for TypeScript's), so a failure elsewhere doesn't stop
    it; the apps wait for the Python tests, and only the GitHub release
-   waits for every test, the audit and the apps. Registries are reached with
-   their trusted publishing (OpenID Connect): no tokens are stored. Every
+   waits for every test, the audit, the apps and the worker image's tags
+   (the apps pull `ghcr.io/myoushq/worker:X.Y.Z`). Registries are reached
+   with their trusted publishing (OpenID Connect): no tokens are stored. Every
    step skips what is already published, so the workflow can be re-run for
    a tag from the Actions tab ("Run workflow", give the tag) after a
    registry or secret is set up. npm is staged, not published: after the

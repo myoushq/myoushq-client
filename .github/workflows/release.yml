@@ -449,7 +449,8 @@ jobs:
 
   github-release:
     name: GitHub release
-    needs: [verify, test-python, test-go, test-rust, test-typescript, audit, mac-app, desktop-app-linux, desktop-app-windows]
+    # The apps pull ghcr.io/myoushq/worker:X.Y.Z: no download before it exists.
+    needs: [verify, test-python, test-go, test-rust, test-typescript, audit, image-manifest, mac-app, desktop-app-linux, desktop-app-windows]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
