@@ -9,13 +9,12 @@ import os
 import sys
 import time
 
-from myous import __version__, contacts, inbox, qr, vm
+from myous import __version__, contacts, inbox, qr, storage, vm
 from myous.agent import Agent, IdentityError, WorkerError
 from myous.files import BlobError
 from myous.hub import DEFAULT_HUB, HubError
 from myous.pairing import PairingError
 from myous.relay import RelayError
-from myous import storage
 from myous.storage import FileStorage
 
 
@@ -363,7 +362,8 @@ def cmd_exec(agent: Agent, st: FileStorage, args) -> None:
     if stdin_has_data():
         sys.exit("error: myous exec doesn't send its input to the worker, and something was piped or redirected "
                  "into it (a here-document?). Put the script inside the command, as one quoted argument:\n"
-                 f"  myous exec \"{args.contact}\" -- 'python3 - <<\"EOF\"\n  print(\"hello\")\n  EOF'")
+                 f"  myous exec \"{args.contact}\" -- 'python3 - <<\"EOF\"\n  print(\"hello\")\n  EOF'\n"
+                 "If that input isn't meant for the worker (a loop reading a file), add </dev/null to the command.")
     try:
         result = asyncio.run(agent.exec(args.contact, cmd, timeout=args.timeout, ttl=args.ttl))
     except TimeoutError as e:
