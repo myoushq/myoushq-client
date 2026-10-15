@@ -2,11 +2,14 @@ package myous
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -45,6 +48,34 @@ type Storage interface {
 // ok=false instead of blocking when wait is false and the lock is taken.
 type Locker interface {
 	Lock(name string, wait bool) (unlock func(), ok bool, err error)
+}
+
+// HistoryTail is optional. Implement it if reading the whole history is
+// expensive (it only grows): ReadHistorySince returns the entries whose
+// Seq is seq or more, oldest first, as ReadHistory filtered would. Entries
+// are appended in Seq order (under the "state" lock), so the newest are
+// at the end. Listen and Unread use it to look at what is new.
+type HistoryTail interface {
+	ReadHistorySince(seq int) ([]Entry, error)
+}
+
+// historySince is ReadHistorySince, or ReadHistory filtered for a storage
+// without it.
+func historySince(st Storage, seq int) ([]Entry, error) {
+	if t, ok := st.(HistoryTail); ok {
+		return t.ReadHistorySince(seq)
+	}
+	history, err := st.ReadHistory()
+	if err != nil {
+		return nil, err
+	}
+	var entries []Entry
+	for _, e := range history {
+		if e.Seq >= seq {
+			entries = append(entries, e)
+		}
+	}
+	return entries, nil
 }
 
 // FileStorage keeps everything in one directory: key, contacts.json,
@@ -194,6 +225,85 @@ func (s *FileStorage) ReadHistory() ([]Entry, error) {
 		entries = append(entries, e)
 	}
 	return entries, scanner.Err()
+}
+
+// historyChunk is how much of messages.jsonl ReadHistorySince reads at a
+// time, from the end.
+var historyChunk = 64 << 10
+
+// ReadHistorySince reads messages.jsonl backwards, from the end, and stops
+// at the first entry older than seq: what is new costs the same however
+// long the history has grown (ReadHistory decodes all of it). Lines are as
+// ReadHistory takes them: blank ones skipped, CRLF endings (Python on
+// Windows) and a last line without its newline taken too.
+func (s *FileStorage) ReadHistorySince(seq int) ([]Entry, error) {
+	f, err := os.Open(s.Path("messages.jsonl"))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	end, err := f.Seek(0, io.SeekEnd)
+	if err != nil {
+		return nil, err
+	}
+	var newest []Entry // newest first
+	// take decodes one line; done is true once it is older than seq.
+	take := func(line []byte) (done bool, err error) {
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
+			return false, nil
+		}
+		var e Entry
+		if err := json.Unmarshal(line, &e); err != nil {
+			return false, fmt.Errorf("messages.jsonl: %w", err)
+		}
+		if e.Seq < seq {
+			return true, nil
+		}
+		newest = append(newest, e)
+		return false, nil
+	}
+	// carry is the start of the file's last unfinished line: the bytes
+	// after the last newline seen so far, which the next chunk (further
+	// back) completes.
+	var carry []byte
+	size := int64(historyChunk)
+	for pos := end; pos > 0; {
+		n := min(size, pos)
+		pos -= n
+		chunk := make([]byte, n, n+int64(len(carry)))
+		if _, err := f.ReadAt(chunk, pos); err != nil {
+			return nil, err
+		}
+		buf := append(chunk, carry...)
+		if bytes.IndexByte(chunk, '\n') < 0 {
+			size *= 2 // a long line: read more at a time, so it isn't copied over and over
+		}
+		for {
+			i := bytes.LastIndexByte(buf, '\n')
+			if i < 0 {
+				break
+			}
+			done, err := take(buf[i+1:])
+			if err != nil {
+				return nil, err
+			}
+			if done {
+				slices.Reverse(newest)
+				return newest, nil
+			}
+			buf = buf[:i]
+		}
+		carry = buf
+	}
+	if _, err := take(carry); err != nil { // the first line
+		return nil, err
+	}
+	slices.Reverse(newest)
+	return newest, nil
 }
 
 // Lock takes an exclusive lock on a file under locks/ (flock; on Windows,

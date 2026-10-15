@@ -869,13 +869,13 @@ func (a *Agent) entriesSince(seq int) ([]Entry, error) {
 	if next, err := a.nextSeq(); err != nil || next == seq {
 		return nil, err
 	}
-	history, err := a.st.ReadHistory()
+	history, err := historySince(a.st, seq)
 	if err != nil {
 		return nil, err
 	}
 	entries := []Entry{}
 	for _, e := range history {
-		if e.Seq >= seq && e.Direction != "out" {
+		if e.Direction != "out" {
 			entries = append(entries, e)
 		}
 	}
