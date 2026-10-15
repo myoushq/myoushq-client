@@ -7,6 +7,13 @@ in [skill.md](https://myoushq.com/skill.md).
 
 ## Unreleased
 
+- **myous for Mac, Linux and Windows:** a worker that comes to need
+  attention (it stopped on its own, didn't start or stop, its browser
+  can't run) brings up the app's window and to the front, as a question
+  does: the window may be closed or behind another app, the browser the
+  app brought forward for instance. A menu entry's id is its label, not
+  its position, so a click on a menu built just before the state changed
+  runs that entry, not its neighbour's.
 - **myous for Mac is now the Tauri app** of myous for Linux and Windows
   (`worker/desktop`): one codebase for the three systems, built universal
   (Apple Silicon and Intel, macOS 13 or newer), signed and notarized, at

@@ -246,6 +246,8 @@ export class Worker {
   screen: Screen = "setup";
   attention = "";
   attentionButton = "";
+  /** Evaluated at least once: a line that appears later is news, one there from the start is not. */
+  evaluated = false;
 
   constructor(public home: string, public folder: string, public isDefault: boolean, public project: string) {}
 
@@ -386,6 +388,9 @@ export class Model {
   /** `ask` names a question's worker folder and request id (a Mac puts Allow and Refuse on its notification). */
   notify: (kind: string, title: string, body: string, ask?: { home: string; id: string }) => void = () => {};
   start: (w: Worker) => void = () => {};
+  /** A worker has come to need attention (its line went from nothing to something, after its first
+   * look): the app brings up its window, which may be closed or behind another app. */
+  needsAttention: (w: Worker) => void = () => {};
   windowVisible: () => boolean = () => false;
   writeConfig: (w: Worker) => void = () => {};
 
@@ -574,8 +579,11 @@ export class Model {
     }
     w.screen = screen;
     w.alive = alive;
+    const news = attention !== "" && w.attention === "" && w.evaluated && !attention.startsWith("myous v");
     w.attention = attention;
     w.attentionButton = button;
+    w.evaluated = true;
+    if (news) this.needsAttention(w);
 
     if (screen === "pair") {
       const invite = w.invite;

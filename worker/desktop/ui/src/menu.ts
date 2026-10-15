@@ -36,9 +36,15 @@ export interface MenuActions {
  * THIS PC sections, each a grey (disabled) label and a closing separator. */
 export function buildMenu(m: Model, windowShown: boolean, act: MenuActions, sys = "this computer"): { items: TrayItem[]; actions: Map<string, () => void> } {
   const actions = new Map<string, () => void>();
-  let n = 0;
+  // An id names its entry (the label, "#2" for a second entry with the same label), not its
+  // position: the window rebuilds the menu and the actions every two seconds, so the menu the owner
+  // has open may be one build older than the actions, and a position would then run another entry.
+  const seen = new Map<string, number>();
   const item = (label: string, run?: () => void, enabled = true, fixedId = ""): TrayItem => {
-    const id = fixedId || (run ? `m${++n}` : `d${++n}`);
+    let id = fixedId || `${run ? "m" : "d"}:${label}`;
+    const k = (seen.get(id) ?? 0) + 1;
+    seen.set(id, k);
+    if (k > 1) id += `#${k}`;
     if (run) actions.set(id, run);
     return { id, label, enabled: enabled && !!run };
   };

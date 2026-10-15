@@ -90,7 +90,9 @@ test("real files drive the screens through a start and a stop", () => {
   assert.equal(w.screen, "stopped");
   assert.ok(w.stoppedByUs);
   assert.equal(w.attention, "");
-  // Running again, then the file goes stale on its own: attention, one notification.
+  // Running again, then the file goes stale on its own: attention, one notification, the window once.
+  const needy: string[] = [];
+  m.needsAttention = (x) => needy.push(x.attention);
   w.stopDoneAt = 0;
   m.load([files({ config: { name: "Max's PC" }, status: { phase: "running", contacts: 1 }, status_modified: now })]);
   evaluate(m);
@@ -102,6 +104,7 @@ test("real files drive the screens through a start and a stop", () => {
   assert.equal(w.attention, "The worker stopped on its own.");
   evaluate(m);
   assert.deepEqual(notified, ["stopped"]);
+  assert.deepEqual(needy, ["The worker stopped on its own."], "the window comes up once, when the line appears");
   // An error phase says why.
   m.load([files({ config: { name: "Max's PC" }, status: { phase: "error: the hub refused the key" }, status_modified: now })]);
   evaluate(m);
@@ -235,6 +238,8 @@ test("the tray menu offers what the state allows", () => {
   assert.ok(!l.includes("Start"));
   assert.equal(l.filter((x, i) => x === "----" && l[i + 1] === "----").length, 0, "no double separators");
   assert.ok(actions.has("open"));
+  // Ids name their entries: a click on a menu built before the last change still runs the right action.
+  assert.ok(actions.has("m:Settings…") && actions.has("m:Stop") && actions.has("m:Add a worker…"));
   applyFake(m, "stopped");
   evaluate(m);
   ({ items } = buildMenu(m, false, noop));
@@ -246,6 +251,8 @@ test("the tray menu offers what the state allows", () => {
   assert.equal(workers.length, 2);
   assert.ok(labels(workers[1].children!).includes("Remove…"));
   assert.ok(!labels(workers[0].children!).includes("Remove…"), "the first worker stays");
+  ({ items, actions } = buildMenu(m, false, noop));
+  assert.ok(actions.has("m:Stop") && actions.has("m:Stop#2") && actions.has("m:Add a worker…#2"), "a second entry with the same label gets #2");
   const l2 = labels(items);
   assert.equal(l2.filter((x, i) => x === "----" && l2[i + 1] === "----").length, 0, "no double separators");
   // Several workers: a WORKERS section with their submenus and Add a worker…, closed by a separator.

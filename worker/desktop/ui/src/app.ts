@@ -1818,6 +1818,9 @@ async function main() {
     if (isUrgent(kind)) void showWindow();
   };
   m.start = (w) => void start(w);
+  // Needs attention is for the owner to act on: the window comes up and to the front (it may be closed,
+  // or behind the browser the app itself brought forward), as a question's notification brings it up.
+  m.needsAttention = (w) => void showWindow(w);
   m.windowVisible = () => windowShown;
   m.writeConfig = (w) => void saveConfig(w);
   wire();
