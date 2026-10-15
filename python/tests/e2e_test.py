@@ -155,6 +155,17 @@ class EndToEnd(unittest.TestCase):
         time.sleep(2)
         events = json.loads(self.run_ok("carol", "inbox", "--json"))  # no poll: listener stored it
         self.assertEqual([e["text"] for e in events], ["live"])
+        # A long message (3 parts): the listener gets each part on its own.
+        long = "".join(f"line {i:05d} of a long message\n" for i in range(1800))
+        self.assertGreater(len(long), 50_000)
+        self.run_ok("alice", "send", "carol", long)
+        events = []
+        for _ in range(60):
+            time.sleep(0.5)
+            events += json.loads(self.run_ok("carol", "inbox", "--json"))
+            if events:
+                break
+        self.assertEqual([(e["text"], e.get("incomplete")) for e in events], [(long, None)])
 
     def test_7_wake_hook_runs_on_new_messages(self):
         marker = self.tmp / "woken.txt"

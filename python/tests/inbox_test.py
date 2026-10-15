@@ -177,6 +177,28 @@ class Inbox(unittest.TestCase):
         self.assertEqual(len(self.handle(w)), 1)
         self.assertEqual(self.handle(w), [])
 
+    def test_long_message_parts_in_separate_deliveries(self):
+        # A listener hands each wrap over on its own: every part must be
+        # saved as it comes, or the message is lost once its wraps are seen.
+        texts = ["first ", "second ", "third"]
+        wraps = [wrap(self.peer, self.me, relay.KIND_CHAT, t, [["part", "ab12", str(i), "3"]])
+                 for i, t in enumerate(texts, 1)]
+        for i, w in enumerate(wraps[:2], 1):
+            self.assertEqual(self.handle(w), [])
+            buffered = self.st.get("partials")[f"{self.peer.public_key().to_hex()}:ab12"]
+            self.assertEqual(sorted(buffered["parts"]), [str(n) for n in range(1, i + 1)])
+        stored = self.handle(wraps[2])
+        self.assertEqual([(e["type"], e["text"]) for e in stored], [("message", "first second third")])
+        self.assertNotIn("incomplete", stored[0])
+        self.assertEqual(self.st.get("partials"), {})
+
+    def test_long_message_parts_out_of_order_and_in_one_delivery(self):
+        texts = ["a" * 10, "b" * 10, "c" * 10]
+        wraps = [wrap(self.peer, self.me, relay.KIND_CHAT, t, [["part", "cd34", str(i), "3"]])
+                 for i, t in enumerate(texts, 1)]
+        self.assertEqual(self.handle(wraps[2]), [])
+        self.assertEqual([e["text"] for e in self.handle(wraps[0], wraps[1])], ["".join(texts)])
+
     def test_consumed(self):
         self.assertTrue(inbox.consumed({"type": "result"}))
         self.assertTrue(inbox.consumed({"type": "ack"}))

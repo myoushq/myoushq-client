@@ -25,6 +25,7 @@ Callers hold `storage.lock()` around `record` and `handle_wraps`.
 """
 from __future__ import annotations
 
+import copy
 import json
 import os
 import re
@@ -102,7 +103,10 @@ def handle_wraps(st: Storage, keys: Keys, wraps: list[Event]) -> list[dict]:
                       key=lambda m: (m.sent_at, m.ms, m.part[1] if m.part else 0))
     blob_api = (st.get("hub") or {}).get("blob_api")
     buffer = st.get("partials", {})
-    before = dict(buffer)
+    # A deep copy: parts.add changes an unfinished message's parts in place,
+    # which a shallow copy would share, so a part arriving on its own (as a
+    # listener gets them) would be marked seen yet never saved.
+    before = copy.deepcopy(buffer)
     stored = []
     for m in messages:
         contact = contacts.approved(st, m.sender)
