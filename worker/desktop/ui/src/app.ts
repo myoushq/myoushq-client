@@ -125,7 +125,11 @@ function dialog(o: DialogOpts): Promise<{ value: string; input: string } | null>
       btn.onclick = () => done({ value: b.value, input: input?.value ?? "" });
       row.append(btn);
     }
-    d.onclose = () => done(null);
+    // Escape closes it. The close event of a dialog this one replaced comes after this one opened
+    // (closing queues it): it isn't this one's, which is open.
+    d.onclose = () => {
+      if (!d.open) done(null);
+    };
     input?.addEventListener("keydown", (e) => { if (e.key === "Enter") done({ value: buttons[buttons.length - 1].value, input: input!.value }); });
     d.showModal();
     (input ?? row.lastElementChild as HTMLElement)?.focus();

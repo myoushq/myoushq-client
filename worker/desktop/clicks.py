@@ -231,6 +231,18 @@ def main() -> int:
         page.keyboard.press("Escape")
         page.wait_for_selector("#dlg", state="hidden")
 
+        # A dialog opened while another is open replaces it and stays: Settings, then Show app log from the tray.
+        go("running")
+        emit("tray", "m:Settings…")
+        page.wait_for_selector("#dlg[open]")
+        emit("tray", "m:Show app log")
+        page.wait_for_timeout(300)
+        check(page.evaluate("document.getElementById('dlg').open") and text("#dlg h2") == "myous log",
+              "Show app log from the tray while Settings is open: the log shows")
+        page.keyboard.press("Escape")
+        page.wait_for_selector("#dlg", state="hidden")
+        check(not page.evaluate("document.getElementById('dlg').open"), "Escape closes it")
+
         # A Mac: Settings has the Dock icon, applied at once on Save; the other systems have none.
         def settings(os_name: str) -> None:
             go("running", os_name)
