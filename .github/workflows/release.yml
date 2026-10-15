@@ -56,13 +56,9 @@ jobs:
         run: |
           set -eu
           version=${TAG#v}
-          grep -q "^version = \"$version\"" python/pyproject.toml || { echo "python/pyproject.toml is not $version" >&2; exit 1; }
-          grep -q "\"version\": \"$version\"" typescript/package.json || { echo "typescript/package.json is not $version" >&2; exit 1; }
-          grep -q "^version = \"$version\"" rust/Cargo.toml || { echo "rust/Cargo.toml is not $version" >&2; exit 1; }
-          # The Go client is also the worker the apps carry.
-          grep -q "^const Version = \"$version\"" go/notices.go || { echo "go/notices.go is not $version" >&2; exit 1; }
-          grep -q "\"version\": \"$version\"" worker/desktop/package.json || { echo "worker/desktop/package.json is not $version" >&2; exit 1; }
-          grep -q "^version = \"$version\"" worker/desktop/src-tauri/Cargo.toml || { echo "worker/desktop/src-tauri/Cargo.toml is not $version" >&2; exit 1; }
+          # Every file of RELEASING.md's bump list (the pre-push hook runs
+          # the same script).
+          sh scripts/check-versions.sh "$version"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
   test-python:
