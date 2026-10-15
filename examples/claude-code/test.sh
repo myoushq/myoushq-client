@@ -81,6 +81,14 @@ expect many "myous: 12 new item(s):"
 expect many "- and 2 more: myous history"
 [ "$(printf '%s\n' "$OUT" | grep -c '^- a ')" = 10 ] && ok "many items: ten shown, the rest counted" || fail "many items: expected 10 shown"
 
+cat > "$FAKE_JSON" <<'JSON'
+[{"seq": 6, "type": "file", "direction": "in", "alias": "Sam's PC", "name": "out.txt", "size": 12, "text": "late reply",
+  "late": {"op": "get", "remote": "/work/out.txt", "sent_at": 1700000000}}]
+JSON
+run_fake
+expect late "- Sam's PC (file): late reply to cp of /work/out.txt: out.txt (12 bytes; myous fetch 6)" \
+    && ok "a late reply's file says which request it answers"
+
 FAKE_EXIT=3 run_fake
 [ "$CODE" = 1 ] && [ -z "$OUT" ] && case "$ERR" in *"myous inbox failed"*) true ;; *) false ;; esac \
     && ok "myous fails: exit 1 (not 2), reason on stderr" || fail "myous fails: exit $CODE, out '$OUT', err '$ERR'"

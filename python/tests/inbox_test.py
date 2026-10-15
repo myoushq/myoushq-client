@@ -1,12 +1,20 @@
 """Incoming gift wraps: text and file messages, worker replies, and what
 `unread` shows. No network: wraps are built directly."""
+import contextlib
+import io
 import json
+import tempfile
+import time
 import unittest
+from types import SimpleNamespace
+from unittest import mock
 
 from nostr_sdk import EventBuilder, Keys, Kind, Tag, nip59_make_gift_wrap
 
-from myous import contacts, files, inbox, relay
-from myous.storage import Storage
+from myous import cli, contacts, files, inbox, relay, vm
+from myous.agent import Agent
+from myous.muse import watcher
+from myous.storage import FileStorage, Storage
 
 BLOB_API = "https://hub.test/blob"
 
@@ -173,6 +181,125 @@ class Inbox(unittest.TestCase):
         self.assertFalse(inbox.consumed({"type": "file", "w": ["put", "x", "p"]}))
         self.assertFalse(inbox.consumed({"type": "file"}))
         self.assertFalse(inbox.consumed({"type": "message"}))
+
+
+class LateReplies(unittest.TestCase):
+    """A reply to a request whose command stopped waiting (inbox.give_up)
+    is shown once, readably; every other reply stays the command's."""
+
+    def setUp(self):
+        self.st = MemoryStorage()
+        self.worker = contacts.add(self.st, "a" * 64, "Sam's Mac")["npub"]
+        self.other = contacts.add(self.st, "b" * 64, "other")["npub"]
+        self.sent = int(time.time()) - 120
+        self.clock = time.strftime("%H:%M", time.localtime(self.sent))
+
+    def give_up(self, rid: str, **request) -> None:
+        inbox.give_up(self.st, rid, dict(request, peer=self.worker, alias="Sam's Mac", sent_at=self.sent,
+                                         expires=self.sent + 3600))
+
+    def reply(self, kind: str, rid: str, peer: str | None = None, **fields) -> dict:
+        """A worker's reply, stored as handle_wraps stores it."""
+        entry = dict(fields, type=kind, direction="in", peer=peer or self.worker, alias="Sam's Mac")
+        if kind == "file":
+            entry.update(w=["file", rid], text="file: " + inbox.describe_file(entry))
+        else:
+            entry.update(id=rid, text=json.dumps(dict(fields, myous=kind, id=rid)))
+        return inbox.record(self.st, entry)
+
+    def printed(self, entries: list[dict]) -> str:
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            cli._print_entries(entries)
+        return out.getvalue()
+
+    def test_a_late_result_is_shown_once_and_readably(self):
+        self.give_up("1" * 32, op="exec", cmd="make test")
+        self.reply("result", "1" * 32, exit=2, stdout="built\n", stderr="1 failed\n", truncated=True)
+        entries = inbox.unread(self.st)
+        self.assertEqual(len(entries), 1)
+        e = entries[0]
+        self.assertEqual(e["late"], {"op": "exec", "cmd": "make test", "sent_at": self.sent})
+        self.assertEqual(e["text"], f"late result of exec `make test` (sent {self.clock}): exit 2\nbuilt\n"
+                                    "stderr:\n1 failed\n(the output was cut to fit the message)")
+        when = time.strftime("%Y-%m-%d %H:%M", time.localtime(e["at"]))
+        self.assertEqual(self.printed(entries), f"[{when}] Sam's Mac: {e['text']}\n")
+        self.assertEqual(watcher.describe(e), f"[{when}] Sam's Mac: {e['text']}")
+        self.assertEqual(inbox.unread(self.st), [])   # once
+        self.assertEqual(self.st.read_history()[-1]["text"][0], "{")   # the history keeps the reply as it came
+
+    def test_inbox_json_carries_late(self):
+        self.give_up("1" * 32, op="exec", cmd="ls")
+        self.reply("result", "1" * 32, exit=0, stdout="a\n", stderr="", truncated=False)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            cli.cmd_inbox(Agent(self.st), self.st, SimpleNamespace(local=True, peek=False, json=True))
+        [e] = json.loads(out.getvalue())
+        self.assertEqual((e["type"], e["late"]["op"], e["late"]["cmd"], e["exit"]), ("result", "exec", "ls", 0))
+        self.assertEqual(e["text"], f"late result of exec `ls` (sent {self.clock}): exit 0\na")
+
+    def test_an_expired_answer_stays_hidden_a_refusal_shows(self):
+        self.give_up("1" * 32, op="exec", cmd="make test")
+        self.give_up("2" * 32, op="exec", cmd="rm -rf build")
+        self.reply("ack", "1" * 32, ok=False, error="expired: sent 4000 seconds ago, its ttl is 3600 seconds; not run")
+        self.reply("ack", "2" * 32, ok=False, error="refused by the owner")
+        self.assertEqual([e["text"] for e in inbox.unread(self.st)],
+                         [f"late answer to exec `rm -rf build` (sent {self.clock}): refused: refused by the owner"])
+
+    def test_only_the_worker_asked_may_answer(self):
+        self.give_up("1" * 32, op="exec", cmd="make test")
+        self.give_up("2" * 32, op="get", remote="/work/out.txt", local="out.txt")
+        self.reply("result", "1" * 32, peer=self.other, exit=0, stdout="", stderr="")
+        self.reply("file", "2" * 32, peer=self.other, name="out.txt", size=3)
+        self.assertEqual(inbox.unread(self.st), [])
+
+    def test_a_reply_nobody_gave_up_on_stays_consumed(self):
+        self.give_up("1" * 32, op="exec", cmd="make test")
+        self.reply("result", "3" * 32, exit=0, stdout="mine", stderr="")
+        self.reply("ack", "3" * 32, ok=True, path="/work/x", size=1)
+        self.reply("file", "3" * 32, name="x", size=1)
+        self.assertEqual(inbox.unread(self.st), [])
+        gave_up = self.st.get("gave_up")
+        self.assertTrue(all(inbox.consumed(e, gave_up) for e in self.st.read_history()))
+
+    def test_late_put_and_get(self):
+        self.give_up("4" * 32, op="put", local="report.pdf", remote="/work/report.pdf")
+        self.give_up("5" * 32, op="get", remote="/work/out.txt", local="out.txt")
+        self.reply("ack", "4" * 32, ok=True, path="/work/report.pdf", size=5, sha256="00")
+        got = self.reply("file", "5" * 32, name="out.txt", size=123)
+        put, get = inbox.unread(self.st)
+        self.assertEqual(put["late"], {"op": "put", "local": "report.pdf", "remote": "/work/report.pdf",
+                                       "sent_at": self.sent})
+        self.assertEqual(put["text"], f"late answer to cp of report.pdf to /work/report.pdf (sent {self.clock}): "
+                                      "written: /work/report.pdf (5 bytes)")
+        self.assertEqual(get["late"], {"op": "get", "remote": "/work/out.txt", "local": "out.txt", "sent_at": self.sent})
+        self.assertEqual(get["text"], f"late reply to cp of /work/out.txt (sent {self.clock}): out.txt (123 bytes)")
+        when = time.strftime("%Y-%m-%d %H:%M", time.localtime(got["at"]))
+        n = got["seq"]
+        self.assertEqual(self.printed([get]), f"[{when}] file from Sam's Mac: late reply to cp of /work/out.txt "
+                                              f"(sent {self.clock}): out.txt (123 bytes, id {n}; `myous fetch {n}`)\n")
+        self.assertIn(f"file from Sam's Mac: late reply to cp of /work/out.txt (sent {self.clock}): out.txt",
+                      watcher.describe(get))
+
+    def test_give_up_keeps_requests_a_day_past_their_ttl(self):
+        now = int(time.time())
+        self.st.put("gave_up", {"old": {"expires": now - inbox.GAVE_UP_KEEP - 5}, "recent": {"expires": now - 3600}})
+        inbox.give_up(self.st, "new", {"op": "exec", "expires": now + 60})
+        self.assertEqual(sorted(self.st.get("gave_up")), ["new", "recent"])
+
+    def test_the_wake_hook_runs_for_a_late_reply_not_for_a_consumed_one(self):
+        with tempfile.TemporaryDirectory() as home:
+            st = FileStorage(home)
+            st.put("settings", {"on_message": "true"})
+            st.put("gave_up", {"1" * 32: {"peer": self.worker}})
+            consumed = {"type": "result", "id": "3" * 32, "peer": self.worker}
+            late = {"type": "result", "id": "1" * 32, "peer": self.worker}
+            with mock.patch.object(vm.processes, "spawn_background") as spawn:
+                vm.run_hook(st, [consumed])
+                spawn.assert_not_called()
+                vm.run_hook(st, [consumed, late, {"type": "message"}])
+                self.assertEqual(spawn.call_args.kwargs["env"]["MYOUS_NEW"], "2")
+                spawn.call_args.kwargs["stdout"].close()   # the hook's log, which the child would keep
 
 
 if __name__ == "__main__":

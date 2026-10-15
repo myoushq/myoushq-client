@@ -154,10 +154,11 @@ class Connections(unittest.TestCase):
 
 class RequestTtl(unittest.TestCase):
     """What exec, put and get send as their ttl (protocol.md 7.1), and what
-    a request that got no reply says."""
+    a request that got no reply says and leaves behind."""
 
     def setUp(self):
         self.st = MemoryStorage()
+        contacts.add(self.st, "d" * 64, "box")
         self.agent = Agent(self.st)
         self.sent, self.tags, self.waits = [], [], []
 
@@ -179,7 +180,6 @@ class RequestTtl(unittest.TestCase):
         self.agent.send = send
         self.agent.send_file = send_file
         self.agent._await_reply = await_reply
-        self.agent._npub = lambda name: "npub1worker"
         self.agent.fetch = lambda reply, to: "fetched"
 
     def test_exec_and_get_carry_the_ttl_in_the_json(self):
@@ -222,12 +222,41 @@ class RequestTtl(unittest.TestCase):
 
     def test_what_a_timeout_says(self):
         gone = timeout_text(150, time.time() - 1)
-        self.assertEqual(gone, "no reply from the worker within 150 seconds; "
-                               "it won't start this request any more (it is off or busy)")
+        self.assertEqual(gone, "no reply from the worker within 150 seconds; it won't start this request any more "
+                               "(it is off or busy), but if it already has, its reply will show in `myous inbox`")
         later = time.time() + 3600
         self.assertEqual(timeout_text(150, later),
                          f"no reply from the worker within 150 seconds; it may still run this request until "
-                         f"{time.strftime('%H:%M', time.gmtime(later))} UTC (its ttl), and its reply won't show in your inbox")
+                         f"{time.strftime('%H:%M', time.gmtime(later))} UTC (its ttl), and its reply will show in "
+                         f"`myous inbox` when it comes")
+
+    def test_a_request_given_up_on_is_remembered(self):
+        async def no_reply(rid, timeout, npub, conn=None, expires=None):
+            raise TimeoutError("no reply from the worker")
+
+        self.agent._await_reply = no_reply
+        before = int(time.time())
+        for request in (lambda: self.agent.exec("box", "make test", ttl=3600),
+                        lambda: self.agent.put("box", __file__, "/work/in.py", timeout=60),
+                        lambda: self.agent.get("box", "/work/out.txt", "out.txt")):
+            with self.assertRaises(TimeoutError):
+                asyncio.run(request())
+        gave_up = self.st.get("gave_up")
+        exec_id, get_id, put_id = self.sent[0]["id"], self.sent[1]["id"], self.tags[0][0][2]
+        self.assertEqual(sorted(gave_up), sorted([exec_id, get_id, put_id]))
+        npub = contacts.find(self.st, "box")[1]["npub"]
+        for rid, what, ttl in ((exec_id, {"op": "exec", "cmd": "make test"}, 3600),
+                               (put_id, {"op": "put", "local": __file__, "remote": "/work/in.py"}, 60),
+                               (get_id, {"op": "get", "remote": "/work/out.txt", "local": "out.txt"}, 300)):
+            r = gave_up[rid]
+            self.assertEqual({k: r[k] for k in what}, what)
+            self.assertEqual((r["peer"], r["alias"]), (npub, "box"))
+            self.assertTrue(before <= r["sent_at"] <= time.time())
+            self.assertEqual(r["expires"] - r["sent_at"], ttl)
+
+    def test_a_reply_in_time_leaves_nothing_behind(self):
+        asyncio.run(self.agent.exec("box", "ls"))
+        self.assertIsNone(self.st.get("gave_up"))
 
     def test_the_timeout_error_says_it(self):
         agent = Agent(MemoryStorage())

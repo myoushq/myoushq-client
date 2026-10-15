@@ -349,7 +349,8 @@ class Agent:
     # Each waits `timeout` (exec: the command's timeout plus 30 seconds) and
     # sends a ttl (protocol.md 7.1): by default the same, so a request it
     # gave up on never runs later; a longer one leaves it for a worker that
-    # is off, to run when it is back.
+    # is off, to run when it is back. A request it gave up on is remembered
+    # (inbox.give_up): its reply, if one comes, shows in the inbox.
 
     async def exec(self, name: str, cmd: str, timeout: float = 120, ttl: int | None = None) -> dict:
         """Run a command on a worker and wait for its result
@@ -361,8 +362,7 @@ class Agent:
         body = json.dumps({"myous": "exec", "id": rid, "cmd": cmd, "timeout": int(timeout), "ttl": ttl})
         async with self._connect() as conn:
             await self.send(name, body, conn)
-            expires = time.time() + ttl
-            return self._check(await self._await_reply(rid, wait, self._npub(name), conn, expires))
+            return self._check(await self._await_or_give_up(rid, name, {"op": "exec", "cmd": cmd}, wait, ttl, conn))
 
     async def put(self, name: str, local_path: str | os.PathLike, remote_path: str, timeout: float = 300,
                   ttl: int | None = None) -> dict:
@@ -372,8 +372,8 @@ class Agent:
         async with self._connect() as conn:
             # The message goes out after the upload, so the ttl counts from then.
             await self.send_file(name, local_path, extra_tags=[["w", "put", rid, remote_path, str(ttl)]], conn=conn)
-            expires = time.time() + ttl
-            return self._check(await self._await_reply(rid, timeout, self._npub(name), conn, expires))
+            request = {"op": "put", "local": str(local_path), "remote": remote_path}
+            return self._check(await self._await_or_give_up(rid, name, request, timeout, ttl, conn))
 
     async def get(self, name: str, remote_path: str, local_path: str | os.PathLike | None = None,
                   timeout: float = 300, ttl: int | None = None) -> str:
@@ -382,12 +382,24 @@ class Agent:
         rid = new_request_id()
         async with self._connect() as conn:
             await self.send(name, json.dumps({"myous": "get", "id": rid, "path": remote_path, "ttl": ttl}), conn)
-            expires = time.time() + ttl
-            reply = self._check(await self._await_reply(rid, timeout, self._npub(name), conn, expires))
+            request = {"op": "get", "remote": remote_path, "local": None if local_path is None else str(local_path)}
+            reply = self._check(await self._await_or_give_up(rid, name, request, timeout, ttl, conn))
         return self.fetch(reply, local_path)
 
-    def _npub(self, name: str) -> str:
-        return contacts.find(self.st, name)[1]["npub"]
+    async def _await_or_give_up(self, rid: str, name: str, request: dict, wait: float, ttl: int,
+                                conn: relay.Connection) -> dict:
+        """_await_reply for a request just sent ({"op", ...} says what it
+        asks). If no reply comes in time, the request is remembered
+        (inbox.give_up), so that a reply that comes later is shown."""
+        sent = time.time()
+        _, contact = contacts.find(self.st, name)
+        try:
+            return await self._await_reply(rid, wait, contact["npub"], conn, sent + ttl)
+        except TimeoutError:
+            with self.st.lock():
+                inbox.give_up(self.st, rid, dict(request, peer=contact["npub"], alias=contact["alias"],
+                                                 sent_at=int(sent), expires=int(sent + ttl)))
+            raise
 
     @staticmethod
     def _check(reply: dict) -> dict:
@@ -630,15 +642,16 @@ def new_request_id() -> str:
 
 def timeout_text(wait: float, expires: float | None) -> str:
     """What a request that got no reply in time says: whether the worker
-    may still run it (its ttl hasn't run out), and that a late reply is
-    not shown (inbox.consumed)."""
+    may still run it (its ttl hasn't run out), and that a late reply shows
+    in the inbox (inbox.give_up)."""
     text = f"no reply from the worker within {int(wait)} seconds"
     if expires is None:
         return text
     if expires <= time.time():
-        return text + "; it won't start this request any more (it is off or busy)"
+        return text + ("; it won't start this request any more (it is off or busy), "
+                       "but if it already has, its reply will show in `myous inbox`")
     return (text + f"; it may still run this request until {time.strftime('%H:%M', time.gmtime(expires))} UTC "
-            "(its ttl), and its reply won't show in your inbox")
+            "(its ttl), and its reply will show in `myous inbox` when it comes")
 
 
 class _Deliveries:

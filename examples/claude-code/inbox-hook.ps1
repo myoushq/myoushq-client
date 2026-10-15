@@ -37,6 +37,7 @@ try {
         $kind = $e.type
         $text = if ($e.text) { [string]$e.text } else { "" }
         if ($kind -eq "file") { $text = "$($e.name) ($($e.size) bytes; myous fetch $($e.seq))" }
+        if ($kind -eq "file" -and $e.late) { $text = "late reply to cp of $($e.late.remote): $text" }
         if ($text.Length -gt $MaxText) { $text = $text.Substring(0, $MaxText) + " [cut; the rest: myous history --with `"$who`"]" }
         $out += "- $who ($kind): " + ($text -replace "`r?`n", "`n    ")
         if ($kind -eq "message" -and $e.PSObject.Properties.Name -contains "relationship") {

@@ -37,6 +37,8 @@ for e in items[:max_items]:
     text = e.get("text") or ""
     if kind == "file":
         text = "%s (%s bytes; myous fetch %s)" % (e.get("name"), e.get("size"), e.get("seq"))
+    if kind == "file" and e.get("late"):
+        text = "late reply to cp of %s: %s" % (e["late"].get("remote"), text)
     if len(text) > max_text:
         text = text[:max_text] + " [cut; the rest: myous history --with \"%s\"]" % who
     print("- %s (%s): %s" % (who, kind, text.replace("\n", "\n    ")))

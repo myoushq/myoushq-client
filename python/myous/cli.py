@@ -9,7 +9,7 @@ import os
 import sys
 import time
 
-from myous import __version__, contacts, qr, vm
+from myous import __version__, contacts, inbox, qr, vm
 from myous.agent import Agent, IdentityError, WorkerError
 from myous.files import BlobError
 from myous.hub import DEFAULT_HUB, HubError
@@ -177,7 +177,10 @@ def _print_entries(entries: list[dict]) -> None:
         when = time.strftime("%Y-%m-%d %H:%M", time.localtime(e.get("sent_at", e["at"])))
         if e["type"] == "file":
             who = f"me -> {e['alias']}" if e.get("direction") == "out" else f"from {e['alias']}"
-            print(f"[{when}] file {who}: {e['name']} ({e.get('size')} bytes, id {e['seq']}; `myous fetch {e['seq']}`)")
+            late = f"late reply to {inbox.late_what(e['late'])}: " if e.get("late") else ""
+            print(f"[{when}] file {who}: {late}{e['name']} ({e.get('size')} bytes, id {e['seq']}; `myous fetch {e['seq']}`)")
+        elif e.get("late"):
+            print(f"[{when}] {e['alias']}: {e['text']}")
         elif e["type"] != "message":
             print(f"[{when}] ({e['type']}) {e['text']}")
         elif e["direction"] == "out":
