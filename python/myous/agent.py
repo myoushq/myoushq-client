@@ -50,6 +50,20 @@ class WorkerError(Exception):
     """A worker refused or failed a request (an ack with ok false)."""
 
 
+MAX_TTL = 86400  # a worker counts a longer ttl as a day (protocol.md 7.1)
+
+
+def request_ttl(ttl, wait: float) -> int:
+    """The ttl a request carries (protocol.md 7.1): by default how long
+    the command waits, so a request it gave up on never runs later. A
+    longer one leaves it for a worker that is off, up to a day."""
+    if ttl is None:
+        return max(1, int(wait))
+    if isinstance(ttl, bool) or not isinstance(ttl, (int, float)) or not ttl >= 1:
+        raise ValueError(f"the ttl must be a number of seconds, at least 1 (not {ttl!r})")
+    return int(min(ttl, MAX_TTL))
+
+
 class Agent:
     def __init__(self, storage: Storage, hub_url: str | None = None):
         self.st = storage
@@ -332,30 +346,44 @@ class Agent:
 
     # --- requests to a worker (protocol.md, section 7) ---------------------
 
-    async def exec(self, name: str, cmd: str, timeout: float = 120) -> dict:
+    # Each waits `timeout` (exec: the command's timeout plus 30 seconds) and
+    # sends a ttl (protocol.md 7.1): by default the same, so a request it
+    # gave up on never runs later; a longer one leaves it for a worker that
+    # is off, to run when it is back.
+
+    async def exec(self, name: str, cmd: str, timeout: float = 120, ttl: int | None = None) -> dict:
         """Run a command on a worker and wait for its result
         ({"exit", "stdout", "stderr", "truncated"}). TimeoutError if no
         reply arrives in time; WorkerError if the worker refused."""
+        wait = timeout + 30
+        ttl = request_ttl(ttl, wait)
         rid = new_request_id()
-        body = json.dumps({"myous": "exec", "id": rid, "cmd": cmd, "timeout": int(timeout)})
+        body = json.dumps({"myous": "exec", "id": rid, "cmd": cmd, "timeout": int(timeout), "ttl": ttl})
         async with self._connect() as conn:
             await self.send(name, body, conn)
-            return self._check(await self._await_reply(rid, timeout + 30, self._npub(name), conn))
+            expires = time.time() + ttl
+            return self._check(await self._await_reply(rid, wait, self._npub(name), conn, expires))
 
-    async def put(self, name: str, local_path: str | os.PathLike, remote_path: str, timeout: float = 300) -> dict:
+    async def put(self, name: str, local_path: str | os.PathLike, remote_path: str, timeout: float = 300,
+                  ttl: int | None = None) -> dict:
         """Push a file to a worker and wait until it is written there."""
+        ttl = request_ttl(ttl, timeout)
         rid = new_request_id()
         async with self._connect() as conn:
-            await self.send_file(name, local_path, extra_tags=[["w", "put", rid, remote_path]], conn=conn)
-            return self._check(await self._await_reply(rid, timeout, self._npub(name), conn))
+            # The message goes out after the upload, so the ttl counts from then.
+            await self.send_file(name, local_path, extra_tags=[["w", "put", rid, remote_path, str(ttl)]], conn=conn)
+            expires = time.time() + ttl
+            return self._check(await self._await_reply(rid, timeout, self._npub(name), conn, expires))
 
     async def get(self, name: str, remote_path: str, local_path: str | os.PathLike | None = None,
-                  timeout: float = 300) -> str:
+                  timeout: float = 300, ttl: int | None = None) -> str:
         """Pull a file from a worker. Returns where it was written."""
+        ttl = request_ttl(ttl, timeout)
         rid = new_request_id()
         async with self._connect() as conn:
-            await self.send(name, json.dumps({"myous": "get", "id": rid, "path": remote_path}), conn)
-            reply = self._check(await self._await_reply(rid, timeout, self._npub(name), conn))
+            await self.send(name, json.dumps({"myous": "get", "id": rid, "path": remote_path, "ttl": ttl}), conn)
+            expires = time.time() + ttl
+            reply = self._check(await self._await_reply(rid, timeout, self._npub(name), conn, expires))
         return self.fetch(reply, local_path)
 
     def _npub(self, name: str) -> str:
@@ -380,14 +408,15 @@ class Agent:
         return None
 
     async def _await_reply(self, rid: str, timeout: float, npub: str,
-                           conn: relay.Connection | None = None) -> dict:
+                           conn: relay.Connection | None = None, expires: float | None = None) -> dict:
         """Listen until the reply with this id, from this contact, is in
         the history. Another process (a watcher) may store it first; the
         history is checked on every tick as well as on arrival. `conn` is
         the connection the request went out on: the wait starts there (one
         connection per request; the subscription's replay of the inbox
         covers a reply that arrived in between), and a fresh one takes
-        over if it drops."""
+        over if it drops. `expires`: when the request's ttl runs out, for
+        the TimeoutError to say whether the worker may still run it."""
         since = 1
         found = asyncio.get_running_loop().create_future()
 
@@ -414,7 +443,7 @@ class Agent:
         try:
             return await asyncio.wait_for(found, timeout)
         except asyncio.TimeoutError:
-            raise TimeoutError(f"no reply from the worker within {int(timeout)} seconds") from None
+            raise TimeoutError(timeout_text(timeout, expires)) from None
         finally:
             listener.cancel()
             try:
@@ -597,6 +626,19 @@ class Agent:
 
 def new_request_id() -> str:
     return secrets.token_hex(16)
+
+
+def timeout_text(wait: float, expires: float | None) -> str:
+    """What a request that got no reply in time says: whether the worker
+    may still run it (its ttl hasn't run out), and that a late reply is
+    not shown (inbox.consumed)."""
+    text = f"no reply from the worker within {int(wait)} seconds"
+    if expires is None:
+        return text
+    if expires <= time.time():
+        return text + "; it won't start this request any more (it is off or busy)"
+    return (text + f"; it may still run this request until {time.strftime('%H:%M', time.gmtime(expires))} UTC "
+            "(its ttl), and its reply won't show in your inbox")
 
 
 class _Deliveries:

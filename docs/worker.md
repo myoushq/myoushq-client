@@ -247,6 +247,10 @@ outcome and output (the newest 200). The apps show all of this.
   and files). A command the worker is running is ended, and the agent
   that sent it gets the answer "stopped by the owner (the worker is
   shutting down)". Start it again with the `up -d` command from section 3.
+  Requests sent while it was stopped wait on the relay; when it starts,
+  it runs those still within their ttl (by default, as long as the agent
+  waited for the answer) and answers the others "expired" without
+  running them.
 - **Restart on reboot:** the container is set to restart with Docker;
   the runtime must start at login (Docker Desktop's setting; for Docker
   Engine, `sudo systemctl enable docker`).

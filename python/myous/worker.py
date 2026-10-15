@@ -4,9 +4,11 @@ paired with the owner's other agents, which push files, pull files and run
 commands on it with `myous cp` and `myous exec`.
 
 The worker does what it's asked, one request at a time, after its review
-hook allows it. The default hook allows everything from approved contacts,
-refuses while the pause file exists, and logs every request; tightening
-is a matter of giving `myous worker --review` a command of your own.
+hook allows it; a request it only gets to after its ttl (the requester
+stopped waiting) is answered "expired" and never runs. The default hook
+allows everything from approved contacts, refuses while the pause file
+exists, and logs every request; tightening is a matter of giving
+`myous worker --review` a command of your own.
 """
 from __future__ import annotations
 
@@ -40,6 +42,11 @@ REVIEW_TIMEOUT = 150  # the hook may wait for the owner (worker/review.py: 120 s
 STATUS_EVERY = 5
 TICK = 5  # seconds between ticks: status writes and the owner's commands
 REQUESTS_KEEP = 200  # request records kept in <home>/requests for the owner's app
+# A request is good for its ttl from when it was sent (protocol.md 7.1):
+# one the requester gave up on (this worker was off, or busy) never runs.
+DEFAULT_TTL = 600   # seconds, for a request without a ttl; also how long a `help` is worth answering
+MAX_TTL = 86400     # a longer ttl counts as this: the relay keeps messages a day
+BAD_TTL = "bad request: the ttl must be a number of seconds, at least 1"
 # On Windows the shell is PowerShell: agents used to the container's Linux
 # workers are told so in the help, the pairing message and a failed command.
 WINDOWS_HELP = ("This worker runs on Windows: commands are PowerShell, not Linux shell commands "
@@ -61,6 +68,45 @@ SHUTDOWN_WAIT = 10  # seconds the request being handled has to be answered befor
 def valid_id(rid) -> bool:
     """Whether a request id is a plain name (ID_RULE)."""
     return isinstance(rid, str) and ID_RULE.fullmatch(rid) is not None
+
+
+def request_ttl(value, tag: bool = False) -> int | None:
+    """A request's ttl in whole seconds: DEFAULT_TTL without one, at most
+    MAX_TTL; None when it isn't a number of seconds of at least 1. `tag`:
+    the value is put's, from its w tag, a decimal string; exec's and get's
+    is a JSON number."""
+    if value is None:
+        return DEFAULT_TTL
+    if tag:
+        if not isinstance(value, str) or not re.fullmatch(r"[0-9]+", value):
+            return None
+        digits = value.lstrip("0") or "0"
+        value = int(digits) if len(digits) <= 6 else MAX_TTL
+    elif isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        return None
+    if value < 1:
+        return None
+    return int(min(value, MAX_TTL))
+
+
+def age_of(e: dict) -> int | None:
+    """Whole seconds since the message was sent, by the sender's clock
+    (a time in the future counts as now); None if it doesn't say."""
+    sent = e.get("sent_at")
+    if isinstance(sent, bool) or not isinstance(sent, (int, float)):
+        return None
+    return max(0, math.floor(time.time() - sent))
+
+
+def expired_text(age: int, ttl: int) -> str:
+    """The error of an expired request's ack. The Go worker says the same."""
+    if age < 120:
+        ago = f"{age} seconds"
+    elif age < 7200:
+        ago = f"{age // 60} minutes"
+    else:
+        ago = f"{age // 3600} hours"
+    return f"expired: sent {ago} ago, its ttl is {ttl} seconds; not run"
 
 
 class Worker:
@@ -292,6 +338,10 @@ class Worker:
                     if not valid_id(rid):
                         await self.refuse(e, rid, BAD_ID)
                         return
+                    # Before the blob is downloaded: an expired put costs nothing.
+                    if await self.answered_for_ttl(e, rid, "put", w[3] if len(w) > 3 else None, tag=True,
+                                                   path=w[2], size=e.get("size")):
+                        return
                     await self.do_put(e, w[1], w[2])
                 return
             req = e.get("request")
@@ -299,6 +349,9 @@ class Worker:
                 rid = req["id"]
                 if not valid_id(rid):
                     await self.refuse(e, rid, BAD_ID)
+                    return
+                fields = {"cmd": req.get("cmd")} if req["myous"] == "exec" else {"path": req.get("path")}
+                if await self.answered_for_ttl(e, rid, req["myous"], req.get("ttl"), **fields):
                     return
             if req and req["myous"] == "exec":
                 await self.do_exec(e, req)
@@ -382,7 +435,32 @@ class Worker:
         await self.reply(e, {"myous": "ack", "id": rid, "ok": True, "path": str(target), "size": len(data),
                              "sha256": files.sha256(data)})
 
-    # --- review, paths, replies -----------------------------------------------------
+    # --- expiry, review, paths, replies -----------------------------------------------
+
+    async def answered_for_ttl(self, e: dict, rid: str, op: str, ttl, tag: bool = False, **fields) -> bool:
+        """Checked when the worker takes a request up, before the review
+        hook and before anything runs (protocol.md 7.1). True when the
+        request was answered here instead: a ttl that isn't a number of
+        seconds is refused; a request older than its ttl gets an "expired"
+        ack, is neither reviewed nor run, and is recorded as "expired",
+        not as a refusal, so a worker coming back to a queue of old
+        requests doesn't flood its owner with notifications."""
+        seconds = request_ttl(ttl, tag)
+        if seconds is None:
+            await self.refuse(e, rid, BAD_TTL)
+            return True
+        age = age_of(e)
+        if age is None or age <= seconds:
+            return False
+        why = expired_text(age, seconds)
+        now = int(time.time())
+        request = {"op": op, "id": rid, "sender": e.get("peer"), "alias": e.get("alias"), **fields}
+        self.log(dict(request, decision="expired", reason=why))
+        self.say(f"{op} request {rid} from {e.get('alias') or '?'} {why}")
+        self.note(e, "expired", False)
+        self.record(rid, **request, at=now, done_at=now, decision="expired", reason=why)
+        await self.reply(e, {"myous": "ack", "id": rid, "ok": False, "error": why})
+        return True
 
     def review(self, op: str, e: dict, rid: str, **fields) -> str | None:
         """Why the request is refused, or None to go ahead (protocol.md 7.2)."""
@@ -451,6 +529,9 @@ class Worker:
         await self.agent.send(e["peer"], json.dumps(obj))
 
     async def send_help(self, e: dict) -> None:
+        age = age_of(e)
+        if age is not None and age > DEFAULT_TTL:
+            return   # sent while the worker was off: no one is waiting for the answer
         last = self.help_sent.get(e["peer"], 0)
         if time.time() - last < HELP_INTERVAL:
             return
