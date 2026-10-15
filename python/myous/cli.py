@@ -15,6 +15,7 @@ from myous.files import BlobError
 from myous.hub import DEFAULT_HUB, HubError
 from myous.pairing import PairingError
 from myous.relay import RelayError
+from myous import storage
 from myous.storage import FileStorage
 
 
@@ -709,6 +710,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_parser().parse_args()
+    mismatch = storage.home_mismatch()
+    if mismatch:
+        sys.exit(mismatch)
     st = FileStorage()
     agent = Agent(st, hub_url=getattr(args, "hub", None))
     try:
