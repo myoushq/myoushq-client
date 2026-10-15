@@ -1084,22 +1084,28 @@ function trayIcon(kind: Kind, dot: boolean): string {
 
 const menuActions: MenuActions = {
   show: (w) => void showWindow(w),
-  showAgent: (i) => { m.selectedAgent = (m.agents ?? [])[i] ?? null; void showWindow(); },
+  showAgent: (a) => {
+    // The agent as the window has it now, by its folder; none once it is gone.
+    const now = (m.agents ?? []).find((x) => x.home === a.home);
+    if (!now) return;
+    m.selectedAgent = now;
+    void showWindow();
+  },
   openBrowser: (w) => void openBrowserView(w),
   togglePaused: (w) => void togglePaused(w),
   start: (w) => void start(w),
   stop: (w) => void stop(w),
-  removeWorker: (w) => { m.current = w; void removeWorker(); },
+  removeWorker: (w) => { m.current = w; void removeWorker(w); },
   addWorker: () => void addWorker(),
   settings: () => void openSettings(),
   checkUpdates: () => void checkForUpdates(true),
-  useImage: () => void useImage(),
-  chooseRepo: () => void chooseRepo(),
-  useDirect: () => void useDirect(),
+  useImage: (w) => void useImage(w),
+  chooseRepo: (w) => void chooseRepo(w),
+  useDirect: (w) => void useDirect(w),
   useContainers: () => void useContainers(),
   showLog: () => void showLog(),
-  containerLog: () => void containerLog(),
-  openFolder: () => void be.openPath(m.current.home),
+  containerLog: (w) => void containerLog(w),
+  openFolder: (w) => void be.openPath(w.home),
   removeContainers: () => void removeContainers(),
   addAgentHome: () => void addAgentHome(),
   quit: () => void be.quit(),
@@ -1186,13 +1192,13 @@ async function showLog() {
   await dialog({ title: "myous log", pre: logLines.join("\n") || "Nothing yet.", liveLog: true });
 }
 
-async function containerLog() {
-  if (m.current.config.isDirect) {
-    const text = await be.workerLog(m.current.home);
+async function containerLog(w: Worker = m.current) {
+  if (w.config.isDirect) {
+    const text = await be.workerLog(w.home);
     await dialog({ title: "Worker log", pre: text || "Nothing yet." });
     return;
   }
-  const text = await be.containerLogs(composePath(m.current), m.current.project);
+  const text = await be.containerLogs(composePath(w), w.project);
   await dialog({ title: "Container log", pre: text || "No output (the worker may not be running)." });
 }
 
@@ -1257,8 +1263,7 @@ async function removeContainers() {
   void refresh();
 }
 
-async function useImage() {
-  const w = m.current;
+async function useImage(w: Worker = m.current) {
   if (w.alive && w.config.isDirect) await stop(w);
   w.config.mode = "image";
   await saveConfig(w);
@@ -1267,8 +1272,7 @@ async function useImage() {
 }
 
 /** One worker without a container (⋯ menu), after a warning. */
-async function useDirect() {
-  const w = m.current;
+async function useDirect(w: Worker = m.current) {
   if (!(await confirmBox("Run without a container?", `Commands your agent sends will run on ${sys} as you, with everything you can reach, and only the review stands in the way (it starts at "Ask me before anything that changes things"). Its browser, if you want one, runs on ${sys} too and needs Python. A running worker restarts.`, "Run without a container", true))) return;
   await goDirect([w]);
   appendLog("mode: no container");
@@ -1380,14 +1384,13 @@ function retryCheck(name: CheckName) {
   void refresh();
 }
 
-async function chooseRepo() {
+async function chooseRepo(w: Worker = m.current) {
   const path = await be.pickFolder();
   if (!path) return;
   if (!(await be.fileExists(`${path}${sep}worker${sep}compose.yml`))) {
     await alertBox("Not a checkout", "That folder has no worker/compose.yml. Pick the myoushq-client checkout.");
     return;
   }
-  const w = m.current;
   if (w.alive && w.config.isDirect) await stop(w);
   w.config.repo = path;
   w.config.mode = "docker";
@@ -1411,8 +1414,7 @@ async function addWorker() {
   await showWindow();
 }
 
-async function removeWorker() {
-  const w = m.current;
+async function removeWorker(w: Worker = m.current) {
   if (w.isDefault || m.fake) return;
   if (w.isSetUp && !(await confirmBox(`Remove ${w.name}?`, "Its folder with its key, logins and files is moved to the trash, and the agent paired with it loses it.", "Remove", true))) return;
   await stop(w);

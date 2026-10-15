@@ -277,8 +277,80 @@ test("the ⋯ menu, and on a Mac the app menu with the same entries", () => {
   assert.equal(items[0].accelerator, "CmdOrCtrl+,");
   assert.ok(!l.includes("Quit myous"), "Quit is the app menu's own (Rust)");
   assert.deepEqual(new Set(more.filter((x) => x !== "----" && x !== "Quit myous")), new Set(l.filter((x) => x !== "----")));
-  assert.equal(actions.size, l.filter((x) => x !== "----").length);
-  assert.ok([...actions.keys()].every((id) => id.startsWith("app")), "ids apart from the tray's");
+  assert.equal(actions.size, l.filter((x) => x !== "----").length, "every entry its own id");
+  assert.ok([...actions.keys()].every((id) => id.startsWith("app:")), "ids apart from the tray's");
+  assert.ok(actions.has("app:Settings…") && actions.has("app:w:/home/max/.myous-worker:Open browser"), "named by label, and a worker's by its folder too");
+});
+
+/** Menu actions that note what ran, and on which worker. */
+function recorder(ran: string[]) {
+  return new Proxy({}, { get: (_t, p) => (x?: { name?: string }) => ran.push(x?.name ? `${String(p)} ${x.name}` : String(p)) }) as MenuActions;
+}
+const entryId = (items: { id?: string; label?: string; children?: unknown[] }[], label: string): string => {
+  for (const i of items) {
+    if (i.label === label) return i.id!;
+    const sub = i.children ? entryId(i.children as typeof items, label) : "";
+    if (sub) return sub;
+  }
+  return "";
+};
+
+test("a menu clicked after the window rebuilt it runs what it showed, on the worker it showed, or nothing", () => {
+  const m = model();
+  applyFake(m, "workers");
+  evaluate(m);
+  const ran: string[] = [];
+  const act = recorder(ran);
+  const [first, second] = m.workers;
+  const submenu = (items: ReturnType<typeof buildMenu>["items"], w: Worker) => items.find((i) => i.label?.startsWith(`${w.name} · `))!.children!;
+  const before = buildMenu(m, false, act).items;
+  const stopFirst = entryId(submenu(before, first), "Stop"), stopSecond = entryId(submenu(before, second), "Stop");
+  assert.equal(stopFirst, "w:/home/max/.myous-worker:Stop");
+  assert.equal(stopSecond, "w:/home/max/.myous-worker-2:Stop");
+  // The first worker stops; the window rebuilds the menu while the owner has the old one open.
+  first.screen = "stopped";
+  const after = buildMenu(m, false, act);
+  after.actions.get(stopFirst)?.();
+  assert.deepEqual(ran, [], "the first worker's Stop runs nothing: it has none now (not the second's)");
+  after.actions.get(entryId(before, "Settings…"))!();
+  after.actions.get(stopSecond)!();
+  assert.deepEqual(ran, ["settings", "stop Max's PC for Codex"]);
+  // A worker that went: its entries of the last menu run nothing.
+  ran.length = 0;
+  m.workers = [first];
+  after.actions.get(stopSecond)!();
+  after.actions.get(entryId(after.items, "Show container log"))!();
+  assert.deepEqual(ran, ["containerLog Max's PC"], "the Advanced entries are the current worker's");
+  // An agent's entry is its folder: it opens that agent, whatever the order.
+  applyFake(m, "agents");
+  evaluate(m);
+  const agent = buildMenu(m, false, act).items.find((i) => i.label?.startsWith("Claude Code"))!;
+  assert.equal(agent.id, "a:/home/max/.myous-claude");
+});
+
+test("a Mac's app menu clicked after it changed runs what it showed", () => {
+  const m = model();
+  m.os = "macos";
+  applyFake(m, "running");
+  evaluate(m);
+  const ran: string[] = [];
+  const act = recorder(ran);
+  // Built while the worker runs (its browser entry first), clicked once it stopped (no browser entry).
+  const before = appMenu(m, act).items;
+  m.current.screen = "stopped";
+  const after = appMenu(m, act);
+  assert.ok(!labels(after.items).includes("Open browser"));
+  after.actions.get(entryId(before, "Remove stale containers…"))!();
+  after.actions.get(entryId(before, "Open browser"))?.();
+  assert.deepEqual(ran, ["removeContainers"], "Remove stale containers…, and no browser for a worker that stopped");
+  // Another worker shown meanwhile: the first one's entries run nothing.
+  applyFake(m, "workers");
+  evaluate(m);
+  const logOfFirst = entryId(appMenu(m, act).items, "Show container log");
+  m.current = m.workers[1];
+  appMenu(m, act).actions.get(logOfFirst)?.();
+  assert.deepEqual(ran, ["removeContainers"]);
+  assert.notEqual(entryId(appMenu(m, act).items, "Show container log"), logOfFirst);
 });
 
 test("a Mac's made-up worker is Max's Mac", () => {
@@ -299,7 +371,7 @@ test("the tray menu offers what the state allows", () => {
   assert.equal(l.filter((x, i) => x === "----" && l[i + 1] === "----").length, 0, "no double separators");
   assert.ok(actions.has("open"));
   // Ids name their entries: a click on a menu built before the last change still runs the right action.
-  assert.ok(actions.has("m:Settings…") && actions.has("m:Stop") && actions.has("m:Add a worker…"));
+  assert.ok(actions.has("m:Settings…") && actions.has("w:/home/max/.myous-worker:Stop") && actions.has("m:Add a worker…"));
   assert.ok(actions.has("m:Remove stale containers…"), "it opens a dialog");
   applyFake(m, "stopped");
   evaluate(m);
@@ -313,7 +385,8 @@ test("the tray menu offers what the state allows", () => {
   assert.ok(labels(workers[1].children!).includes("Remove…"));
   assert.ok(!labels(workers[0].children!).includes("Remove…"), "the first worker stays");
   ({ items, actions } = buildMenu(m, false, noop));
-  assert.ok(actions.has("m:Stop") && actions.has("m:Stop#2") && actions.has("m:Add a worker…#2"), "a second entry with the same label gets #2");
+  assert.ok(actions.has("w:/home/max/.myous-worker:Stop") && actions.has("w:/home/max/.myous-worker-2:Stop"), "each worker's Stop names its folder");
+  assert.ok(actions.has("m:Add a worker…#2"), "a second entry with the same label gets #2");
   const l2 = labels(items);
   assert.equal(l2.filter((x, i) => x === "----" && l2[i + 1] === "----").length, 0, "no double separators");
   // Several workers: a WORKERS section with their submenus and Add a worker…, closed by a separator.
