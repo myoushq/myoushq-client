@@ -324,6 +324,10 @@ jobs:
           set -eu
           echo "$MAC_CERT_P12" | base64 --decode > /tmp/cert.p12
           security create-keychain -p "" build.keychain
+          # A new keychain locks itself after 5 minutes; the universal build
+          # takes longer than that before the first codesign, and the disk
+          # image is signed after notarization. Six hours outlasts the job.
+          security set-keychain-settings -lut 21600 build.keychain
           security default-keychain -s build.keychain
           security unlock-keychain -p "" build.keychain
           security import /tmp/cert.p12 -k build.keychain -P "$MAC_CERT_PASSWORD" -T /usr/bin/codesign
