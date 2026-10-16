@@ -31,6 +31,7 @@ RELATIONSHIPS = ("family", "friend", "colleague", "business", "service", "other"
 MAX_SHARING = 500
 MAX_NAME = 64     # an alias, as in the pairing payload
 MAX_ABOUT = 500   # a card's self-description
+CONTEXT_KEYS = ("relationship", "sharing", "added_by")
 
 
 def context_fields(relationship: str | None = None, sharing: str | None = None,
@@ -121,18 +122,21 @@ def load(st: Storage) -> dict[str, dict]:
     return st.get("contacts", {})
 
 
-def add(st: Storage, pubkey_hex: str, alias: str) -> dict:
-    """Pin a peer as approved. Re-pairing with a known key keeps its alias."""
+def add(st: Storage, pubkey_hex: str, alias: str, **fields) -> dict:
+    """Pin a new peer as approved, with `fields` (from context_fields).
+    A key that is already a contact is returned as it is: a pairing never
+    unblocks a contact or changes its alias or context; the owner does
+    that (unblock, rename, context)."""
     contacts = load(st)
     if pubkey_hex in contacts:
-        contacts[pubkey_hex]["status"] = APPROVED
-    else:
-        contacts[pubkey_hex] = {
-            "alias": _unique_alias(contacts, alias or "peer"),
-            "npub": PublicKey.parse(pubkey_hex).to_bech32(),
-            "status": APPROVED,
-            "paired_at": int(time.time()),
-        }
+        return contacts[pubkey_hex]
+    contacts[pubkey_hex] = {
+        "alias": _unique_alias(contacts, alias or "peer"),
+        "npub": PublicKey.parse(pubkey_hex).to_bech32(),
+        "status": APPROVED,
+        "paired_at": int(time.time()),
+        **{k: v for k, v in fields.items() if k in CONTEXT_KEYS},
+    }
     st.put("contacts", contacts)
     return contacts[pubkey_hex]
 

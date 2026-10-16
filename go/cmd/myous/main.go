@@ -552,6 +552,9 @@ func report(p *myous.Pending) error {
 	case "done":
 		fmt.Printf("paired with %s (%s)\nverification code: %s (both owners should see the same number)\n",
 			p.Contact.Alias, p.Contact.Npub, p.Verify)
+		if p.Known {
+			fmt.Printf("%s was already your contact: nothing changed (see `myous inbox`)\n", p.Contact.Alias)
+		}
 	case "elsewhere":
 		fmt.Println("the pairing was completed by another run; see `myous inbox`")
 	default:

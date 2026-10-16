@@ -4,8 +4,12 @@
 //! mailbox on the hub; the secret (K7F3QX) never leaves the two agents. Both
 //! sides run SPAKE2 with the full code as password, relayed through the
 //! mailbox, and get a shared key the hub can't learn. Each side then sends
-//! its identity (public key and alias) encrypted with that key. A wrong code,
-//! or a hub that tampers, makes decryption fail and the pairing aborts.
+//! its identity (public key and alias) encrypted with that key, with a
+//! signature by that key over a value derived from the shared key, which
+//! proves the sender holds it. A wrong code, or a hub that tampers, makes
+//! decryption fail and the pairing aborts. A pairing never changes an
+//! existing contact: a key that is already one stays as it is (blocked
+//! stays blocked).
 //!
 //! Mailbox messages (base64 of JSON):
 //!   {"t": "pake", "v": 1, "m": <spake2 message>}
@@ -21,7 +25,7 @@ use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::ChaCha20Poly1305;
 use hkdf::Hkdf;
 use myous_pake::Role;
-use nostr_sdk::prelude::{Keys, PublicKey};
+use nostr_sdk::prelude::{Event, EventId, Keys, Kind, PublicKey, Signature, Timestamp};
 use rand::{Rng, RngCore};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -152,10 +156,67 @@ pub fn unseal(key: &[u8], peer_role: &str, nameplate: &str, msg: &Value) -> Resu
         let cipher = ChaCha20Poly1305::new_from_slice(&derive(key, &format!("from {peer_role}"), 32)).ok()?;
         let plain = cipher.decrypt((&nonce).into(), Payload { msg: &sealed, aad: nameplate.as_bytes() }).ok()?;
         let payload: Value = serde_json::from_slice(&plain).ok()?;
-        PublicKey::from_hex(payload["pubkey"].as_str()?).ok()?;
-        Some(payload)
+        valid_pubkey(payload["pubkey"].as_str()?).then_some(payload)
     };
     open().ok_or_else(|| PairingError("the code didn't match (or the exchange was tampered with)".into()).into())
+}
+
+fn lower_hex(s: &str, len: usize) -> bool {
+    s.len() == len && s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// A key as protocol.md writes it: 64 lowercase hex characters, the x of a
+/// point on secp256k1. PublicKey::from_hex alone also takes uppercase and
+/// x values off the curve.
+pub fn valid_pubkey(text: &str) -> bool {
+    lower_hex(text, 64) && PublicKey::from_hex(text).is_ok_and(|pk| pk.xonly().is_ok())
+}
+
+/// The 32 bytes a side signs with its identity key, so the other side knows
+/// it holds the key in its payload (protocol.md, section 5.4). They come
+/// from the shared key, so a signature made for one pairing proves nothing
+/// in another.
+pub fn key_proof(key: &[u8], role: &str) -> [u8; 32] {
+    derive(key, &format!("key proof from {role}"), 32).try_into().unwrap()
+}
+
+pub fn sign_proof(keys: &Keys, key: &[u8], role: &str) -> String {
+    keys.sign_schnorr(key_proof(key, role)).to_hex()
+}
+
+/// Whether `sig` is a BIP-340 signature of `message` by `pubkey_hex`.
+/// nostr has no bare Schnorr check, but Event::verify_signature checks the
+/// signature over the event id as given (it doesn't recompute the id), so
+/// an event whose id is `message` checks exactly that.
+pub fn proof_holds(pubkey_hex: &str, message: [u8; 32], sig: &str) -> bool {
+    if !lower_hex(pubkey_hex, 64) || !lower_hex(sig, 128) {
+        return false;
+    }
+    let (Ok(pk), Ok(sig)) = (PublicKey::from_hex(pubkey_hex), Signature::from_hex(sig)) else { return false };
+    Event::new(EventId::from_byte_array(message), pk, Timestamp::from(0), Kind::from(0u16), [], "", sig).verify_signature()
+}
+
+/// Whether the payload proves its key: false if it has no proof (clients
+/// up to 0.7.5 send none; a later version will require it), an error if
+/// the proof doesn't hold.
+fn check_proof(key: &[u8], peer_role: &str, payload: &Value) -> Result<bool> {
+    match &payload["sig"] {
+        Value::Null => Ok(false),
+        sig => match sig.as_str() {
+            Some(s) if proof_holds(payload["pubkey"].as_str().unwrap_or_default(), key_proof(key, peer_role), s) => Ok(true),
+            _ => fail("the other side didn't prove it holds the key it sent"),
+        },
+    }
+}
+
+/// Why a pairing that named a contact which isn't approved changed nothing.
+fn known_refused(c: &Contact, proven: bool) -> String {
+    let who = if proven {
+        format!("answered by your contact \"{}\" ({})", c.alias, c.status)
+    } else {
+        format!("answered with the key of your contact \"{}\" ({}), which the other side didn't prove it holds", c.alias, c.status)
+    };
+    format!("{who}; nothing changed: if that is right, unblock it (myous unblock \"{}\")", c.alias)
 }
 
 // --- the exchange --------------------------------------------------------
@@ -237,7 +298,8 @@ pub fn pairing_trace(st: &dyn Storage, since: u64) -> Option<(String, Vec<TraceS
 pub enum Outcome {
     /// Still waiting for the other side.
     Waiting,
-    Done { contact: Contact, verify: String },
+    /// `known`: the key was already a contact, which the pairing left as it was.
+    Done { contact: Contact, verify: String, known: bool },
     Failed(String),
     /// Another run finished or dropped it.
     Elsewhere,
@@ -517,7 +579,8 @@ impl<'a> Pairing<'a> {
             p.key = Some(B64.encode(&key));
             p.stage = "wait_payload".into();
             self.save(p)?;
-            let mine = json!({"v": VERSION, "pubkey": self.keys.public_key().to_hex(), "alias": self.alias});
+            let mine = json!({"v": VERSION, "pubkey": self.keys.public_key().to_hex(), "alias": self.alias,
+                              "sig": sign_proof(self.keys, &key, &p.role)});
             self.post(&p.nameplate, &p.token, &seal(&key, &p.role, &p.nameplate, &mine, None)).await?;
             Ok(None)
         } else if p.stage == "wait_payload" && msg["t"] == "payload" {
@@ -527,18 +590,28 @@ impl<'a> Pairing<'a> {
             if pubkey == self.keys.public_key().to_hex() {
                 return fail("that's this agent's own invite");
             }
+            let proven = check_proof(&key, peer_role, &payload)?;
             let alias: String = payload["alias"].as_str().unwrap_or_default().chars().take(64).collect();
             let verify = verify_code(&key);
             let _lock = self.st.lock("state", true)?;
-            let mut contact = contacts::add(&*self.st, pubkey, &alias)?;
-            if !p.context.is_empty() {
-                contact = contacts::set_context(&*self.st, pubkey, &p.context)?;
+            let known = contacts::load(&*self.st)?.remove(pubkey);
+            if let Some(c) = known.as_ref().filter(|c| c.status != contacts::APPROVED) {
+                return fail(&known_refused(c, proven));
             }
+            let contact = contacts::add_with_context(&*self.st, pubkey, &alias, &p.context)?;
             // They learned our alias from the payload; a card follows if we have one.
             contacts::peer_knows(&*self.st, pubkey, &self.alias, "")?;
             self.st.delete(&format!("pending/{}", p.nameplate))?;
             let mut text = format!("paired with {} (verification code {verify})", contact.alias);
-            if contact.relationship.is_none() {
+            let given = p.context.relationship.is_some() || p.context.sharing.is_some();
+            if known.is_some() {
+                text += &format!(". {} was already your contact: nothing changed", contact.alias);
+                if given {
+                    text += &format!(" (the relationship and sharing given with this invite were not applied; \
+                        to change them: myous context {:?} --relationship ... --sharing \"...\")", contact.alias);
+                }
+            }
+            if contact.relationship.is_none() && !(known.is_some() && given) {
                 text += &format!(". Ask your owner how they know this contact and what you may share with it, \
                     then record it: myous context {:?} --relationship ... --sharing \"...\"", contact.alias);
             }
@@ -547,7 +620,7 @@ impl<'a> Pairing<'a> {
             }))?;
             // Don't close the mailbox: the peer may not have read our payload
             // yet. It only holds ciphertext and expires on its own.
-            Ok(Some(Outcome::Done { contact, verify }))
+            Ok(Some(Outcome::Done { contact, verify, known: known.is_some() }))
         } else {
             fail("unexpected message from the other side")
         }
@@ -636,6 +709,21 @@ mod tests {
         let (role, np) = (ps["role"].as_str().unwrap(), ps["nameplate"].as_str().unwrap());
         assert_eq!(seal(&k, role, np, &payload, Some(nonce)), ps["message"]);
         assert_eq!(unseal(&k, role, np, &ps["message"]).unwrap(), payload);
+
+        let kp = &v["key_proof"];
+        let k = unhex(kp["K_hex"].as_str().unwrap());
+        let (a, b) = (kp["from_a_hex"].as_str().unwrap(), kp["from_b_hex"].as_str().unwrap());
+        assert_eq!((hex(&key_proof(&k, "a")), hex(&key_proof(&k, "b"))), (a.to_string(), b.to_string()));
+        let (pk, sig) = (kp["pubkey_hex"].as_str().unwrap(), kp["sig_hex"].as_str().unwrap());
+        let keys = Keys::parse(kp["secret_key_hex"].as_str().unwrap()).unwrap();
+        assert_eq!(keys.public_key().to_hex(), pk);
+        assert!(valid_pubkey(pk));
+        let msg = |h: &str| -> [u8; 32] { unhex(h).try_into().unwrap() };
+        assert!(proof_holds(pk, msg(a), sig));
+        assert!(!proof_holds(pk, msg(b), sig));
+        let flipped = format!("{}{}", &sig[..127], if sig.ends_with('0') { "1" } else { "0" });
+        assert!(!proof_holds(pk, msg(a), &flipped));
+        assert!(proof_holds(pk, msg(a), &sign_proof(&keys, &k, "a")));
     }
 
     #[test]
@@ -982,5 +1070,228 @@ mod tests {
             .filter(|m| String::from_utf8(B64.decode(m).unwrap()).unwrap().contains("\"pake\""))
             .count();
         assert_eq!(pakes, 1, "one PAKE message from B, not two");
+    }
+
+    // --- the key a pairing pins ----------------------------------------------
+    // The other side proves it holds the key it sends (a signature over a
+    // value only the two sides know), and a pairing never changes a key that
+    // is already a contact: a blocked contact stays blocked, an approved one
+    // keeps its alias and context. Clients from before the proof send none
+    // and still pair.
+
+    use crate::contacts::ContactContext;
+    use nostr_sdk::prelude::ToBech32;
+
+    fn erin() -> ContactContext {
+        ContactContext { relationship: Some("friend".into()), sharing: Some("my calendar and home address".into()), added_by: None }
+    }
+
+    /// Side A (a real pairing) and a mailbox for side B, which a test writes
+    /// out by hand so it can send any payload.
+    struct KeyFixture {
+        _dir: tempfile::TempDir,
+        st: Arc<FileStorage>,
+        hub: Hub,
+        keys: Keys,
+    }
+
+    async fn key_fixture() -> KeyFixture {
+        let url = serve(Arc::new(Mutex::new(MailboxHub::default()))).await;
+        let dir = tempfile::tempdir().unwrap();
+        let st = Arc::new(FileStorage::new(Some(dir.path().to_path_buf())).unwrap());
+        st.put("settings", &json!({"hub": url})).unwrap();
+        st.put("hub", &json!({"url": url, "fetched_at": now(), "pair_link_base": "https://hub.test/p/"})).unwrap();
+        let hub = Hub::new(st.clone()).unwrap();
+        KeyFixture { _dir: dir, st, hub, keys: Keys::generate() }
+    }
+
+    /// A payload naming `k`, its proof signed by `signer` (None: no proof,
+    /// as clients up to 0.7.5 send).
+    fn payload_of(k: &Keys, alias: &str, signer: Option<&Keys>) -> impl Fn(&[u8]) -> Value {
+        let (pubkey, alias, signer) = (k.public_key().to_hex(), alias.to_string(), signer.cloned());
+        move |key| {
+            let mut p = json!({"v": 1, "pubkey": pubkey, "alias": alias});
+            if let Some(s) = &signer {
+                p["sig"] = json!(sign_proof(s, key, "b"));
+            }
+            p
+        }
+    }
+
+    impl KeyFixture {
+        async fn post(&self, token: &str, msg: Value) {
+            let body = B64.encode(serde_json::to_vec(&msg).unwrap());
+            self.hub.request("POST", &format!("/api/pair/{NAMEPLATE}/messages"), Some(json!({"body": body})), Some(token)).await.unwrap();
+        }
+
+        /// Invite with `cc`; side B answers with make(K). Returns A's
+        /// outcome, the payload A sent, and K.
+        async fn pair(&self, cc: ContactContext, make: impl Fn(&[u8]) -> Value) -> (Outcome, Value, Vec<u8>) {
+            let me = Pairing::new(self.st.clone(), &self.hub, &self.keys, "me".into());
+            let code = me.invite(cc).await.unwrap().code;
+            let claim = self.hub.request("POST", &format!("/api/pair/{NAMEPLATE}/claim"), Some(json!({"claim": "ab".repeat(16)})), None)
+                .await.unwrap();
+            let token = claim["token"].as_str().unwrap().to_string();
+            let seed = [7u8; 32];
+            self.post(&token, json!({"t": "pake", "v": 1, "m": B64.encode(myous_pake::start(Role::B, &code, seed))})).await;
+            assert_eq!(me.advance_all().await.unwrap(), vec![], "A reads the PAKE and sends its payload");
+            let got = self.hub.request("GET", &format!("/api/pair/{NAMEPLATE}/messages?after=0&wait=0"), None, Some(&token)).await.unwrap();
+            let msgs: Vec<Value> = got["messages"].as_array().unwrap().iter()
+                .map(|b| serde_json::from_slice(&B64.decode(b.as_str().unwrap()).unwrap()).unwrap())
+                .collect();
+            let key = myous_pake::finish(Role::B, &code, seed, &B64.decode(msgs[0]["m"].as_str().unwrap()).unwrap()).unwrap();
+            self.post(&token, seal(&key, "b", NAMEPLATE, &make(&key), None)).await;
+            let mine = unseal(&key, "a", NAMEPLATE, &msgs[1]).unwrap();
+            let mut done = me.advance_all().await.unwrap();
+            assert_eq!(done.len(), 1, "{done:?}");
+            (done.remove(0), mine, key)
+        }
+
+        fn contacts(&self) -> contacts::Contacts {
+            contacts::load(&*self.st).unwrap()
+        }
+
+        fn last(&self) -> Value {
+            self.st.read_history().unwrap().pop().unwrap()
+        }
+
+        fn block(&self, k: &Keys, alias: &str) {
+            contacts::add(&*self.st, &k.public_key().to_hex(), alias).unwrap();
+            contacts::set_status(&*self.st, alias, contacts::BLOCKED).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn key_this_side_proves_its_key() {
+        let f = key_fixture().await;
+        let bob = Keys::generate();
+        let (outcome, mine, key) = f.pair(erin(), payload_of(&bob, "bob", Some(&bob))).await;
+        assert!(matches!(outcome, Outcome::Done { known: false, .. }), "{outcome:?}");
+        let (pk, sig) = (mine["pubkey"].as_str().unwrap(), mine["sig"].as_str().unwrap());
+        assert_eq!(pk, f.keys.public_key().to_hex());
+        assert!(proof_holds(pk, key_proof(&key, "a"), sig));
+        assert!(!proof_holds(pk, key_proof(&key, "b"), sig), "a proof is for one side");
+        assert_eq!(f.contacts()[&bob.public_key().to_hex()].relationship.as_deref(), Some("friend"));
+    }
+
+    #[tokio::test]
+    async fn key_a_client_without_the_proof_still_pairs() {
+        let f = key_fixture().await;
+        let bob = Keys::generate();
+        let (outcome, _, _) = f.pair(erin(), payload_of(&bob, "bob", None)).await;
+        assert!(matches!(outcome, Outcome::Done { known: false, .. }), "{outcome:?}");
+        let c = &f.contacts()[&bob.public_key().to_hex()];
+        assert_eq!((c.alias.as_str(), c.status.as_str(), c.sharing.as_deref()), ("bob", "approved", Some("my calendar and home address")));
+        assert_eq!(f.last()["type"], "paired");
+    }
+
+    /// The audit's M2: whoever answers names a blocked contact's key.
+    #[tokio::test]
+    async fn key_a_blocked_contact_stays_blocked() {
+        for proven in [false, true] {
+            let f = key_fixture().await;
+            let eve = Keys::generate();
+            f.block(&eve, "eve");
+            let (outcome, _, _) = f.pair(erin(), payload_of(&eve, "Erin", proven.then_some(&eve))).await;
+            assert!(matches!(outcome, Outcome::Failed(_)), "{outcome:?}");
+            let all = f.contacts();
+            let c = &all[&eve.public_key().to_hex()];
+            assert_eq!((all.len(), c.alias.as_str(), c.status.as_str(), c.relationship.as_deref(), c.sharing.as_deref()),
+                       (1, "eve", "blocked", None, None));
+            let want = if proven {
+                "answered by your contact \"eve\" (blocked); nothing changed"
+            } else {
+                "answered with the key of your contact \"eve\" (blocked), which the other side didn't prove it holds; \
+                 nothing changed: if that is right, unblock it (myous unblock \"eve\")"
+            };
+            let last = f.last();
+            assert_eq!(last["type"], "pairing_failed");
+            assert!(last["text"].as_str().unwrap().contains(want), "{last}");
+        }
+    }
+
+    #[tokio::test]
+    async fn key_a_bad_proof_fails() {
+        let (eve, mallory) = (Keys::generate(), Keys::generate());
+        let elsewhere = sign_proof(&eve, &[9u8; 32], "b");
+        let cases: Vec<(&str, Box<dyn Fn(&[u8]) -> Value>)> = vec![
+            ("another key's", Box::new(|key| json!(sign_proof(&mallory, key, "b")))),
+            ("another pairing's", Box::new(|_| json!(elsewhere))),
+            ("uppercase", Box::new(|key| json!(sign_proof(&eve, key, "b").to_uppercase()))),
+            ("empty", Box::new(|_| json!(""))),
+            ("zeros", Box::new(|_| json!("00".repeat(64)))),
+            ("short", Box::new(|_| json!("ab"))),
+            ("a number", Box::new(|_| json!(3))),
+        ];
+        for (name, sig) in cases {
+            let f = key_fixture().await;
+            let eve_hex = eve.public_key().to_hex();
+            let (outcome, _, _) = f.pair(ContactContext::default(), |key| json!({"v": 1, "pubkey": eve_hex, "alias": "Erin", "sig": sig(key)})).await;
+            assert_eq!(outcome, Outcome::Failed("the other side didn't prove it holds the key it sent".into()), "{name}");
+            assert!(f.contacts().is_empty(), "{name}");
+        }
+    }
+
+    #[tokio::test]
+    async fn key_an_approved_contact_keeps_its_context() {
+        let f = key_fixture().await;
+        let bob = Keys::generate();
+        let bob_hex = bob.public_key().to_hex();
+        let cc = ContactContext { relationship: Some("colleague".into()), sharing: Some("work only".into()), added_by: None };
+        let before = contacts::add_with_context(&*f.st, &bob_hex, "bob", &cc).unwrap();
+        let (outcome, _, _) = f.pair(erin(), payload_of(&bob, "Erin", None)).await;
+        assert!(matches!(outcome, Outcome::Done { known: true, .. }), "{outcome:?}");
+        let mut after = f.contacts().remove(&bob_hex).unwrap();
+        after.peer_knows = None; // set again: the peer learned our alias
+        assert_eq!(after, before, "alias, status and context as they were");
+        assert_eq!(f.contacts().len(), 1);
+        let last = f.last();
+        assert_eq!(last["type"], "paired");
+        assert!(last["text"].as_str().unwrap().contains("bob was already your contact: nothing changed (the relationship and sharing \
+            given with this invite were not applied; to change them: myous context \"bob\""), "{last}");
+    }
+
+    #[tokio::test]
+    async fn key_written_otherwise_is_refused() {
+        let bob = Keys::generate();
+        let f0 = key_fixture().await;
+        let own_upper = f0.keys.public_key().to_hex().to_uppercase();
+        for key in [bob.public_key().to_hex().to_uppercase(), bob.public_key().to_bech32().unwrap(), "ff".repeat(32)] {
+            let f = key_fixture().await;
+            let (outcome, _, _) = f.pair(ContactContext::default(), |_| json!({"v": 1, "pubkey": key, "alias": "x"})).await;
+            assert_eq!(outcome, Outcome::Failed("the code didn't match (or the exchange was tampered with)".into()), "{key}");
+            assert!(f.contacts().is_empty());
+        }
+        let (outcome, _, _) = f0.pair(ContactContext::default(), |_| json!({"v": 1, "pubkey": own_upper, "alias": "x"})).await;
+        assert!(matches!(outcome, Outcome::Failed(_)), "own key in uppercase: {outcome:?}");
+        assert!(f0.contacts().is_empty());
+    }
+
+    /// The context goes to the new contact by its key, never to a contact
+    /// whose alias happens to be that key.
+    #[tokio::test]
+    async fn key_an_alias_that_names_a_key_gets_no_context() {
+        for _ in 0..4 { // the contacts' order (by key) decided which one find() found
+            let f = key_fixture().await;
+            let (bob, mallory) = (Keys::generate(), Keys::generate());
+            let bob_hex = bob.public_key().to_hex();
+            contacts::add(&*f.st, &mallory.public_key().to_hex(), &bob_hex).unwrap();
+            let (outcome, _, _) = f.pair(erin(), payload_of(&bob, "bob", Some(&bob))).await;
+            assert!(matches!(outcome, Outcome::Done { .. }), "{outcome:?}");
+            let all = f.contacts();
+            assert_eq!(all[&bob_hex].relationship.as_deref(), Some("friend"));
+            assert_eq!(all[&mallory.public_key().to_hex()].relationship, None);
+        }
+    }
+
+    #[test]
+    fn key_add_leaves_a_contact_as_it_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let st = FileStorage::new(Some(dir.path().to_path_buf())).unwrap();
+        let eve = Keys::generate().public_key().to_hex();
+        contacts::add_with_context(&st, &eve, "eve", &ContactContext { relationship: Some("other".into()), ..Default::default() }).unwrap();
+        contacts::set_status(&st, "eve", contacts::BLOCKED).unwrap();
+        let c = contacts::add_with_context(&st, &eve, "eve again", &erin()).unwrap();
+        assert_eq!((c.alias.as_str(), c.status.as_str(), c.relationship.as_deref()), ("eve", "blocked", Some("other")));
     }
 }

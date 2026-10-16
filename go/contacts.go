@@ -201,24 +201,28 @@ func loadContacts(st Storage) (map[string]Contact, error) {
 	return contacts, err
 }
 
-// addContact pins a peer as approved. Re-pairing with a known key keeps its alias.
-func addContact(st Storage, pubkey, alias string) (Contact, error) {
+// addContact pins a new peer as approved, with the context cc. A key that
+// is already a contact is returned as it is: a pairing never unblocks a
+// contact or changes its alias or context; the owner does that (unblock,
+// rename, context).
+func addContact(st Storage, pubkey, alias string, cc ...ContactContext) (Contact, error) {
 	contacts, err := loadContacts(st)
 	if err != nil {
 		return Contact{}, err
 	}
-	c, ok := contacts[pubkey]
-	if ok {
-		c.Status = Approved
-	} else {
-		npub, err := nip19.EncodePublicKey(pubkey)
-		if err != nil {
-			return Contact{}, err
-		}
-		if alias == "" {
-			alias = "peer"
-		}
-		c = Contact{Alias: uniqueAlias(contacts, alias), Npub: npub, Status: Approved, PairedAt: time.Now().Unix()}
+	if c, ok := contacts[pubkey]; ok {
+		return c, nil
+	}
+	npub, err := nip19.EncodePublicKey(pubkey)
+	if err != nil {
+		return Contact{}, err
+	}
+	if alias == "" {
+		alias = "peer"
+	}
+	c := Contact{Alias: uniqueAlias(contacts, alias), Npub: npub, Status: Approved, PairedAt: time.Now().Unix()}
+	for _, x := range cc {
+		x.apply(&c)
 	}
 	contacts[pubkey] = c
 	return c, st.Put("contacts", contacts)

@@ -96,6 +96,18 @@ impl ContactContext {
     pub fn is_empty(&self) -> bool {
         self.relationship.is_none() && self.sharing.is_none() && self.added_by.is_none()
     }
+
+    fn apply(&self, c: &mut Contact) {
+        if let Some(r) = &self.relationship {
+            c.relationship = Some(r.clone());
+        }
+        if let Some(s) = self.sharing.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+            c.sharing = Some(s.to_string());
+        }
+        if let Some(a) = self.added_by.as_ref().filter(|a| !a.is_empty()) {
+            c.added_by = Some(a.clone());
+        }
+    }
 }
 
 /// Record relationship context on a contact.
@@ -103,16 +115,7 @@ pub fn set_context(st: &dyn Storage, name: &str, cc: &ContactContext) -> Result<
     cc.validate()?;
     let (key, _) = find(st, name)?;
     let mut contacts = load(st)?;
-    let c = contacts.get_mut(&key).unwrap();
-    if let Some(r) = &cc.relationship {
-        c.relationship = Some(r.clone());
-    }
-    if let Some(s) = cc.sharing.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
-        c.sharing = Some(s.to_string());
-    }
-    if let Some(a) = cc.added_by.as_ref().filter(|a| !a.is_empty()) {
-        c.added_by = Some(a.clone());
-    }
+    cc.apply(contacts.get_mut(&key).unwrap());
     save(st, &contacts)?;
     Ok(contacts[&key].clone())
 }
@@ -203,19 +206,28 @@ fn save(st: &dyn Storage, contacts: &Contacts) -> Result<()> {
     st.put("contacts", &serde_json::to_value(contacts)?)
 }
 
-/// Pin a peer as approved. Re-pairing with a known key keeps its alias.
+/// Pin a new peer as approved.
 pub fn add(st: &dyn Storage, pubkey_hex: &str, alias: &str) -> Result<Contact> {
+    add_with_context(st, pubkey_hex, alias, &ContactContext::default())
+}
+
+/// Pin a new peer as approved, with the context `cc`. A key that is
+/// already a contact is returned as it is: a pairing never unblocks a
+/// contact or changes its alias or context; the owner does that (unblock,
+/// rename, context).
+pub fn add_with_context(st: &dyn Storage, pubkey_hex: &str, alias: &str, cc: &ContactContext) -> Result<Contact> {
     let mut contacts = load(st)?;
-    if let Some(c) = contacts.get_mut(pubkey_hex) {
-        c.status = APPROVED.into();
-    } else {
-        let alias = unique_alias(&contacts, if alias.is_empty() { "peer" } else { alias });
-        let npub = PublicKey::from_hex(pubkey_hex)?.to_bech32()?;
-        contacts.insert(pubkey_hex.into(), Contact {
-            alias, npub, status: APPROVED.into(), paired_at: now(), relationship: None, sharing: None, added_by: None,
-            card: None, peer_knows: None,
-        });
+    if let Some(c) = contacts.get(pubkey_hex) {
+        return Ok(c.clone());
     }
+    let alias = unique_alias(&contacts, if alias.is_empty() { "peer" } else { alias });
+    let npub = PublicKey::from_hex(pubkey_hex)?.to_bech32()?;
+    let mut c = Contact {
+        alias, npub, status: APPROVED.into(), paired_at: now(), relationship: None, sharing: None, added_by: None,
+        card: None, peer_knows: None,
+    };
+    cc.apply(&mut c);
+    contacts.insert(pubkey_hex.into(), c);
     save(st, &contacts)?;
     Ok(contacts[pubkey_hex].clone())
 }

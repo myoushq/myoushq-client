@@ -144,6 +144,8 @@ def _report_pairing(r: dict) -> None:
         c = r["contact"]
         print(f"paired with {c['alias']} ({c['npub']})")
         print(f"verification code: {r['verify']} (both owners should see the same number)")
+        if r.get("known"):
+            print(f"{c['alias']} was already your contact: nothing changed (see `myous inbox`)")
     elif r["stage"] == "elsewhere":
         print("the pairing was completed by another run; see `myous inbox`")
     else:

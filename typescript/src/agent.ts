@@ -206,7 +206,7 @@ export class Agent {
   // --- pairing -------------------------------------------------------------
 
   async pairing(): Promise<Pairing> {
-    return new Pairing(this.st, this.hub, await this.pubkey(), await this.alias());
+    return new Pairing(this.st, this.hub, await this.pubkey(), await this.alias(), await this.key());
   }
 
   /** Start a pairing; it finishes during a later poll(), listen() or advancePairings(). */

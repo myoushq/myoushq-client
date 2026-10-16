@@ -31,6 +31,19 @@ class Vectors(unittest.TestCase):
         self.assertEqual(sealed, v["message"])
         self.assertEqual(pairing.unseal(k, v["role"], v["nameplate"], sealed), payload)
 
+    def test_key_proof(self):
+        v = VECTORS["key_proof"]
+        k = bytes.fromhex(v["K_hex"])
+        self.assertEqual(pairing.key_proof(k, "a").hex(), v["from_a_hex"])
+        self.assertEqual(pairing.key_proof(k, "b").hex(), v["from_b_hex"])
+        self.assertTrue(pairing.valid_pubkey(v["pubkey_hex"]))
+        self.assertTrue(pairing.proof_holds(v["pubkey_hex"], bytes.fromhex(v["from_a_hex"]), v["sig_hex"]))
+        self.assertFalse(pairing.proof_holds(v["pubkey_hex"], bytes.fromhex(v["from_b_hex"]), v["sig_hex"]))
+        flipped = v["sig_hex"][:-1] + ("0" if v["sig_hex"][-1] != "0" else "1")
+        self.assertFalse(pairing.proof_holds(v["pubkey_hex"], bytes.fromhex(v["from_a_hex"]), flipped))
+        from nostr_sdk import Keys
+        self.assertEqual(Keys.parse(v["secret_key_hex"]).public_key().to_hex(), v["pubkey_hex"])
+
     def test_file_encryption(self):
         for v in VECTORS["files"]:
             key, nonce = bytes.fromhex(v["key"]), bytes.fromhex(v["nonce"])
