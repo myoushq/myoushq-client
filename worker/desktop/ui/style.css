@@ -4,12 +4,15 @@
   --grey: #8e8e93; --blue: #0a84ff; --green: #2fa84f; --orange: #e8890c; --red: #e5484d;
   /* Words in a state colour: darker than the dots in light mode, so they read on white. */
   --green-text: #1d7f3a; --orange-text: #a85a00; --red-text: #c62d32;
+  /* Text on the accent and words in it, each at 4.5:1 at least (WCAG AA): the fill behind white words,
+     the links on a card. One colour in light mode; dark mode needs a deeper fill and a lighter link. */
+  --fill: var(--accent); --link: var(--accent);
   --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, "Cascadia Mono", Consolas, "DejaVu Sans Mono", "Liberation Mono", monospace;
   color-scheme: light dark;
 }
 @media (prefers-color-scheme: dark) {
   :root { --bg: #1c1c1e; --side: #19191b; --card: #2c2c2e; --raised: #333336; --fg: #f5f5f7; --muted: #a1a1a6; --faint: #8e8e93; --line: #3a3a3c;
-    --accent: #2f8cff; --danger: #ff6961; --input: #1c1c1e; --hover: #3a3a3c; --focus: rgba(47, 140, 255, .55);
+    --accent: #4c9dff; --fill: #0a66d8; --danger: #ff6961; --input: #1c1c1e; --hover: #3a3a3c; --focus: rgba(76, 157, 255, .55);
     --green-text: #4cc96b; --orange-text: #f5a442; --red-text: #ff6b6f; }
 }
 * { box-sizing: border-box; }
@@ -19,11 +22,11 @@ body { background: var(--bg); color: var(--fg); font: 14px/1.45 system-ui, -appl
 main { flex: 1; max-width: 640px; margin: 0 auto; padding: 16px 20px 24px; min-width: 0; container-type: inline-size; }
 nav { width: 180px; flex: none; background: var(--side); border-right: 1px solid var(--line); padding: 16px 8px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .side-title { font-weight: 600; padding: 0 8px 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.side-head { font-size: 11px; font-weight: 600; letter-spacing: .06em; color: var(--muted); padding: 10px 8px 2px; }
+.side-head { font-size: 11px; font-weight: 600; letter-spacing: .06em; color: color-mix(in srgb, var(--muted) 80%, var(--fg)); padding: 10px 8px 2px; }
 .side-row { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 6px; cursor: default; min-width: 0; }
 .side-row > span:last-child { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .side-row:hover { background: var(--hover); }
-.side-row.selected { background: var(--accent); color: var(--accent-fg); }
+.side-row.selected { background: var(--fill); color: var(--accent-fg); }
 #side-add { margin-top: auto; padding: 6px 8px; }
 @media (max-width: 600px) { nav { width: 156px; } }
 
@@ -64,10 +67,10 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: var(--a
 button { font: inherit; color: var(--fg); background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 5px 12px; cursor: pointer; white-space: nowrap; }
 button:hover { background: var(--hover); }
 button:disabled { opacity: .5; cursor: default; }
-button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
-button.primary:hover { background: color-mix(in srgb, var(--accent) 88%, #000); }
+button.primary { background: var(--fill); border-color: var(--fill); color: var(--accent-fg); }
+button.primary:hover { background: color-mix(in srgb, var(--fill) 88%, #000); }
 button.danger { color: var(--danger); }
-button.link { border: none; background: none; color: var(--accent); text-align: left; padding: 2px 0; white-space: normal; }
+button.link { border: none; background: none; color: var(--link); text-align: left; padding: 2px 0; white-space: normal; }
 button.link:hover { background: none; text-decoration: underline; }
 button.icon { border: none; background: none; font-size: 18px; padding: 2px 6px; line-height: 1; border-radius: 6px; }
 button.icon:hover { background: var(--hover); }
@@ -77,7 +80,7 @@ button.link:focus-visible { outline-offset: 1px; border-radius: 3px; }
 #requests tr:focus-visible { outline-offset: -2px; }
 .menu { position: absolute; right: 0; top: 32px; z-index: 5; background: var(--raised); border: 1px solid var(--line); border-radius: 8px; padding: 4px; box-shadow: 0 6px 24px rgba(0,0,0,.18); min-width: 230px; }
 .menu button { display: block; width: 100%; text-align: left; border: none; background: none; padding: 5px 10px; border-radius: 4px; }
-.menu button:hover, .menu button:focus-visible { background: var(--accent); color: var(--accent-fg); outline: none; }
+.menu button:hover, .menu button:focus-visible { background: var(--fill); color: var(--accent-fg); outline: none; }
 .menu hr { border: none; border-top: 1px solid var(--line); margin: 4px 0; }
 .banner { display: flex; align-items: center; gap: 10px; background: color-mix(in srgb, var(--red) 12%, var(--card)); border: 1px solid color-mix(in srgb, var(--red) 40%, var(--line)); color: var(--fg); border-radius: 10px; padding: 10px 12px; margin-bottom: 12px; }
 .banner span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
@@ -212,7 +215,9 @@ dialog > input { margin-top: 6px; }
   --fg: rgba(0, 0, 0, .847); --muted: rgba(0, 0, 0, .498); --faint: rgba(0, 0, 0, .26); --line: rgba(0, 0, 0, .1);
   --accent: #007aff; --accent-fg: #ffffff; --danger: #ff3b30; --input: #ffffff; --field-line: rgba(0, 0, 0, .16); --hover: rgba(0, 0, 0, .05);
   --focus: rgba(0, 122, 255, .5); --grey: #8e8e93; --blue: #007aff; --green: #28cd41; --orange: #ff9500; --red: #ff3b30;
-  --green-text: #1d7f3a; --orange-text: #c26a00; --red-text: #ff3b30;
+  /* Words in a state colour and links: darker than AppKit's system colours, which read at 2.8 to 4:1 on
+     the window's grey; Refuse and Remove in a red that reads on a white button. */
+  --green-text: #177033; --orange-text: #9a5200; --red-text: #c0001a; --link: #0060c8; --danger-button: #d70015; --fill: var(--accent);
   --even: #ffffff; --odd: #f4f5f5; --selected: #0063e1; --selected-fg: #ffffff;
   --button: #ffffff; --button-fg: rgba(0, 0, 0, .847);
   --button-shadow: 0 0 0 .5px rgba(0, 0, 0, .16), 0 .5px 1.5px rgba(0, 0, 0, .18);
@@ -223,7 +228,9 @@ dialog > input { margin-top: 6px; }
     --fg: rgba(255, 255, 255, .847); --muted: rgba(255, 255, 255, .55); --faint: rgba(255, 255, 255, .25); --line: rgba(255, 255, 255, .1);
     --accent: #007aff; --danger: #ff453a; --input: rgba(255, 255, 255, .05); --field-line: rgba(255, 255, 255, .16); --hover: rgba(255, 255, 255, .06);
     --grey: #98989d; --blue: #0a84ff; --green: #32d74b; --orange: #ff9f0a; --red: #ff453a;
-    --green-text: #32d74b; --orange-text: #ff9f0a; --red-text: #ff453a;
+    /* Red words lighter than systemRed (3.4:1 on the box); Refuse and Remove in the label colour, as
+       systemRed on a dark push button reads at 1.7:1. */
+    --green-text: #32d74b; --orange-text: #ff9f0a; --red-text: #ff7b74; --link: #5caeff; --danger-button: rgba(255, 255, 255, .847);
     --even: #1e1e1e; --odd: #292929; --selected: #0058d0; --button: #656565; --button-fg: rgba(255, 255, 255, .847);
     --button-shadow: inset 0 .5px 0 rgba(255, 255, 255, .22), 0 0 0 .5px rgba(0, 0, 0, .3), 0 .5px 1px rgba(0, 0, 0, .3);
   }
@@ -233,7 +240,7 @@ dialog > input { margin-top: 6px; }
     --fg: -apple-system-label; --muted: -apple-system-secondary-label; --faint: -apple-system-tertiary-label; --line: -apple-system-separator;
     --accent: -apple-system-control-accent; --accent-fg: -apple-system-alternate-selected-text; --danger: -apple-system-red;
     --grey: -apple-system-gray; --blue: -apple-system-blue; --green: -apple-system-green; --orange: -apple-system-orange; --red: -apple-system-red;
-    --red-text: -apple-system-red; --even: -apple-system-even-alternating-content-background;
+    --even: -apple-system-even-alternating-content-background;
     --selected: -apple-system-selected-content-background; --selected-fg: -apple-system-alternate-selected-text;
   }
 }
@@ -289,13 +296,13 @@ dialog > input { margin-top: 6px; }
   border: none; border-radius: 5px; padding: 1px 12px 1px; box-shadow: var(--button-shadow); cursor: default; }
 .os-macos button:not(.link, .icon):hover { background: var(--button); }
 .os-macos button:not(.link, .icon):active { filter: brightness(.94); }
-.os-macos button.danger { color: var(--danger); }
+.os-macos button.danger { color: var(--danger-button); }
 .os-macos button.primary, .os-macos button.primary:hover { background: var(--accent); color: var(--accent-fg); box-shadow: 0 0 0 .5px rgba(0, 0, 0, .12), 0 .5px 1px rgba(0, 0, 0, .2); }
 .os-macos button.link { cursor: default; }
 @supports (color: -apple-system-label) {
   .os-macos button:not(.link, .icon, .primary), .os-macos button:not(.link, .icon, .primary):hover {
     -webkit-appearance: auto; appearance: auto; background: revert; border: revert; border-radius: revert; box-shadow: none; padding: revert; color: revert; filter: none; }
-  .os-macos button.danger { color: var(--danger); }
+  .os-macos button.danger { color: var(--danger-button); }
   .os-macos select, .os-macos select:focus { -webkit-appearance: auto; appearance: auto; background: revert; border: revert; border-radius: revert; padding: revert; box-shadow: none; font: 13px -apple-system; color: revert; }
 }
 
