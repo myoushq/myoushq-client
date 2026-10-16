@@ -2993,6 +2993,14 @@ mod tests {
         fs::write(www.join("json/activate/P1"), "Target activated").unwrap();
     }
 
+    /// Python's HTTPServer looks up the host's full name (`socket.getfqdn`)
+    /// between bind and listen; on macOS 15 that lookup stalls about 35 s
+    /// (the local-network privacy, on GitHub's macOS runners:
+    /// actions/runner-images#14409), so a server made without this line
+    /// answers only after the tests gave up. The name is never used here.
+    #[cfg(unix)]
+    const NO_FQDN: &str = "socket.getfqdn = lambda name='': name";
+
     /// A stand-in for the browser in `home`: a Python script that serves
     /// the DevTools addresses on the port it is given, keeping the
     /// browser's command line as its own (as a browser's process does).
@@ -3009,7 +3017,8 @@ mod tests {
         fs::write(
             &exe,
             format!(
-                "#!{}\nimport functools, http.server, sys\n\
+                "#!{}\nimport functools, http.server, socket, sys\n\
+                 {NO_FQDN}\n\
                  port = [a.split('=', 1)[1] for a in sys.argv if a.startswith('--remote-debugging-port=')][0]\n\
                  print('args:', ' '.join(sys.argv[1:]), flush=True)\n\
                  h = functools.partial(http.server.SimpleHTTPRequestHandler, directory={:?})\n\
@@ -3225,10 +3234,13 @@ mod tests {
         let www = home.join("dev");
         devtools_files(&www);
         let port = free_port().unwrap();
+        // `python3 -m http.server`, without the name lookup (NO_FQDN).
         let mut dev = std::process::Command::new("python3")
             .args([
-                "-m",
-                "http.server",
+                "-c",
+                &format!(
+                    "import runpy, socket; {NO_FQDN}; runpy.run_module('http.server', run_name='__main__')"
+                ),
                 &port.to_string(),
                 "--bind",
                 "127.0.0.1",
