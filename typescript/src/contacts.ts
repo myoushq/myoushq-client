@@ -83,11 +83,33 @@ export function parseCard(text: string): Card | null {
   if (!obj || typeof obj !== "object" || Array.isArray(obj) || obj.myous !== "card") return null;
   const name = obj.name, about = obj.about ?? "";
   if (typeof name !== "string" || typeof about !== "string") return null;
-  const card = { name: name.trim(), about: about.trim() };
   // Lengths in code points, as Python's len() counts them.
-  const nameLen = [...card.name].length;
-  if (nameLen < 1 || nameLen > MAX_NAME || [...card.about].length > MAX_ABOUT) return null;
-  return card;
+  const nameLen = [...name.trim()].length;
+  if (nameLen < 1 || nameLen > MAX_NAME || [...about.trim()].length > MAX_ABOUT) return null;
+  // A peer's words: kept to one line, and the name safe on a command line.
+  const card = { name: cleanName(name), about: cleanText(about) };
+  return card.name ? card : null;
+}
+
+// Characters that reorder or break what is shown without showing
+// themselves: bidi controls and line separators.
+const INVISIBLE = /[\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/u;
+
+/** Text from a peer to show on one line: whitespace (newlines too) as
+ * single spaces, control and invisible characters (terminal escape
+ * sequences, bidi overrides) removed. */
+export function cleanText(text: string): string {
+  const kept = [...text].map((c) => (/\s/u.test(c) ? " " : /\p{Cc}/u.test(c) || INVISIBLE.test(c) ? "" : c)).join("");
+  return kept.split(/\s+/u).filter(Boolean).join(" ");
+}
+
+/** A name a peer chose (its alias at pairing, the name in its card), safe
+ * to show and to put between double quotes in a shell command: cleanText
+ * without $ ` " and backslash (they act inside the double quotes of the
+ * client's own suggestions and of `myous send "NAME" ...`), at most
+ * MAX_NAME characters; "" if nothing is left. */
+export function cleanName(name: string): string {
+  return [...cleanText(name.replace(/[$`"\\]/g, ""))].slice(0, MAX_NAME).join("").trim();
 }
 
 /** The JSON of this agent's card. */

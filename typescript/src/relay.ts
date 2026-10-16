@@ -158,12 +158,23 @@ export function unwrap(secretKey: Uint8Array, wrap: Event): Unwrapped | null {
   } catch {
     return null;
   }
+  // unwrapEvent parses the rumor's JSON without looking at its shape, and
+  // anyone registered can send us a wrap: check it before reading it.
+  if (!wellFormed(rumor)) return null;
   if (rumor.kind !== KIND_CHAT && rumor.kind !== KIND_FILE) return null;
   const msTag = rumor.tags.find((t) => t[0] === "ms" && /^\d+$/.test(t[1] ?? ""));
   const partTag = rumor.kind === KIND_CHAT ? rumor.tags.find((t) => t[0] === "part") : undefined;
   const part = partTag ? parseTag(partTag) : null;
   if (partTag && !part) return null; // malformed part tag: drop it
   return [rumor.pubkey, rumor.content, rumor.created_at, msTag ? Number(msTag[1]) : rumor.created_at * 1000, part, rumor.kind, rumor.tags];
+}
+
+/** Whether a rumor has the fields unwrap reads, of the right types. */
+function wellFormed(r: unknown): r is Event {
+  const e = r as Record<string, unknown> | null;
+  return !!e && typeof e === "object" && typeof e.pubkey === "string" && typeof e.content === "string" &&
+    Number.isSafeInteger(e.kind) && Number.isSafeInteger(e.created_at) && (e.created_at as number) >= 0 &&
+    Array.isArray(e.tags) && e.tags.every((t) => Array.isArray(t) && t.every((v) => typeof v === "string"));
 }
 
 async function connectAuthed(secretKey: Uint8Array, url: string): Promise<Relay> {

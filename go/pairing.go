@@ -217,7 +217,8 @@ func Open(key []byte, peerRole, nameplate string, env Envelope) ([]byte, error) 
 	fail := pairingErr("the code didn't match (or the exchange was tampered with)")
 	nonce, err1 := unb64(env.N)
 	sealed, err2 := unb64(env.C)
-	if err1 != nil || err2 != nil {
+	// The peer chooses the nonce, and Open panics on a wrong length.
+	if err1 != nil || err2 != nil || len(nonce) != chacha20poly1305.NonceSize {
 		return nil, fail
 	}
 	aead, err := chacha20poly1305.New(Derive(key, "from "+peerRole, 32))
@@ -703,10 +704,7 @@ func (pr *pairing) step(ctx context.Context, p *Pending, body string) error {
 		if peer.Pubkey == pr.pk {
 			return pairingErr("that's this agent's own invite")
 		}
-		alias := peer.Alias
-		if len([]rune(alias)) > 64 {
-			alias = string([]rune(alias)[:64])
-		}
+		alias := cleanName(peer.Alias)
 		unlock, _, err := lock(pr.st, "state", true)
 		if err != nil {
 			return err

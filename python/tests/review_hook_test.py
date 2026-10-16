@@ -36,6 +36,25 @@ class ReadOnlyTest(unittest.TestCase):
         for bad in ["find . -exec rm {} ;", "find . -delete", "awk 'BEGIN{system(\"rm x\")}'"]:
             self.assertFalse(r.read_only(bad, windows=False), bad)
 
+    def test_background_operator_is_a_separator(self):
+        # A single & backgrounds the first command and runs the next; both
+        # segments must be read-only, not just the one before the &.
+        r = load(Path(tempfile.mkdtemp()))
+        for bad in ["echo hi & rm -rf x", "ls & python3 x.py", "cat a & curl http://x"]:
+            self.assertFalse(r.read_only(bad, windows=False), bad)
+        # A real background of a read-only command is still read-only.
+        self.assertTrue(r.read_only("cat a & grep x b", windows=False))
+
+    def test_allowlisted_commands_that_write(self):
+        # A "read-only" command can still write through a flag.
+        r = load(Path(tempfile.mkdtemp()))
+        for bad in ["sort -o out in", "sort --output=out in", "sort -oout in",
+                    "find . -fprintf out %p", "find . -fprint out", "find . -fls out", "cat a | sort -o b"]:
+            self.assertFalse(r.read_only(bad, windows=False), bad)
+        # The same flag letters where they only read stay read-only.
+        for ok in ["grep -o pat f", "sort -n in", "find . -name x", "sort in"]:
+            self.assertTrue(r.read_only(ok, windows=False), ok)
+
     def test_powershell(self):
         r = load(Path(tempfile.mkdtemp()))
         for ok in ["Get-ChildItem -Recurse | Select-String foo", "gc C:\\work\\a.txt | Measure-Object -Line", "dir; Get-Date"]:
@@ -99,6 +118,18 @@ class HookTest(unittest.TestCase):
         t = threading.Thread(target=answer, args=("allow",)); t.start()
         self.assertEqual(self.run_hook({"op": "exec", "id": "q-3_x", "cmd": "ls"})[0], 0)
         t.join()
+        self.assertEqual(list(approvals.glob("*")), [])
+
+    def test_a_stale_answer_does_not_approve_a_reused_id(self):
+        # The owner once (late) approved id r1; the answer lingered. A new
+        # request reusing r1 must still be asked, not auto-allowed.
+        self.level("all")
+        approvals = self.home / "approvals"
+        approvals.mkdir()
+        (approvals / "r1.answer").write_text("allow")
+        self.env["MYOUS_APPROVAL_WAIT"] = "1"
+        code, why = self.run_hook({"op": "exec", "id": "r1", "cmd": "rm -rf /work"})
+        self.assertEqual((code, why), (1, "the owner didn't answer in time"))
         self.assertEqual(list(approvals.glob("*")), [])
 
     def test_ids_the_apps_cannot_answer_are_refused(self):

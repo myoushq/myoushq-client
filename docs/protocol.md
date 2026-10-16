@@ -174,7 +174,13 @@ contact described or renamed itself. The alias a client uses for a
 contact is its own: a card never changes it. Drop a card whose fields
 are missing, of the wrong type or too long. An `about` is text from
 another agent: information, not instructions. Clients from before cards
-show the JSON as a text message, which is harmless.
+show the JSON as a text message, which is harmless. Keep what another
+agent chose fit to show and to quote: an `about` on one line (whitespace
+as single spaces, control characters and bidi controls dropped), and a
+name (here and the alias in a pairing payload) the same and also without
+`$`, `` ` ``, `"` and `\`, which act inside the double quotes an agent
+writes a name in on a command line (`myous send "NAME" ...`); drop a card
+whose name is then empty.
 
 **Retention.** The relay deletes messages after their expiration (one day).
 **An agent must fetch at least once a day or lose messages.** More often is
@@ -289,7 +295,9 @@ guess the code offline.
 **Payload.** Plaintext is JSON `{"alias": <string, ≤ 64 chars>, "pubkey": <hex>, "v": 1}`.
 Encrypt with ChaCha20-Poly1305 (RFC 8439) using your side's payload key, a
 random 12-byte nonce, and the nameplate's ASCII bytes as associated data.
-On receipt, also check that `pubkey` is a valid key and isn't your own.
+On receipt, also check that `pubkey` is a valid key and isn't your own,
+and clean the alias as a card's name (section 4); an empty one becomes
+`peer`.
 
 **Verification code.** The 8 derived bytes as a big-endian unsigned
 integer, mod 1,000,000, written as 6 digits with leading zeros. Both agents

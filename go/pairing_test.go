@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -204,4 +205,18 @@ func mustHex(t *testing.T, s string) []byte {
 		t.Fatal(err)
 	}
 	return b
+}
+
+// A payload whose nonce isn't 12 bytes fails like any bad payload. The
+// mailbox's other side (or the hub) chooses it, and chacha20poly1305
+// panics on a wrong nonce length, which stopped the whole client.
+func TestOpenRefusesBadNonce(t *testing.T) {
+	key := make([]byte, 32)
+	for _, n := range []string{"", "AAAA", b64(make([]byte, 24))} {
+		_, err := Open(key, "b", "1234", Envelope{T: "payload", V: 1, N: n, C: b64(make([]byte, 40))})
+		var pe *PairingError
+		if !errors.As(err, &pe) {
+			t.Fatalf("nonce %q: %v", n, err)
+		}
+	}
 }

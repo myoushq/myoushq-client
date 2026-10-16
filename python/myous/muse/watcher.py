@@ -34,7 +34,7 @@ import signal
 import sys
 import time
 
-from myous import Agent, FileStorage, inbox
+from myous import Agent, FileStorage, contacts, inbox
 from myous.cli import context_line
 
 EXIT_NEWS, EXIT_QUIET, EXIT_BUSY, EXIT_REPLACED, EXIT_STOPPED = 0, 2, 3, 4, 5
@@ -83,16 +83,19 @@ def release(pidfile) -> None:
 
 
 def describe(e: dict) -> str:
+    """An item as `myous inbox` prints it: names on one line, each further
+    line of a contact's text marked (inbox.quoted)."""
     when = time.strftime("%Y-%m-%d %H:%M", time.localtime(e.get("sent_at", e["at"])))
+    alias, q = contacts.clean_text(e.get("alias") or ""), inbox.quoted
     if e["type"] == "file":
         late = f"late reply to {inbox.late_what(e['late'])}: " if e.get("late") else ""
-        return f"[{when}] file from {e['alias']}: {late}{e['name']} ({e.get('size')} bytes; `myous fetch {e['seq']}`)"
+        return f"[{when}] file from {alias}: {q(late + contacts.clean_text(e['name']))} ({e.get('size')} bytes; `myous fetch {e['seq']}`)"
     if e.get("late"):
-        return f"[{when}] {e['alias']}: {e['text']}"
+        return f"[{when}] {alias}: {q(e['text'])}"
     if e["type"] != "message":
-        return f"[{when}] ({e['type']}) {e['text']}"
+        return f"[{when}] ({e['type']}) {q(e['text'])}"
     line = context_line(e)
-    return f"[{when}] {e['alias']}: {e['text']}" + (f"\n{line}" if line else "")
+    return f"[{when}] {alias}: {q(e['text'])}" + (f"\n{line}" if line else "")
 
 
 async def wait_for_news(agent: Agent, retry: float, deadline: float | None) -> list[dict]:

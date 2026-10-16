@@ -192,3 +192,42 @@ func TestWorkerRepliesAreNotUnread(t *testing.T) {
 		}
 	}
 }
+
+// A kind-15 rumor without the file tags, from a stranger or a contact,
+// is dropped; it must not stop the messages that came with it (a stranger
+// can send one: unwrap runs before the sender is looked up).
+func TestMalformedFileMessageDropsOnlyItself(t *testing.T) {
+	if _, ok := parseFileTags(nostr.Tags{{"p", "x"}}, "http://hub.test/blob/x"); ok {
+		t.Fatal("file message without tags accepted")
+	}
+	st := &memStorage{docs: map[string][]byte{}}
+	sk := nostr.GeneratePrivateKey()
+	pk, _ := nostr.GetPublicKey(sk)
+	peerSK, strangerSK := nostr.GeneratePrivateKey(), nostr.GeneratePrivateKey()
+	peerPK, _ := nostr.GetPublicKey(peerSK)
+	strangerPK, _ := nostr.GetPublicKey(strangerSK)
+	if _, err := addContact(st, peerPK, "peer"); err != nil {
+		t.Fatal(err)
+	}
+	peer, stranger := &connection{sk: peerSK, pk: peerPK}, &connection{sk: strangerSK, pk: strangerPK}
+	var wraps []*nostr.Event
+	for _, m := range []struct {
+		from *connection
+		kind int
+		text string
+	}{
+		{stranger, kindFile, "http://hub.test/blob/x"},
+		{peer, kindFile, "http://hub.test/blob/x"},
+		{peer, kindChat, "the meeting moved to 3pm"},
+	} {
+		w, err := m.from.wrap(pk, m.kind, m.text, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wraps = append(wraps, &w)
+	}
+	stored, err := handleWraps(st, sk, wraps)
+	if err != nil || len(stored) != 1 || stored[0].Text != "the meeting moved to 3pm" {
+		t.Fatalf("stored %+v (%v)", stored, err)
+	}
+}

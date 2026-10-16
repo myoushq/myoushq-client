@@ -25,7 +25,7 @@ from pathlib import Path
 
 from myous import inbox, processes
 from myous.agent import Agent
-from myous.storage import FileStorage
+from myous.storage import FileStorage, private
 
 HEARTBEAT_STALE = 120
 SAFETY_POLL_EVERY = 15 * 60
@@ -45,7 +45,7 @@ def run_hook(st: FileStorage, entries: list[dict]) -> None:
     entries = inbox.to_show(st, entries)
     if not command or not entries:
         return
-    log = open(st.path("hook.log"), "a")
+    log = open(st.path("hook.log"), "a", opener=private)
     processes.spawn_background(
         command, shell=True, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
         env=dict(os.environ, MYOUS_HOME=str(st.home), MYOUS_NEW=str(len(entries))),
@@ -106,7 +106,7 @@ def start_listener(st: FileStorage) -> None:
     pid = _ours(st.get("listener", {}))
     if pid:
         processes.terminate(pid)   # stale or hung
-    with open(st.path("listener.log"), "a") as log:   # the child keeps its own handle
+    with open(st.path("listener.log"), "a", opener=private) as log:   # the child keeps its own handle
         processes.spawn_background(
             [sys.executable, "-m", "myous", "listen"],
             stdin=subprocess.DEVNULL, stdout=log, stderr=log,
@@ -162,6 +162,7 @@ def install_cron(st: FileStorage) -> str:
     if lines is None:
         return "crontab is not available here"
     wanted = cron_line(st)
+    open(st.path("cron.log"), "a", opener=private).close()   # the cron shell's >> would make it with cron's umask
     if [line for line in lines if _cron_mine(line, st)] == [wanted]:
         return "cron entry already present"
     lines = [line for line in lines if not _cron_mine(line, st)] + [wanted]

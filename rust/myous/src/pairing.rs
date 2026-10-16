@@ -527,7 +527,7 @@ impl<'a> Pairing<'a> {
             if pubkey == self.keys.public_key().to_hex() {
                 return fail("that's this agent's own invite");
             }
-            let alias: String = payload["alias"].as_str().unwrap_or_default().chars().take(64).collect();
+            let alias = contacts::clean_name(payload["alias"].as_str().unwrap_or_default());
             let verify = verify_code(&key);
             let _lock = self.st.lock("state", true)?;
             let mut contact = contacts::add(&*self.st, pubkey, &alias)?;
