@@ -38,10 +38,26 @@ class ReadOnlyTest(unittest.TestCase):
 
     def test_powershell(self):
         r = load(Path(tempfile.mkdtemp()))
-        for ok in ["Get-ChildItem -Recurse | Select-String foo", "gc C:\\work\\a.txt | Measure-Object -Line", "dir; Get-Date"]:
+        for ok in ["Get-ChildItem -Recurse | Select-String foo", "gc a.txt | Measure-Object -Line", "dir; Get-Date"]:
             self.assertTrue(r.read_only(ok, windows=True), ok)
         for bad in ["Remove-Item x", "gci | Remove-Item", "gc (Remove-Item x)", "& notepad", "gci | where { Remove-Item $_ }",
                     "Get-Content a > b", "iex 'rm x'", "Invoke-WebRequest http://x"]:
+            self.assertFalse(r.read_only(bad, windows=True), bad)
+
+    def test_reads_are_confined_to_work(self):
+        # W3: at the "changes" level a read-only command is auto-allowed only
+        # when every path argument stays under the work directory (the cwd).
+        r = load(Path(tempfile.mkdtemp()))
+        for ok in ["cat a.txt", "grep -r x .", "find . -name '*.py'", "cat ./sub/f", "head -n5 a b c",
+                   "cat 'a b.txt'", "diff a.txt b.txt", "wc -l logs/app.log"]:
+            self.assertTrue(r.read_only(ok, windows=False), ok)
+        for bad in ["cat /etc/passwd", "cat /home/worker/.myous/key", "grep -r . /home/worker/.myous",
+                    "cat ~/.ssh/id_rsa", "find / -name id_rsa", "cat ../key", "cat a/../../key",
+                    "cat sub/../../etc/x", "head a.txt /etc/hostname"]:
+            self.assertFalse(r.read_only(bad, windows=False), bad)
+        # Windows: an absolute path or a drive is outside; a relative one is in.
+        self.assertTrue(r.read_only("gc a.txt", windows=True))
+        for bad in ["gc C:\\work\\a.txt", "gc \\\\host\\share\\x", "type ..\\key", "gc ~/x"]:
             self.assertFalse(r.read_only(bad, windows=True), bad)
 
 

@@ -61,8 +61,50 @@ const (
 	pausedByOwner       = "the worker is paused by its owner"
 )
 
-// readOnly is review.py's read_only: whether a command line only reads,
-// for the "changes" level. windows uses PowerShell's lists too.
+// escapesWork is review.py's _escapes_work: whether a command argument
+// could point outside the work directory (W3). The work directory is the
+// command's cwd, so a plain relative path stays inside it; an absolute
+// path, a ~ the shell expands to a home directory, or a ".." component can
+// leave it. A flag (starting with -) is not a path. Conservative: a token
+// that merely looks like a path is treated as one, so the owner is asked
+// rather than the command run unseen -- more prompts, never fewer.
+func escapesWork(token string, windows bool) bool {
+	if token == "" || strings.HasPrefix(token, "-") {
+		return false
+	}
+	t := token
+	if windows && len(t) >= 2 && t[0] == t[len(t)-1] && (t[0] == '\'' || t[0] == '"') {
+		t = t[1 : len(t)-1] // non-posix shlex keeps the quotes around a word
+	}
+	if t == "" {
+		return false
+	}
+	if t[0] == '~' || t[0] == '/' {
+		return true
+	}
+	if windows {
+		if t[0] == '\\' {
+			return true
+		}
+		if len(t) >= 2 && t[1] == ':' && (('a' <= t[0] && t[0] <= 'z') || ('A' <= t[0] && t[0] <= 'Z')) {
+			return true // a drive: C:\ or C:/
+		}
+	}
+	sep := "/"
+	if windows {
+		sep = `\/`
+	}
+	for _, part := range strings.FieldsFunc(t, func(r rune) bool { return strings.ContainsRune(sep, r) }) {
+		if part == ".." {
+			return true
+		}
+	}
+	return false
+}
+
+// readOnly is review.py's read_only: whether a command line only reads
+// within the work directory, for the "changes" level. windows uses
+// PowerShell's lists too.
 func readOnly(cmd string, windows bool) bool {
 	for _, tok := range reviewRules.Unsafe {
 		if strings.Contains(cmd, tok) {
@@ -95,6 +137,11 @@ func readOnly(cmd string, windows bool) bool {
 			}
 		} else if !slices.Contains(reviewRules.ReadOnly, words[0]) {
 			return false
+		}
+		for _, w := range words[1:] {
+			if escapesWork(w, windows) {
+				return false
+			}
 		}
 	}
 	return true

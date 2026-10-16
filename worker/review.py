@@ -51,8 +51,10 @@ BAD_ID = "bad request: the id must be 1 to 64 characters from A-Z, a-z, 0-9, - a
 
 # Commands that only read, for the "changes" level. A command line is
 # read-only when every segment (split on |, &&, ||, ;) starts with one of
-# these and nothing redirects output, substitutes commands or runs code
-# inside one (find -exec, awk '{...}').
+# these, nothing redirects output, substitutes commands or runs code
+# inside one (find -exec, awk '{...}'), and no argument points outside the
+# worker's work directory (W3: see _escapes_work; the work directory is the
+# command's cwd, so a plain relative path stays inside it).
 READ_ONLY = {
     "ls", "cat", "head", "tail", "less", "more", "grep", "rg", "find", "wc", "stat", "file", "pwd",
     "du", "df", "uname", "date", "whoami", "id", "echo", "printf", "sort", "uniq", "cut", "tr",
@@ -82,6 +84,31 @@ def level() -> str:
         return "trust"
 
 
+def _escapes_work(token: str, windows: bool) -> bool:
+    """Whether a command argument could point outside the work directory
+    (W3). The work directory is the command's cwd, so a plain relative path
+    stays inside it; an absolute path, a ~ the shell expands to a home
+    directory, or a `..` component can leave it. A flag (starting with -)
+    is not a path. Conservative: a token that merely looks like a path
+    (a /regex/, say) is treated as one, so the owner is asked rather than
+    the command run unseen -- more prompts, never fewer."""
+    if not token or token.startswith("-"):
+        return False
+    t = token
+    if windows and len(t) >= 2 and t[0] == t[-1] and t[0] in "'\"":
+        t = t[1:-1]   # non-posix shlex keeps the quotes around a word
+    if not t:
+        return False
+    if t[0] == "~" or t[0] == "/":
+        return True
+    if windows:
+        if t[0] == "\\":
+            return True
+        if len(t) >= 2 and t[1] == ":" and t[0].isalpha():  # a drive: C:\ or C:/
+            return True
+    return ".." in re.split(r"[\\/]" if windows else "/", t)
+
+
 def read_only(cmd: str, windows: bool = WINDOWS) -> bool:
     if any(tok in cmd for tok in UNSAFE_TOKENS):
         return False
@@ -100,6 +127,8 @@ def read_only(cmd: str, windows: bool = WINDOWS) -> bool:
             if words[0].lower() not in READ_ONLY | READ_ONLY_POWERSHELL:
                 return False
         elif words[0] not in READ_ONLY:
+            return False
+        if any(_escapes_work(w, windows) for w in words[1:]):
             return False
     return True
 
