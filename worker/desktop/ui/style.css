@@ -129,6 +129,11 @@ progress:not([value]) { width: 100%; height: 6px; margin-top: 8px; accent-color:
 .approval { display: flex; align-items: center; gap: 8px; margin: 10px 0 8px; padding: 8px 10px; border-radius: 8px;
   background: color-mix(in srgb, var(--orange) 12%, var(--card)); border: 1px solid color-mix(in srgb, var(--orange) 45%, var(--line)); }
 #approval-text { min-width: 0; overflow-wrap: anywhere; }
+/* The window moves the focus here when a question brings it up; the ring shows only for the keyboard. */
+.approval:focus { outline: none; }
+.approval:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* Words for a screen reader only. */
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 .approval button { flex: none; }
 
 .table-wrap { max-height: 260px; overflow: auto; border: 1px solid var(--line); border-radius: 6px; margin-top: 8px; }

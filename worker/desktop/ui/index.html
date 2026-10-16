@@ -103,7 +103,7 @@
       <div class="row"><h2>Requests</h2><span class="grow"></span><button id="stop-command" hidden>Stop this command</button><button id="pause">Pause</button></div>
       <p class="muted" id="requests-title"></p>
       <p class="warn" id="paused-note" hidden>Paused: every request is refused until you resume.</p>
-      <div class="approval" id="approval-row" hidden><span id="approval-text"></span><span class="grow"></span><button class="primary" id="allow">Allow</button><button class="danger" id="refuse">Refuse</button></div>
+      <div class="approval" id="approval-row" role="group" aria-labelledby="approval-what" aria-describedby="approval-by" tabindex="-1" hidden><span id="approval-text"><span id="approval-what"></span><span id="approval-left" aria-hidden="true"></span></span><span class="sr-only" id="approval-by"></span><span class="grow"></span><button class="primary" id="allow">Allow</button><button class="danger" id="refuse">Refuse</button></div>
       <div class="table-wrap"><table id="requests"><tbody></tbody></table></div>
       <div class="row end" id="requests-log-row" hidden><button id="requests-log">Open log</button></div>
       <p class="hint">Click a row for the command and its output.</p>
@@ -146,6 +146,9 @@
   </main>
 </div>
 <dialog id="dlg"></dialog>
+<!-- What a screen reader is told as it happens: a question at once, the rest after what it is saying. -->
+<div class="sr-only" id="announce-now" aria-live="assertive"></div>
+<div class="sr-only" id="announce" aria-live="polite"></div>
 <script type="module" src="app.js"></script>
 </body>
 </html>
