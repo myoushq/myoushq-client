@@ -153,8 +153,11 @@ class TaskSchedulerTest(unittest.TestCase):
         self.assertEqual(data, self.st.path("ensure-task.xml").read_bytes())
 
     def test_definition_escapes(self):
-        st = FileStorage(Path(self.tmp.name) / "a&b <c>")
-        task = ET.fromstring(vm.task_definition(st, "PC\\o'neil & co", datetime.datetime(2026, 10, 14, 9, 30, 5, 7)))
+        st = FileStorage(Path(self.tmp.name) / "a&b 'c'")   # no < > " : illegal in a Windows file name
+        xml = vm.task_definition(st, "PC\\o'neil & co", datetime.datetime(2026, 10, 14, 9, 30, 5, 7))
+        self.assertIn("a&amp;b 'c'", xml)
+        self.assertNotIn("a&b", xml)
+        task = ET.fromstring(xml)
         self.assertEqual(task.findtext("t:Principals/t:Principal/t:UserId", namespaces=NS), "PC\\o'neil & co")
         self.assertEqual(task.findtext("t:Actions/t:Exec/t:Arguments", namespaces=NS), f'"{st.path("ensure.pyw")}"')
         self.assertEqual(task.findtext("t:Triggers/t:TimeTrigger/t:StartBoundary", namespaces=NS), "2026-10-14T09:30:05")
