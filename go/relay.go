@@ -340,17 +340,26 @@ const (
 // never be seen. While pages come back full, the next is asked for until
 // the oldest timestamp seen (inclusive: ids already seen are skipped); a
 // page with nothing new ends it too (more than a page in one second).
+// It is an error when no relay answered: Listen would otherwise go on
+// without what is waiting, and Poll report nothing new.
 func (c *connection) fetchWraps(ctx context.Context) ([]*nostr.Event, error) {
 	seen := map[string]bool{}
 	var all []*nostr.Event
+	var failed []string
 	for _, r := range c.relays {
 		f := c.inboxFilter()
 		f.Limit = wrapPage
 		for page := 0; page < maxWrapPages; page++ {
 			qctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 			events, err := r.QuerySync(qctx, f)
+			if err == nil && qctx.Err() != nil {
+				err = qctx.Err() // QuerySync ends quietly when its time is up
+			}
 			cancel()
 			if err != nil {
+				if page == 0 {
+					failed = append(failed, fmt.Sprintf("%s: %v", r.URL, err))
+				}
 				break
 			}
 			fresh := 0
@@ -370,6 +379,9 @@ func (c *connection) fetchWraps(ctx context.Context) ([]*nostr.Event, error) {
 			}
 			f.Until = &oldest
 		}
+	}
+	if len(failed) == len(c.relays) {
+		return nil, fmt.Errorf("could not fetch messages (%s)", strings.Join(failed, "; "))
 	}
 	return all, nil
 }

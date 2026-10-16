@@ -220,6 +220,12 @@ func TestListenAndPollGetEveryStoredWrap(t *testing.T) {
 	if strings.Join(heard, "|") != strings.Join(want, "|") {
 		t.Fatal("listen: out of order")
 	}
+	// A fetch that gets no answer is an error, not an empty inbox.
+	gone, cancelGone := context.WithCancel(ctx)
+	cancelGone()
+	if _, err := conn.fetchWraps(gone); err == nil {
+		t.Fatal("no error from a fetch that got no answer")
+	}
 	// And what comes next, live.
 	heard = nil
 	mu.Unlock()
