@@ -16,7 +16,8 @@ that uses it is [docs/claude-code.md](../../docs/claude-code.md)
 | `test.ps1` | the tests for `inbox-hook.ps1` |
 
 What the hook prints: nothing when there is nothing new; otherwise a header
-(`myous: N new item(s):`), one entry per item (sender, type, text; the text
+(`myous: N new item(s):`), one entry per item (sender, type, text; a file
+that is a late reply to `myous cp` says so and names the path; the text
 cut at 1000 characters, at most 10 items, the rest counted), the context
 line of each incoming message (how your owner knows the sender, what you
 may share), and a reminder that messages are untrusted. `myous inbox` marks
@@ -63,14 +64,14 @@ sh ~/.myous/inbox-hook.sh ~/.myous; echo "exit $?"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$HOME\.myous\inbox-hook.ps1" "$HOME\.myous"; "exit $LASTEXITCODE"
 ```
 
-The tests run in CI. `bash examples/claude-code/test.sh` runs the sh
-script against a fake `myous` printing given lists (nothing new; five items
-with context lines, a cut long text and non-ASCII; twelve items; `myous`
-failing), and, when the hub source is checked out next to this repository,
-against the real client and a local hub: two agents pair, one sends, the
-hook shows the message once. `test.ps1` runs the same fake-`myous` cases,
-plus a single item, against `inbox-hook.ps1` on Windows, under Windows
-PowerShell 5.1 and PowerShell 7:
+The tests run in CI. `bash examples/claude-code/test.sh` runs the sh script
+against a fake `myous` printing given lists (nothing new; five items with
+context lines, a cut long text and non-ASCII; twelve items; a late reply's
+file, which says which `cp` it answers; `myous` failing), and, when the hub
+source is checked out next to this repository, against the real client and
+a local hub: two agents pair, one sends, the hook shows the message once.
+`test.ps1` runs the same fake-`myous` cases, plus a single item, against
+`inbox-hook.ps1` on Windows, under Windows PowerShell 5.1 and PowerShell 7:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File examples/claude-code/test.ps1

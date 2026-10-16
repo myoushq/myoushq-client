@@ -4,14 +4,22 @@ import asyncio
 import contextlib
 import io
 import json
+import os
+import sys
+import tempfile
 import time
 import unittest
+from unittest import mock
 
 try:
     from inbox_test import MemoryStorage  # unittest discover puts tests/ on the path
 except ModuleNotFoundError:
     from tests.inbox_test import MemoryStorage
-from myous import cli, contacts, inbox
+from nostr_sdk import Keys
+
+from myous import cli, contacts, inbox, processes, relay
+from myous import hub as hub_module
+from myous.hub import Hub
 from myous.agent import Agent, _Deliveries, timeout_text
 
 
@@ -43,6 +51,16 @@ class Cards(unittest.TestCase):
     def test_a_rename_is_announced_to_those_who_knew_the_old_name(self):
         self.st.put("settings", {"alias": "Max's Assistant"})
         self.assertEqual(self.due(), ["new friend"])   # the old friend never recorded a name; nothing to correct
+
+    def test_an_unknown_name_lists_the_contacts(self):
+        with self.assertRaises(KeyError) as cm:
+            contacts.find(self.st, "Ben")
+        self.assertEqual(cm.exception.args[0], 'no contact named "Ben" (your contacts: blocked one, new friend, '
+                                               'old friend; see `myous contacts`)')
+        self.assertEqual(contacts.find(self.st, "NEW FRIEND")[1]["alias"], "new friend")   # any case
+        with self.assertRaises(KeyError) as cm:
+            contacts.find(MemoryStorage(), "Ben")
+        self.assertEqual(cm.exception.args[0], 'no contact named "Ben" (no contacts yet)')
 
     def test_limits(self):
         with self.assertRaises(ValueError):
@@ -224,11 +242,15 @@ class RequestTtl(unittest.TestCase):
         gone = timeout_text(150, time.time() - 1)
         self.assertEqual(gone, "no reply from the worker within 150 seconds; it won't start this request any more "
                                "(it is off or busy), but if it already has, its reply will show in `myous inbox`")
+        # A ttl that ends with the wait (the default) is over: no race on the seconds between them.
+        self.assertEqual(timeout_text(40, time.time() + 2), gone.replace("150", "40"))
         later = time.time() + 3600
         self.assertEqual(timeout_text(150, later),
-                         f"no reply from the worker within 150 seconds; it may still run this request until "
-                         f"{time.strftime('%H:%M', time.gmtime(later))} UTC (its ttl), and its reply will show in "
-                         f"`myous inbox` when it comes")
+                         f"no reply from the worker within 150 seconds; it may still run this request in the next "
+                         f"60 minutes (its ttl; until {time.strftime('%H:%M', time.localtime(later))} this computer's "
+                         f"time), and its reply will show in `myous inbox` when it comes")
+        self.assertIn("in the next 23 hours", timeout_text(150, time.time() + 23 * 3600 - 30))
+        self.assertIn("in the next 45 seconds", timeout_text(150, time.time() + 44.5))
 
     def test_a_request_given_up_on_is_remembered(self):
         async def no_reply(rid, timeout, npub, conn=None, expires=None):
@@ -252,11 +274,37 @@ class RequestTtl(unittest.TestCase):
             self.assertEqual({k: r[k] for k in what}, what)
             self.assertEqual((r["peer"], r["alias"]), (npub, "box"))
             self.assertTrue(before <= r["sent_at"] <= time.time())
-            self.assertEqual(r["expires"] - r["sent_at"], ttl)
+            self.assertEqual((r["expires"] - r["sent_at"], r["ttl"]), (ttl, ttl))
+            self.assertNotIn("pid", r)   # given up: no longer waited for
+        self.assertEqual((gave_up[exec_id]["wait"], gave_up[put_id]["wait"]), (150, 60))
+
+    def test_while_it_waits_the_request_names_this_process(self):
+        seen = []
+
+        async def await_reply(rid, timeout, npub, conn=None, expires=None):
+            seen.append(self.st.get("gave_up")[rid])
+            return {"type": "result", "id": rid, "exit": 0}
+
+        self.agent._await_reply = await_reply
+        asyncio.run(self.agent.exec("box", "ls"))
+        self.assertEqual((seen[0]["op"], seen[0]["cmd"], seen[0]["pid"]), ("exec", "ls", os.getpid()))
+        self.assertLess(abs(seen[0]["pid_started"] - processes.created_at(os.getpid())), 2)
 
     def test_a_reply_in_time_leaves_nothing_behind(self):
         asyncio.run(self.agent.exec("box", "ls"))
-        self.assertIsNone(self.st.get("gave_up"))
+        self.assertEqual(self.st.get("gave_up"), {})
+
+    def test_a_wait_ended_otherwise_gives_the_request_up(self):
+        # A caller's own timeout around exec cancels the wait; this process
+        # lives on, so the reply must not stay the command's.
+        async def cancelled(rid, timeout, npub, conn=None, expires=None):
+            raise asyncio.CancelledError
+
+        self.agent._await_reply = cancelled
+        with self.assertRaises(asyncio.CancelledError):
+            asyncio.run(self.agent.exec("box", "ls"))
+        [r] = self.st.get("gave_up").values()
+        self.assertNotIn("pid", r)
 
     def test_the_timeout_error_says_it(self):
         agent = Agent(MemoryStorage())
@@ -267,10 +315,127 @@ class RequestTtl(unittest.TestCase):
         agent.listen = listen
         with self.assertRaises(TimeoutError) as cm:
             asyncio.run(agent._await_reply("c" * 32, 0.1, "npub1worker", expires=time.time() + 3600))
-        self.assertIn("it may still run this request until", str(cm.exception))
+        self.assertIn("it may still run this request in the next 60 minutes", str(cm.exception))
         with self.assertRaises(TimeoutError) as cm:
             asyncio.run(agent._await_reply("c" * 32, 0.1, "npub1worker", expires=time.time()))
         self.assertIn("it won't start this request any more", str(cm.exception))
+
+
+class RelayDown(unittest.TestCase):
+    def test_listen_keeps_since_when_no_relay_is_connected(self):
+        agent = Agent(MemoryStorage())
+        agent.hub.config = lambda refresh=False: {"relays": ["ws://127.0.0.1:9"]}
+
+        def unreachable(cfg=None):
+            raise OSError("connection refused")
+
+        agent._connect = unreachable
+        self.assertIsNone(agent.relay_down_since)
+        before = time.time()
+        with self.assertRaises(OSError):
+            asyncio.run(agent.listen())
+        since = agent.relay_down_since
+        self.assertTrue(before <= since <= time.time())
+        with self.assertRaises(OSError):
+            asyncio.run(agent.listen())
+        self.assertEqual(agent.relay_down_since, since)   # since the first time
+
+
+class RelayUnreachable(unittest.TestCase):
+    """A poll that reaches no relay fails at once instead of passing for an
+    empty inbox, and the last poll stays when it was last done."""
+
+    def setUp(self):
+        self.st = MemoryStorage()
+        self.st.key = Keys.generate().secret_key().to_bech32()
+        self.st.put("state", {"last_poll": 123})
+        self.agent = Agent(self.st)
+        self.agent.hub.config = lambda refresh=False: {"relays": ["ws://127.0.0.1:1"]}   # refused
+
+    def test_poll_raises_and_keeps_last_poll(self):
+        started = time.time()
+        with self.assertRaises(relay.RelayError) as cm:
+            asyncio.run(self.agent.poll())
+        self.assertLess(time.time() - started, 10)   # one attempt, not the retrying connect's full wait
+        self.assertIn("couldn't reach the relay at ws://127.0.0.1:1", str(cm.exception))
+        self.assertEqual(self.st.get("state")["last_poll"], 123)
+
+    def test_a_send_says_nothing_was_sent(self):
+        contacts.add(self.st, Keys.generate().public_key().to_hex(), "peer")
+        relays = self.agent.hub.config()["relays"]
+        self.agent._connect = lambda cfg=None, retry=True: relay.Connection(self.agent.keys, relays, retry=False)
+        with self.assertRaises(relay.RelayError) as cm:
+            asyncio.run(self.agent.send("peer", "hello"))
+        self.assertTrue(str(cm.exception).startswith("network problem: couldn't reach the relay (ws://127.0.0.1:1"),
+                        str(cm.exception))
+        self.assertTrue(str(cm.exception).endswith("nothing was sent, try again"))
+
+    def test_inbox_warns_and_shows_what_is_stored(self):
+        out, err = io.StringIO(), io.StringIO()
+        args = cli.build_parser().parse_args(["inbox"])
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            args.func(self.agent, self.st, args)
+        self.assertEqual(out.getvalue(), "no new messages\n")
+        self.assertIn("warning: couldn't fetch new items (couldn't reach the relay at ws://127.0.0.1:1", err.getvalue())
+        self.assertEqual(self.st.get("state")["last_poll"], 123)
+
+
+class HubConfigBackoff(unittest.TestCase):
+    """A stale config the hub can't refresh is used as it is, and not
+    asked for again for a while: each try may wait for its timeout."""
+
+    def test_a_failed_refresh_is_not_retried_at_once(self):
+        st = MemoryStorage()
+        hub = Hub(st, "https://hub.test")
+        st.put("hub", {"url": "https://hub.test", "relays": ["wss://r"], "fetched_at": 0})
+        calls = []
+
+        def unreachable(*args, **kwargs):
+            calls.append(kwargs.get("timeout"))
+            raise OSError("timed out")
+
+        hub.request = unreachable
+        self.assertEqual(hub.config()["relays"], ["wss://r"])
+        self.assertEqual(hub.config()["relays"], ["wss://r"])
+        self.assertEqual(calls, [hub_module.CONFIG_TIMEOUT])   # asked once
+        st.put("hub", dict(st.get("hub"), retry_at=0))           # the pause is over
+        hub.config()
+        self.assertEqual(len(calls), 2)
+
+
+class StdinHasData(unittest.TestCase):
+    """cli.stdin_has_data: input piped or redirected in, never a hang or a
+    false alarm on a terminal, /dev/null or an empty pipe."""
+
+    def check(self, f):
+        with f, mock.patch.object(sys, "stdin", f):
+            return cli.stdin_has_data()
+
+    def pipe(self, data, close=True):
+        r, w = os.pipe()
+        if data:
+            os.write(w, data)
+        if close:
+            os.close(w)
+        else:
+            self.addCleanup(os.close, w)
+        return open(r)
+
+    def test_pipes(self):
+        self.assertTrue(self.check(self.pipe(b"print(1)\n")))
+        self.assertFalse(self.check(self.pipe(None)))                  # closed, nothing written
+        started = time.time()
+        self.assertFalse(self.check(self.pipe(None, close=False)))     # open, nothing written: an agent's shell
+        self.assertLess(time.time() - started, 2)
+
+    def test_files_and_devices(self):
+        with tempfile.NamedTemporaryFile("w", delete=False) as f:
+            f.write("print(1)\n")
+        self.addCleanup(os.unlink, f.name)
+        self.assertTrue(self.check(open(f.name)))
+        open(f.name, "w").close()
+        self.assertFalse(self.check(open(f.name)))                     # an empty file
+        self.assertFalse(self.check(open(os.devnull)))
 
 
 class CliTtl(unittest.TestCase):
@@ -297,6 +462,11 @@ class CliTtl(unittest.TestCase):
         contacts.add(self.st, "d" * 64, "box")
         self.agent = self.FakeAgent(self.st)
         self.parser = cli.build_parser()
+        devnull = open(os.devnull)
+        self.addCleanup(devnull.close)
+        patcher = mock.patch.object(sys, "stdin", devnull)   # whatever the test runner's stdin holds
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def run_cli(self, *argv):
         args = self.parser.parse_args(argv)
@@ -306,6 +476,30 @@ class CliTtl(unittest.TestCase):
             except SystemExit as e:
                 self.assertEqual(e.code, 0)
         return self.agent.calls[-1]
+
+    def test_a_timeout_exits_124_for_exec_and_cp(self):
+        async def too_late(*args, **kwargs):
+            raise TimeoutError("no reply from the worker within 40 seconds")
+
+        self.agent.exec = self.agent.put = self.agent.get = too_late
+        for argv in (["exec", "box", "--", "ls"], ["cp", __file__, "box:in.py"], ["cp", "box:out.txt", "out.txt"]):
+            args = self.parser.parse_args(argv)
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as cm:
+                args.func(self.agent, self.st, args)
+            self.assertEqual(cm.exception.code, 124, argv)
+            self.assertEqual(err.getvalue(), "error: no reply from the worker within 40 seconds\n")
+
+    def test_exec_refuses_input_it_would_drop(self):
+        # `myous exec W -- python3 - <<'EOF'` feeds the script to this
+        # command, not to the worker: refuse instead of running `python3 -`
+        # on nothing.
+        args = self.parser.parse_args(["exec", "box", "--", "python3", "-"])
+        with mock.patch.object(cli, "stdin_has_data", lambda: True), self.assertRaises(SystemExit) as cm:
+            args.func(self.agent, self.st, args)
+        self.assertIn("doesn't send its input to the worker", str(cm.exception.code))
+        self.assertIn("myous exec \"box\" -- 'python3 - <<\"EOF\"", str(cm.exception.code))
+        self.assertEqual(self.agent.calls, [])
 
     def test_ttl_passes_through(self):
         self.assertEqual(self.run_cli("exec", "--ttl", "3600", "box", "--", "ls"), ("exec", "box", "ls", 120, 3600))

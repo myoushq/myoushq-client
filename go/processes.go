@@ -84,6 +84,9 @@ wait:
 			stopped, note = true, "[myous: stopped by the owner]"
 		case !time.Now().Before(deadline):
 			note = fmt.Sprintf("[myous: killed after %d seconds]", timeout)
+			if timeout == 1 {
+				note = "[myous: killed after 1 second]"
+			}
 		default:
 			continue
 		}

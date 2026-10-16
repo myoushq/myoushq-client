@@ -11,7 +11,10 @@
 //! notifications. Inside the bundle the plugin's can't stand in: usernoted
 //! refuses a process that mixes them with these. So while the owner hasn't
 //! allowed notifications (System Settings › Notifications › myous) there
-//! are none, and the app brings up the window for a question, as before.
+//! are none, and the app brings up the window for a question, as before;
+//! also for the first question after the owner turned them off, which the
+//! app still posts (it knew them allowed) and macOS refuses: the window
+//! hears of it (`notify-failed`) and comes up with the question.
 
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -38,6 +41,10 @@ pub enum Response {
     Answer { id: String, verdict: &'static str },
     /// A click on the notification itself.
     Open,
+    /// A question's notification macOS didn't show (the owner turned
+    /// notifications off since the app last asked): its worker folder and
+    /// request id, so the window comes up with the question instead.
+    NotShown { home: String, id: String },
 }
 
 const CATEGORY: &str = "approval";
@@ -243,6 +250,7 @@ pub fn post(title: &str, body: &str, sound: bool, ask: Option<(&str, &str)>) -> 
     if sound {
         content.setSound(Some(&UNNotificationSound::defaultSound()));
     }
+    let asked = ask.map(|(home, id)| (home.to_string(), id.to_string()));
     let identifier = match ask {
         Some((home, id)) => {
             content.setCategoryIdentifier(&NSString::from_str(CATEGORY));
@@ -259,14 +267,34 @@ pub fn post(title: &str, body: &str, sound: bool, ask: Option<(&str, &str)>) -> 
         &content,
         None,
     );
-    let done = RcBlock::new(|error: *mut NSError| {
+    let done = RcBlock::new(move |error: *mut NSError| {
         // SAFETY: null or a valid error for the call.
-        if let Some(e) = unsafe { error.as_ref() } {
-            crate::files::append_app_log(&format!("notification: {}", e.localizedDescription()));
+        let Some(e) = (unsafe { error.as_ref() }) else {
+            return;
+        };
+        crate::files::append_app_log(&format!(
+            "notification: {} (code {})",
+            e.localizedDescription(),
+            e.code()
+        ));
+        if let Some((home, id)) = asked.clone() {
+            not_shown(home, id);
         }
     });
     center().addNotificationRequest_withCompletionHandler(&request, Some(&done));
     true
+}
+
+/// A question's notification macOS didn't show (notifications turned off
+/// since the app last asked, so the allowance it went by was out of
+/// date): the question must not wait unseen, so the window comes up with
+/// it (`Response::NotShown`), and the next question goes there at once.
+fn not_shown(home: String, id: String) {
+    ALLOWANCE.store(DENIED, Ordering::SeqCst);
+    forget(|_, i| i == id);
+    if let Some(h) = HANDLER.get() {
+        h(Response::NotShown { home, id });
+    }
 }
 
 /// Takes away the notifications of these requests (answered in the
@@ -370,5 +398,14 @@ mod tests {
         assert_eq!(forget(|home, _| home == "/w2"), vec!["a3".to_string()]);
         assert_eq!(forget(|_, _| true), vec!["a1".to_string()]);
         assert!(ASKED.lock().unwrap().is_empty());
+        // One macOS didn't show: forgotten, and the next goes to the window.
+        ASKED
+            .lock()
+            .unwrap()
+            .push(("/w3".to_string(), "a4".to_string()));
+        ALLOWANCE.store(ALLOWED, Ordering::SeqCst);
+        not_shown("/w3".into(), "a4".into());
+        assert!(ASKED.lock().unwrap().is_empty());
+        assert_eq!(ALLOWANCE.load(Ordering::SeqCst), DENIED);
     }
 }

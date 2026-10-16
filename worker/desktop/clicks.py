@@ -231,6 +231,18 @@ def main() -> int:
         page.keyboard.press("Escape")
         page.wait_for_selector("#dlg", state="hidden")
 
+        # A dialog opened while another is open replaces it and stays: Settings, then Show app log from the tray.
+        go("running")
+        emit("tray", "m:Settings…")
+        page.wait_for_selector("#dlg[open]")
+        emit("tray", "m:Show app log")
+        page.wait_for_timeout(300)
+        check(page.evaluate("document.getElementById('dlg').open") and text("#dlg h2") == "myous log",
+              "Show app log from the tray while Settings is open: the log shows")
+        page.keyboard.press("Escape")
+        page.wait_for_selector("#dlg", state="hidden")
+        check(not page.evaluate("document.getElementById('dlg').open"), "Escape closes it")
+
         # A Mac: Settings has the Dock icon, applied at once on Save; the other systems have none.
         def settings(os_name: str) -> None:
             go("running", os_name)
@@ -266,6 +278,96 @@ def main() -> int:
         page.click("#dlg label:has-text('Dock') input")
         page.click("#dlg button:has-text('Save')")
         check(["setDock", [True]] in calls(), "a Mac: the Dock setting applies at once")
+        # A question's notification macOS didn't show (notifications turned off since): the window comes up.
+        emit("window", False)
+        shows = names().count("showWindow")
+        emit("notify-failed", {"home": "/Users/max/.myous-worker", "id": "r1"})
+        page.wait_for_function(f"window.myous.backend.calls.filter(c => c[0] === 'showWindow').length > {shows}")
+        check(names().count("showWindow") > shows, "a question macOS didn't show brings up the window")
+
+        # The window as it runs (no made-up state): it rereads the worker folder every two seconds, also
+        # while Settings is open; Save keeps every app-wide setting, the Dock too, in one write of app.json.
+        go("", "macos")
+        emit("tray", "m:Settings…")
+        page.wait_for_selector("#dlg[open]")
+        reads = names().count("readWorkers")
+        page.wait_for_function(f"window.myous.backend.calls.filter(c => c[0] === 'readWorkers').length > {reads}")
+        page.fill("#dlg input:not([type])", "Max's Mac mini")
+        for label in ["when a worker pairs", "waits for my answer", "when a request is refused", "stops on its own",
+                      "a new version is available", "Notify me", "Check for a new version daily", "Show the agents", "Dock"]:
+            page.click(f"#dlg label:has-text({json.dumps(label)}) input")
+        writes = names().count("writeConfig")
+        page.click("#dlg button:has-text('Save')")
+        page.wait_for_selector("#dlg", state="hidden")
+        page.wait_for_timeout(300)
+        saved = page.evaluate("window.myous.backend.files[0].config")
+        want = {"name": "Max's Mac mini", "notifications": False, "auto_update": False, "show_agents": False, "dock": True,
+                "notify": {k: False for k in ["paired", "approval", "refused", "stopped", "update"]}}
+        check({k: saved.get(k) for k in want} == want and names().count("writeConfig") == writes + 1 and ["setDock", [True]] in calls(),
+              f"Settings saved after a reread: every app-wide setting and the Dock, one write {saved}")
+
+        # A new name in Settings: the default description follows it (and stays the default, not
+        # kept as the owner's words); one the owner wrote stays as written.
+        go("", "linux")
+        emit("tray", "m:Settings…")
+        page.wait_for_selector("#dlg[open]")
+        page.fill("#dlg input:not([type])", "Max's laptop")
+        follows = "My own computer, Max's laptop." in page.input_value("#dlg textarea")
+        page.click("#dlg button:has-text('Save')")
+        page.wait_for_selector("#dlg", state="hidden")
+        page.wait_for_timeout(300)
+        saved = page.evaluate("window.myous.backend.files[0].config")
+        check(follows and saved.get("name") == "Max's laptop" and "description" not in saved,
+              f"Settings: a new name, and the default description follows it, still the default {saved}")
+        emit("tray", "m:Settings…")
+        page.wait_for_selector("#dlg[open]")
+        page.fill("#dlg textarea", "My laptop, for the builds.")
+        page.fill("#dlg input:not([type])", "Max's old laptop")
+        kept = page.input_value("#dlg textarea")
+        page.click("#dlg button:has-text('Save')")
+        page.wait_for_selector("#dlg", state="hidden")
+        page.wait_for_timeout(300)
+        saved = page.evaluate("window.myous.backend.files[0].config")
+        check(kept == "My laptop, for the builds." and saved.get("name") == "Max's old laptop" and saved.get("description") == "My laptop, for the builds.",
+              f"Settings: a description the owner wrote stays as written through a new name {saved}")
+
+        # The window as it runs, with two workers (the first just paired, the second running).
+        def two_workers(os_name: str, first: str = "{}", second: str = "{}") -> list[str]:
+            go("", os_name)
+            page.evaluate(f"""(b => {{
+                const f = b.files[0], now = Date.now() / 1000;
+                b.files = [{{...f, status: {{...f.status, paired: {{alias: "Max's Muse", verify: "4821", at: now}}}}, ...{first}}},
+                    {{...f, home: f.home + "-2", folder: ".myous-worker-2", is_default: false, project: "myous-worker-2",
+                     config: {{name: "Codex's worker"}}, status: {{phase: "running", alias: "Codex's worker", contacts: 1}}, ...{second}}}];
+            }})(window.myous.backend)""")
+            page.wait_for_function("window.myous.model.workers.length === 2 && window.myous.model.workers.every(w => w.evaluated)")
+            return page.evaluate("window.myous.backend.files.map(f => f.home)")
+
+        # Unpair, answered after the window moved on to the other worker (one that came to need
+        # attention), unpairs the worker it was pressed on.
+        homes = two_workers("linux")
+        page.wait_for_selector("#card-paired:not([hidden])")
+        page.click("#unpair")
+        page.wait_for_selector("#dlg[open]")
+        page.evaluate("(m => { m.current = m.workers[1]; })(window.myous.model)")
+        page.click("#dlg button:has-text('Unpair')")
+        page.wait_for_selector("#dlg", state="hidden")
+        page.wait_for_function("window.myous.backend.calls.some(c => c[0] === 'sendCommand')")
+        sent = [c[1] for c in calls() if c[0] == "sendCommand"]
+        check(sent == [[homes[0], "unpair"]], f"Unpair unpairs the worker it was pressed on, not the one shown by then {sent}")
+
+        # A question from the second worker while the first is shown: the window comes up on the second
+        # (its Allow and Refuse are there). Linux reads a notification's body as markup: the command escaped.
+        cmd = "grep -c '<b>' a.html && echo done"
+        for os_name, body in [("linux", "grep -c '&lt;b&gt;' a.html &amp;&amp; echo done"), ("macos", cmd)]:
+            homes = two_workers(os_name, second="{approvals: [{id: 'q1', op: 'exec', alias: \"Max's Muse\", cmd: %s, asked_at: now, wait: 120}]}" % json.dumps(cmd))
+            page.wait_for_function("window.myous.backend.calls.some(c => c[0] === 'notify' && c[1][2])")
+            asked = [c[1] for c in calls() if c[0] == "notify" and c[1][2]]
+            page.wait_for_timeout(300)
+            shown = page.evaluate("window.myous.model.current.home")
+            check(asked == [["Max's Muse wants to run on Codex's worker", body, True, {"home": homes[1], "id": "q1"}]]
+                  and shown == homes[1] and page.is_visible("#approval-row"),
+                  f"{os_name}: a question's window shows the worker asking, the command as sent {asked} {shown}")
 
         # A Mac's worker in a container: Set up asks where its browser runs, as myous for Mac does.
         def env_of_start() -> dict:
@@ -292,6 +394,22 @@ def main() -> int:
         page.wait_for_function("window.myous.backend.calls.some(c => c[0] === 'composeRun')")
         check(env_of_start().get("MYOUS_BROWSER") == "container" and ["browserStop", [mac_home]] in calls()
               and "macBrowserEnsure" not in names(), "In the container: MYOUS_BROWSER=container, none on the Mac")
+        # Set up: the default description follows the name typed; the owner's own words stay.
+        go("setup")
+        page.fill("#setup-name", "Studio")
+        page.click("#setup-start")
+        page.wait_for_function("window.myous.backend.calls.some(c => c[0] === 'composeRun')")
+        desc = page.evaluate("window.myous.model.current.config.data.description")
+        check(desc is None and "My own computer, Studio." in env_of_start().get("MYOUS_DESCRIPTION", ""),
+              f"Set up: a new name, the default description follows it and stays the default {desc}")
+        go("setup")
+        page.fill("#setup-desc", "The studio's Linux box.")
+        page.fill("#setup-name", "Studio")
+        page.click("#setup-start")
+        page.wait_for_function("window.myous.backend.calls.some(c => c[0] === 'composeRun')")
+        check(env_of_start().get("MYOUS_DESCRIPTION") == "The studio's Linux box."
+              and page.evaluate("window.myous.model.current.config.data.description") == "The studio's Linux box.",
+              "Set up: a description the owner wrote stays as written")
         go("setup")
         check(page.is_hidden("#setup-macbrowser") and page.is_visible("#setup-browser"), "Linux: no browser question")
         page.click("#setup-start")
@@ -313,6 +431,21 @@ def main() -> int:
         page.click("#dlg label:has-text('Start this worker') input")
         page.click("#dlg button:has-text('Save')")
         check(["macBrowserHidden", [mac_home, False]] in calls(), "not hidden: applied at once")
+        # The window as it runs, a worker with its browser on the Mac: a Stop while that browser is being
+        # started (the start held here) ends it once it has started.
+        go("", "macos")
+        page.evaluate("""(b => {
+            b.files[0].config.browser = "mac";
+            const ensure = b.macBrowserEnsure.bind(b);
+            b.macBrowserEnsure = (...a) => new Promise((done) => { window.releaseEnsure = () => done(ensure(...a)); });
+        })(window.myous.backend)""")
+        page.wait_for_function("typeof window.releaseEnsure === 'function'")
+        emit("tray", f"w:{mac_home}:Stop")
+        page.wait_for_function("window.myous.backend.calls.some(c => c[0] === 'composeRun')")
+        stops = names().count("browserStop")
+        page.evaluate("window.releaseEnsure()")
+        page.wait_for_timeout(500)
+        check(stops == 1 and names().count("browserStop") == 2, "Stop during the browser's start: ended by Stop, and again once it started")
         settings("linux")
         check("Its browser" not in text("#dlg") and "hidden" not in text("#dlg"), "Linux: no browser choice in Settings")
         page.click("#dlg button:has-text('Cancel')")
@@ -354,10 +487,20 @@ def main() -> int:
         page.wait_for_selector("#dlg[open]")
         page.click("#dlg label:has-text('All, running ones too') input")
         page.click("#dlg label:has-text('Also remove') input")
-        # A minute on; the second worker still writes its status.
-        page.evaluate("(() => { const m = window.myous.model, t = m.now() + 60; m.now = () => t; m.workers[1].statusModified = t; })()")
+        # The runtime stops each running container before removing it (ten seconds or so each): the
+        # removal is held while the window looks every two seconds for a minute, the first worker's
+        # status unwritten (its container stopping), the second's written.
+        page.evaluate("(b => { const remove = b.removeContainers.bind(b); "
+                      "b.removeContainers = (s, r) => new Promise((done) => { window.releaseRemove = () => done(remove(s, r)); }); })(window.myous.backend)")
         page.click("#dlg button:has-text('Remove')")
         page.wait_for_selector("#dlg", state="hidden")
+        page.wait_for_function("typeof window.releaseRemove === 'function'")
+        page.evaluate("""(() => { const m = window.myous.model; let t = m.now(); m.now = () => t;
+            for (let i = 0; i < 30; i++) { t += 2; m.workers[1].statusModified = t; m.workers.forEach((w) => m.evaluate(w)); } })()""")
+        meanwhile = page.evaluate("(({screen, attention}) => ({screen, attention}))(window.myous.model.workers[0])")
+        check(meanwhile == {"screen": "stopped", "attention": ""}, f"while its container is removed: stopping, then Stopped, not on its own {meanwhile}")
+        page.evaluate("window.releaseRemove()")
+        page.wait_for_function("window.myous.backend.calls.some(c => c[0] === 'removeContainers')")
         check(removed() == [[[ids["myous-worker-3-worker-1"], ids["myous-worker"]],
                              [ids["myous-desktop-e2e-1791700000-worker-1"], ids["myous-worker-worker-1"]]]],
               "All with the older worker ticked: the others and it, with force")

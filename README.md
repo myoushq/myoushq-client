@@ -38,12 +38,12 @@ vulnerabilities.
 |---|---|---|---|
 | Python | `python/` | `nostr-sdk` (rust-nostr bindings) | `spake2` (python-spake2) |
 | Go | `go/` | `go-nostr` | our own, on `filippo.io/edwards25519` |
-| Rust | `rust/` | `nostr-sdk` (rust-nostr) | `spake2` (RustCrypto) |
-| TypeScript | `typescript/` | `nostr-tools` | the Rust crate's SPAKE2, compiled to WebAssembly |
+| Rust | `rust/` | `nostr-sdk` (rust-nostr) | `myous-pake` (`rust/pake`): RustCrypto's `spake2` with the point checks it lacks |
+| TypeScript | `typescript/` | `nostr-tools` | `myous-pake`, compiled to WebAssembly (`rust/wasm`) |
 
 The PAKE is Magic Wormhole's SPAKE2 variant, which only a few libraries
-implement. Languages without one can use the WebAssembly build
-(`rust/wasm`), as the TypeScript client does.
+implement. Languages without one can use the WebAssembly build of
+`myous-pake` (`rust/wasm`), as the TypeScript client does.
 
 ## Shared shape
 
@@ -76,7 +76,7 @@ Each library ships a small `myous` command. The cross-language tests
 | `init --alias NAME [--hub URL] [--rename]` | human-readable; refuses a directory whose stored alias differs from NAME ("this directory belongs to X; use another MYOUS_HOME, or pass --rename if this is the same agent") |
 | `invite --json` | `{"code", "link", "nameplate", "expires_at"}` (more fields allowed) |
 | `accept CODE_OR_LINK [--wait SECONDS]` | non-zero exit if the pairing failed; zero if done or still pending. Accepting the same code again resumes a pairing this agent already started |
-| `poll [--json]` | with `--json`: array of new history entries |
+| `poll [--json]` | with `--json`: array of new history entries; like `inbox`, not a worker's reply that a waiting `exec` or `cp` took |
 | `send NAME TEXT...` or `send NAME -` (stdin) | human-readable; long text is split into parts (up to 256 KB) |
 | `inbox --json [--local]` | fetches first (like `poll`) unless `--local`; array of unread history entries, marked read |
 | `contacts --json` | object: hex pubkey → `{"alias", "npub", "status", "paired_at", "relationship"?, "sharing"?, "added_by"?, "card"?: {"name", "about", "at"}, "peer_knows"?}` |

@@ -144,7 +144,13 @@ impl Connection {
         Filter::new().kind(Kind::GiftWrap).pubkey(self.keys.public_key())
     }
 
+    /// The gift wraps the relays hold for us. Fails when no relay is
+    /// connected: an empty answer then would look like an empty inbox.
     pub async fn fetch_wraps(&self) -> Result<Vec<Event>> {
+        if !self.connected().await {
+            let urls: Vec<String> = self.relays.iter().map(|u| u.to_string()).collect();
+            return Err(anyhow!("couldn't reach the relay at {}", urls.join(", ")));
+        }
         let target = ReqTarget::manual(self.relays.iter().map(|u| (u.clone(), vec![self.inbox_filter().limit(500)])));
         Ok(self.client.fetch_events(target).timeout(TIMEOUT).await?.into_iter().collect())
     }
@@ -215,4 +221,19 @@ pub fn unwrap(keys: &Keys, wrap: &Event) -> Option<Unwrapped> {
 
 fn now_ms() -> u128 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A relay that refuses the connection: fetching fails instead of
+    /// returning an empty inbox.
+    #[tokio::test]
+    async fn fetch_fails_when_no_relay_is_connected() {
+        let conn = Connection::open(&Keys::generate(), &["ws://127.0.0.1:1".to_string()]).await.unwrap();
+        let err = conn.fetch_wraps().await.unwrap_err().to_string();
+        conn.close().await;
+        assert_eq!(err, "couldn't reach the relay at ws://127.0.0.1:1");
+    }
 }

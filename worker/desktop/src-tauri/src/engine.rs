@@ -177,6 +177,207 @@ pub fn extra_dirs(os: &str, var: &dyn Fn(&str) -> Option<String>) -> Vec<PathBuf
     dirs
 }
 
+// --- the PATH of a worker without a container ------------------------------------
+
+/// The PATH a worker without a container runs with, and so its agents'
+/// commands: on a Mac the owner's login shell's (`login_path`), as the
+/// Objective-C app's `/bin/sh -lc` gave them (`/etc/paths` and
+/// `/etc/paths.d` through path_helper, the profile's Homebrew, pyenv and
+/// the like), then the search path's folders it lacks; elsewhere the
+/// search path.
+pub fn worker_path() -> std::ffi::OsString {
+    #[cfg(target_os = "macos")]
+    if let Some(login) = login_path() {
+        return merge_paths(std::ffi::OsStr::new(&login.path), &search_path());
+    }
+    search_path()
+}
+
+/// Where `worker_path` came from, for the log.
+pub fn worker_path_source() -> String {
+    #[cfg(target_os = "macos")]
+    if let Some(login) = login_path() {
+        return format!("{}, then myous's own folders", login.from);
+    }
+    "myous's search path".into()
+}
+
+/// `first`'s folders in their order, then those of `then` it lacks
+/// (`search_path_from`'s rules: no empty or relative ones, no repeats).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn merge_paths(first: &std::ffi::OsStr, then: &std::ffi::OsStr) -> std::ffi::OsString {
+    let more: Vec<PathBuf> = std::env::split_paths(then).collect();
+    search_path_from(Some(first), &more, &|_: &Path| true)
+}
+
+/// A login PATH and where it came from.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub struct LoginPath {
+    pub path: String,
+    pub from: String,
+}
+
+/// How long the login shell may take to say its PATH.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+const LOGIN_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// What the login shell runs: the PATH between two markers, so whatever
+/// the profile prints around it is left out.
+const PATH_SCRIPT: &str = "printf '\\n@@myous-path@@%s@@myous-path@@\\n' \"$PATH\"";
+
+/// The owner's login PATH, asked once per run of the app: the login
+/// shell's (`$SHELL`, else the account's, run as a login shell that isn't
+/// interactive, `-l -c`, with nothing to read and LOGIN_TIMEOUT to
+/// answer), else path_helper's (`/etc/paths`, `/etc/paths.d`); None if
+/// neither gives a sound one.
+#[cfg(target_os = "macos")]
+pub fn login_path() -> Option<&'static LoginPath> {
+    static P: std::sync::OnceLock<Option<LoginPath>> = std::sync::OnceLock::new();
+    P.get_or_init(|| {
+        let shell = login_shell(std::env::var_os("SHELL").map(PathBuf::from), account_shell());
+        let mut why = Vec::new();
+        match shell_path(&shell, &[], LOGIN_TIMEOUT) {
+            Ok(p) => {
+                return Some(LoginPath {
+                    path: p,
+                    from: format!("the login PATH of {}", shell.display()),
+                })
+            }
+            Err(e) => why.push(format!("{}: {e}", shell.display())),
+        }
+        let mut cmd = Command::new("/usr/libexec/path_helper");
+        cmd.arg("-s");
+        let (status, out) = run_capture(cmd, LOGIN_TIMEOUT);
+        match parse_path_helper(&out).filter(|_| status == 0) {
+            Some(p) => Some(LoginPath {
+                path: p,
+                from: format!("path_helper's PATH ({})", why.join("; ")),
+            }),
+            None => {
+                crate::files::append_app_log(&format!(
+                    "no login PATH for workers without a container ({}; path_helper: {out}); they get myous's search path",
+                    why.join("; ")
+                ));
+                None
+            }
+        }
+    })
+    .as_ref()
+}
+
+/// The account's shell (its passwd entry's), if it can be read.
+#[cfg(unix)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn account_shell() -> Option<PathBuf> {
+    // SAFETY: getpwuid's entry is read at once, on this thread, before
+    // anything else could ask for another.
+    unsafe {
+        let pw = libc::getpwuid(libc::getuid());
+        if pw.is_null() || (*pw).pw_shell.is_null() {
+            return None;
+        }
+        let s = std::ffi::CStr::from_ptr((*pw).pw_shell);
+        Some(PathBuf::from(s.to_string_lossy().to_string()))
+    }
+}
+
+#[cfg(not(unix))]
+#[allow(dead_code)]
+fn account_shell() -> Option<PathBuf> {
+    None
+}
+
+/// The shell to ask: `$SHELL`, else the account's, when it is a program
+/// given by its full path; else zsh, a Mac's.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn login_shell(env: Option<PathBuf>, account: Option<PathBuf>) -> PathBuf {
+    [env, account]
+        .into_iter()
+        .flatten()
+        .find(|p| p.is_absolute() && p.is_file())
+        .unwrap_or_else(|| PathBuf::from("/bin/zsh"))
+}
+
+/// Runs `shell -l -c PATH_SCRIPT` (with `env` added), nothing on its
+/// input, and returns the PATH it printed, if it is sound (`parse_login`).
+/// A shell that hasn't answered within `timeout` is ended, with whatever
+/// it started in its process group.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn shell_path(shell: &Path, env: &[(&str, &str)], timeout: Duration) -> Result<String, String> {
+    let mut cmd = Command::new(shell);
+    cmd.args(["-l", "-c", PATH_SCRIPT])
+        .envs(env.iter().copied())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    hide(&mut cmd);
+    let mut child = cmd.spawn().map_err(|e| e.to_string())?;
+    let mut out = child.stdout.take().ok_or("no output")?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = (&mut out).take(1 << 20).read_to_end(&mut bytes);
+        let _ = tx.send(bytes);
+    });
+    let begun = std::time::Instant::now();
+    let bytes = rx.recv_timeout(timeout);
+    let left = timeout.saturating_sub(begun.elapsed());
+    let mut exited = false;
+    let until = std::time::Instant::now() + left.max(Duration::from_millis(200));
+    while std::time::Instant::now() < until {
+        if !matches!(child.try_wait(), Ok(None)) {
+            exited = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    if !exited {
+        #[cfg(unix)]
+        // SAFETY: a signal to the process group the shell leads (its own,
+        // process_group(0) above).
+        unsafe {
+            libc::kill(-(child.id() as i32), libc::SIGKILL);
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    let bytes = bytes.map_err(|_| format!("no answer in {} s", timeout.as_secs()))?;
+    parse_login(&String::from_utf8_lossy(&bytes))
+}
+
+/// The PATH between PATH_SCRIPT's markers, if it is sound: one line of
+/// absolute folders, without control characters.
+pub fn parse_login(out: &str) -> Result<String, String> {
+    let m = "@@myous-path@@";
+    let start = out.find(m).ok_or("it printed no PATH")? + m.len();
+    let len = out[start..].find(m).ok_or("it printed no PATH")?;
+    let path = &out[start..start + len];
+    sound_path(path)
+        .then(|| path.to_string())
+        .ok_or_else(|| format!("its PATH isn't one: {path:?}"))
+}
+
+/// path_helper's `-s` answer: `PATH="…"; export PATH;`.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn parse_path_helper(out: &str) -> Option<String> {
+    let start = out.find("PATH=\"")? + "PATH=\"".len();
+    let len = out[start..].find('"')?;
+    let path = &out[start..start + len];
+    sound_path(path).then(|| path.to_string())
+}
+
+fn sound_path(path: &str) -> bool {
+    !path.is_empty()
+        && !path.chars().any(char::is_control)
+        && path.split(':').all(|d| d.starts_with('/'))
+}
+
 pub fn which_in(name: &str, path: &std::ffi::OsStr) -> Option<PathBuf> {
     let exts: Vec<String> = if cfg!(windows) {
         std::env::var("PATHEXT")
@@ -893,6 +1094,94 @@ pub fn logs(compose: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A worker without a container on a Mac: the login shell's PATH
+    /// first, then the search path's folders it lacks, in order, once each.
+    #[cfg(unix)]
+    #[test]
+    fn the_login_path_comes_first() {
+        let login = "/opt/homebrew/bin:/usr/local/go/bin:/usr/bin:/bin:/Users/max/.pyenv/shims";
+        let search = "/usr/bin:/bin:/usr/sbin:/sbin:relative::/usr/local/bin:/opt/homebrew/bin/:/usr/local/go/bin";
+        assert_eq!(
+            merge_paths(login.as_ref(), search.as_ref()),
+            std::ffi::OsString::from(
+                "/opt/homebrew/bin:/usr/local/go/bin:/usr/bin:/bin:/Users/max/.pyenv/shims:/usr/sbin:/sbin:/usr/local/bin"
+            )
+        );
+        // What the shell printed: the PATH between the markers, whatever
+        // the profile printed around it; nothing that isn't a PATH.
+        let m = "@@myous-path@@";
+        assert_eq!(
+            parse_login(&format!(
+                "Welcome!\nLast login: today\n\n{m}/a/bin:/usr/bin{m}\nbye\n"
+            )),
+            Ok("/a/bin:/usr/bin".into())
+        );
+        for bad in [
+            "no markers".to_string(),
+            format!("{m}{m}"),
+            format!("{m}/a:relative{m}"),
+            format!("{m}/a\n/b{m}"),
+            format!("{m}/a"),
+        ] {
+            assert!(parse_login(&bad).is_err(), "{bad:?}");
+        }
+        assert_eq!(
+            parse_path_helper(
+                "PATH=\"/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin\"; export PATH;\n"
+            ),
+            Some("/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin".into())
+        );
+        assert_eq!(parse_path_helper("PATH=\"\"; export PATH;"), None);
+        assert_eq!(parse_path_helper("nothing"), None);
+        // The shell: $SHELL, else the account's, by a full path to a program.
+        let sh = PathBuf::from("/bin/sh");
+        assert_eq!(login_shell(Some(sh.clone()), None), sh);
+        assert_eq!(login_shell(Some("zsh".into()), Some(sh.clone())), sh);
+        assert_eq!(
+            login_shell(Some("/no/such/shell".into()), None),
+            PathBuf::from("/bin/zsh")
+        );
+    }
+
+    /// A real login shell (`/bin/sh -l`, with a home of the test's own): a
+    /// profile that prints and adds a folder; one that hangs is ended.
+    #[cfg(unix)]
+    #[test]
+    fn a_login_shell_says_its_path() {
+        let home = std::env::temp_dir().join(format!("myous-login-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        let h = home.to_string_lossy().to_string();
+        std::fs::write(
+            home.join(".profile"),
+            "echo 'Welcome to this test'\nexport PATH=\"/opt/myous-test/bin:$PATH\"\n",
+        )
+        .unwrap();
+        let p = shell_path(
+            Path::new("/bin/sh"),
+            &[("HOME", &h)],
+            Duration::from_secs(10),
+        )
+        .unwrap();
+        assert!(p.starts_with("/opt/myous-test/bin:"), "{p}");
+        assert!(!p.contains("Welcome"));
+        std::fs::write(home.join(".profile"), "sleep 30\n").unwrap();
+        let begun = std::time::Instant::now();
+        let e = shell_path(
+            Path::new("/bin/sh"),
+            &[("HOME", &h)],
+            Duration::from_secs(1),
+        )
+        .unwrap_err();
+        assert!(e.contains("no answer"), "{e}");
+        assert!(
+            begun.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            begun.elapsed()
+        );
+        std::fs::remove_dir_all(&home).unwrap();
+    }
 
     #[test]
     fn which_skips_relative_entries_and_this_program() {

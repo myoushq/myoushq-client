@@ -146,7 +146,9 @@ def find(st: Storage, name: str) -> tuple[str, dict]:
     for pubkey, c in contacts.items():
         if c["alias"].lower() == name.lower():
             return pubkey, c
-    raise KeyError(f"no contact named {name!r}")
+    known = ", ".join(sorted(c["alias"] for c in contacts.values()))
+    raise KeyError(f'no contact named "{name}" ' +
+                   (f"(your contacts: {known}; see `myous contacts`)" if known else "(no contacts yet)"))
 
 
 def update(st: Storage, name: str, **fields) -> dict:

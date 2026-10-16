@@ -68,10 +68,11 @@ class EndToEnd(unittest.TestCase):
         shutil.rmtree(cls.tmp, ignore_errors=True)
 
     @classmethod
-    def run_cli(cls, agent: str, *args: str) -> subprocess.CompletedProcess:
+    def run_cli(cls, agent: str, *args: str, input: str | None = None) -> subprocess.CompletedProcess:
         env = dict(os.environ, MYOUS_HOME=str(cls.tmp / agent))
+        stdin = {"input": input} if input is not None else {"stdin": subprocess.DEVNULL}
         return subprocess.run([sys.executable, "-m", "myous", *args], env=env,
-                              capture_output=True, text=True, timeout=120)
+                              capture_output=True, text=True, timeout=120, **stdin)
 
     @classmethod
     def run_ok(cls, agent: str, *args: str) -> str:
@@ -155,6 +156,17 @@ class EndToEnd(unittest.TestCase):
         time.sleep(2)
         events = json.loads(self.run_ok("carol", "inbox", "--json"))  # no poll: listener stored it
         self.assertEqual([e["text"] for e in events], ["live"])
+        # A long message (3 parts): the listener gets each part on its own.
+        long = "".join(f"line {i:05d} of a long message\n" for i in range(1800))
+        self.assertGreater(len(long), 50_000)
+        self.run_ok("alice", "send", "carol", long)
+        events = []
+        for _ in range(60):
+            time.sleep(0.5)
+            events += json.loads(self.run_ok("carol", "inbox", "--json"))
+            if events:
+                break
+        self.assertEqual([(e["text"], e.get("incomplete")) for e in events], [(long, None)])
 
     def test_7_wake_hook_runs_on_new_messages(self):
         marker = self.tmp / "woken.txt"
@@ -258,6 +270,18 @@ class EndToEnd(unittest.TestCase):
             r = self.run_cli("bob", "exec", "alice", "--", "exit 7")
             self.assertEqual(r.returncode, 7)
 
+            # An inline script as skill.md writes it: the here-document inside one quoted argument.
+            inline = ("exec bob_myous exec alice -- 'python3 - <<\"EOF\"\n"
+                      "import sys\nprint(\"inline\", sys.version_info[0], \"$HOME\")\nEOF'\n")   # neither shell expands it
+            r = subprocess.run(["sh", "-c", inline.replace("bob_myous", f"'{sys.executable}' -m myous")],
+                               env=dict(os.environ, MYOUS_HOME=str(self.tmp / "bob")), stdin=subprocess.DEVNULL,
+                               capture_output=True, text=True, timeout=120)
+            self.assertEqual((r.returncode, r.stdout), (0, "inline 3 $HOME\n"), r.stderr)
+            # The here-document outside the argument would go to bob's myous, not the worker: refused.
+            r = self.run_cli("bob", "exec", "alice", "--", "python3", "-", input="print(1)\n")
+            self.assertEqual(r.returncode, 1)
+            self.assertIn("doesn't send its input to the worker", r.stderr)
+
             src = self.tmp / "in.txt"
             src.write_text("in via cp\n")
             self.assertIn("written on alice", self.run_ok("bob", "cp", str(src), "alice:in.txt"))
@@ -343,6 +367,42 @@ class EndToEnd(unittest.TestCase):
         out = self.run_ok("bob", "inbox", "--local")
         self.assertRegex(out, r"^\[[-0-9 :]+\] alice: late result of exec `echo late` \(sent \d\d:\d\d\): exit 0\nlate\n$")
         self.assertEqual(self.run_ok("bob", "inbox", "--local"), "no new messages\n")
+        self.run_ok("alice", "inbox")
+
+    def test_9d_a_late_result_shows_when_the_command_was_killed(self):
+        """bob's exec is killed while it waits (an agent's tool may end a
+        command that runs long), so it never gives up: alice's worker, off
+        until then, runs the request within its ttl, and the result shows in
+        bob's inbox all the same."""
+        work = self.tmp / "alice-work"
+        work.mkdir(exist_ok=True)
+        self.run_ok("bob", "inbox")
+        env = dict(os.environ, MYOUS_HOME=str(self.tmp / "bob"))
+        req = subprocess.Popen([sys.executable, "-m", "myous", "exec", "alice", "--", "echo killed"], env=env,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        gave_up = self.tmp / "bob" / "gave_up.json"
+        try:
+            for _ in range(100):   # sent, and waiting
+                if gave_up.exists() and any(r.get("pid") == req.pid for r in json.loads(gave_up.read_text()).values()):
+                    break
+                time.sleep(0.1)
+            else:
+                self.fail("the request was never recorded as waited for")
+        finally:
+            req.kill()
+            req.wait()
+        w = self.start_worker("alice", work)
+        try:
+            for _ in range(40):
+                entries = json.loads(self.run_ok("bob", "inbox", "--peek", "--json"))
+                if entries:
+                    break
+                time.sleep(0.5)
+        finally:
+            w.terminate()
+            w.wait(timeout=10)
+        self.assertEqual([(e["type"], e["late"]["cmd"], e["stdout"]) for e in entries], [("result", "echo killed", "killed\n")])
+        self.run_ok("bob", "inbox")
         self.run_ok("alice", "inbox")
 
     def test_6_identity_is_never_replaced(self):

@@ -136,7 +136,7 @@ class WorkerTest(WorkerFixture):
         self.run_(self.w.handle(message(json.dumps({"myous": "exec", "id": RID, "cmd": "sleep 30", "timeout": 1}))))
         r = self.replies()[-1]
         self.assertEqual(r["exit"], -1)
-        self.assertIn("killed after 1 seconds", r["stderr"])
+        self.assertIn("[myous: killed after 1 second]", r["stderr"])
         self.assertLess(time.time() - started, 10)
 
     def test_timeout_does_not_wait_for_an_escaped_grandchild(self):
@@ -147,7 +147,7 @@ class WorkerTest(WorkerFixture):
         self.run_(self.w.handle(message(json.dumps({"myous": "exec", "id": RID, "cmd": cmd, "timeout": 1}))))
         r = self.replies()[-1]
         self.assertEqual(r["exit"], -1)
-        self.assertIn("killed after 1 seconds", r["stderr"])
+        self.assertIn("[myous: killed after 1 second]", r["stderr"])
         self.assertIn("started", r["stdout"])
         self.assertLess(time.time() - started, 12)
 
@@ -259,6 +259,111 @@ class WorkerTest(WorkerFixture):
 
         self.run_(both())
         self.assertEqual(marks.read_text().split(), ["start1", "end1", "start2", "end2"])
+
+    def test_stopping_answers_the_requests_waiting(self):
+        # Requests behind the running one (in its batch, and in deliveries
+        # waiting their turn) are already handled in the history, so a
+        # restart wouldn't see them: stopping answers them as stopped,
+        # records and logs them, and runs none.
+        running = message(json.dumps({"myous": "exec", "id": RID, "cmd": "echo > started; sleep 60", "timeout": 120}))
+        q1 = message(json.dumps({"myous": "exec", "id": "q1", "cmd": "echo > ran"}))
+        q2 = message(json.dumps({"myous": "get", "id": "q2", "path": "x"}))
+        q3 = {"type": "file", "direction": "in", "peer": PEER, "alias": "muse", "w": ["put", "q3", "in.txt", "600"],
+              "size": 5, "x": "blob", "seq": 4, "at": 0}
+        self.agent.blobs["blob"] = b"hello"
+
+        async def listen(on_new, on_tick, tick):
+            # As two paths of the agent's listen deliver: the later ones wait for the first.
+            await asyncio.gather(on_new([running, q1]), on_new([q2, message("hello")]), on_new([q3]))
+            await asyncio.sleep(3600)
+
+        def quit_once_started():
+            deadline = time.time() + 20
+            while not (self.work / "started").exists() and time.time() < deadline:
+                time.sleep(0.05)
+            (self.home / "commands").mkdir(exist_ok=True)
+            (self.home / "commands" / "quit").touch()
+
+        self.agent.listen = listen
+        threading.Thread(target=quit_once_started).start()
+        started = time.time()
+        self.run_(self.w.run())
+        self.assertLess(time.time() - started, 20)
+        replies = self.replies()
+        self.assertEqual(len(replies), 4, replies)
+        self.assertEqual((replies[0]["myous"], replies[0]["id"], replies[0]["stopped"]), ("result", RID, True))
+        for i, rid in enumerate(("q1", "q2", "q3"), 1):
+            self.assertEqual(self.agent.sent[i][1],
+                             json.dumps({"myous": "ack", "id": rid, "ok": False, "error": worker.STOPPING}))
+            rec = json.loads((self.home / "requests" / f"{rid}.json").read_text())
+            self.assertEqual((rec["decision"], rec["stopped"], rec["reason"], rec["alias"]),
+                             ("stopped", True, worker.STOPPING, "muse"))
+            self.assertIn("done_at", rec)
+        rec = json.loads((self.home / "requests" / "q3.json").read_text())
+        self.assertEqual((rec["op"], rec["path"], rec["size"]), ("put", "in.txt", 5))
+        log = [json.loads(line) for line in (self.home / "worker.log").read_text().splitlines()]
+        self.assertEqual([(r["op"], r["id"], r["reason"]) for r in log if r.get("decision") == "stopped"],
+                         [("exec", "q1", worker.STOPPING), ("get", "q2", worker.STOPPING), ("put", "q3", worker.STOPPING)])
+        self.assertFalse((self.work / "ran").exists() or (self.work / "in.txt").exists())
+        self.assertEqual(self.agent.files, [])
+
+    def test_a_quit_file_that_cant_be_removed_still_stops_the_worker(self):
+        # On Windows the owner's app may still have it open: removing it fails.
+        real_unlink = Path.unlink
+
+        def unlink(path, missing_ok=False):
+            if path.name == "quit":
+                raise PermissionError(13, "in use", str(path))
+            return real_unlink(path, missing_ok=missing_ok)
+
+        async def listen(on_new, on_tick, tick):
+            await asyncio.sleep(3600)
+
+        self.agent.listen = listen
+        (self.home / "commands").mkdir(exist_ok=True)
+        threading.Timer(0.5, (self.home / "commands" / "quit").touch).start()
+        with mock.patch.object(Path, "unlink", unlink):
+            self.run_(asyncio.wait_for(self.w.run(), 10))
+        self.assertTrue(self.w.stopping.is_set())
+
+    def test_while_the_relay_is_unreachable_it_keeps_ticking(self):
+        # Waiting to reconnect, it still writes its status (the apps take a
+        # stale one for a stopped worker) and takes the owner's commands.
+        attempts = []
+
+        async def listen(on_new, on_tick, tick):
+            attempts.append(time.time())
+            self.agent.relay_down_since = self.agent.relay_down_since or time.time()   # as Agent.listen does
+            raise OSError("connection refused")
+
+        status, commands = self.home / "worker.json", self.home / "commands"
+        seen = []
+
+        def owner():
+            deadline = time.time() + 3.5
+            while time.time() < deadline:
+                try:
+                    seen.append(json.loads(status.read_text()))
+                except (OSError, ValueError):
+                    pass
+                time.sleep(0.2)
+            commands.mkdir(exist_ok=True)
+            (commands / "hello").touch()   # an unknown command: removed when commands are handled
+            deadline = time.time() + 5
+            while (commands / "hello").exists() and time.time() < deadline:
+                time.sleep(0.1)
+            (commands / "quit").touch()
+
+        self.agent.listen = listen
+        self.agent.relay_down_since = None
+        threading.Thread(target=owner).start()
+        with mock.patch.object(worker, "TICK", 0.2), mock.patch.object(worker, "STATUS_EVERY", 0.2):
+            self.run_(asyncio.wait_for(self.w.run(), 20))
+        self.assertEqual(len(attempts), 1)   # all of it while waiting to reconnect
+        self.assertGreaterEqual(len({s["updated"] for s in seen}), 2, seen)
+        self.assertLessEqual(abs(seen[-1]["relay_down_since"] - attempts[0]), 1)
+        self.assertEqual(seen[-1]["phase"], "running")
+        self.assertFalse((commands / "hello").exists())
 
     def test_review_hook_refuses(self):
         hook = Path(self.tmp.name) / "review.py"
@@ -494,11 +599,13 @@ class ExpiryTest(WorkerFixture):
 
     def test_the_age_in_the_error(self):
         for age, ttl, ago in ((59, 30, "59 seconds"), (150, 30, "2 minutes"), (1500, 150, "25 minutes"),
-                              (3 * 3600, 600, "3 hours"), (119, 1, "119 seconds"), (120, 1, "2 minutes"),
-                              (7199, 1, "119 minutes"), (7200, 1, "2 hours")):
+                              (3 * 3600, 600, "3 hours"), (119, 2, "119 seconds"), (120, 2, "2 minutes"),
+                              (7199, 2, "119 minutes"), (7200, 2, "2 hours")):
             self.run_(self.w.handle(self.exec_(age=age, ttl=ttl)))
             self.assertEqual(self.replies()[-1]["error"], f"expired: sent {ago} ago, its ttl is {ttl} seconds; not run")
         self.assertEqual(worker.expired_text(1500, 150), "expired: sent 25 minutes ago, its ttl is 150 seconds; not run")
+        self.run_(self.w.handle(self.exec_(age=2, ttl=1)))
+        self.assertEqual(self.replies()[-1]["error"], "expired: sent 2 seconds ago, its ttl is 1 second; not run")
         self.assertFalse((self.work / "ran").exists())
 
     def test_within_its_ttl_a_request_runs(self):

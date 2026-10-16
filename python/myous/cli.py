@@ -9,7 +9,7 @@ import os
 import sys
 import time
 
-from myous import __version__, contacts, inbox, qr, vm
+from myous import __version__, contacts, inbox, qr, storage, vm
 from myous.agent import Agent, IdentityError, WorkerError
 from myous.files import BlobError
 from myous.hub import DEFAULT_HUB, HubError
@@ -29,7 +29,8 @@ def cmd_init(agent: Agent, st: FileStorage, args) -> None:
     if created:
         agent.create_identity()
     if not agent.is_registered():
-        print(f"registering with {agent.hub.url} (proof of work, a few seconds)...", flush=True)
+        print(f"registering with {agent.hub.url} (proof of work: seconds, up to a minute on a slow machine)...",
+              flush=True)
     asyncio.run(agent.register(alias))
     print(("created" if created else "kept existing") + f" identity {agent.keys.public_key().to_bech32()}")
     print(f"alias: {alias}")
@@ -71,7 +72,7 @@ def cmd_invite(agent: Agent, st: FileStorage, args) -> None:
     try:
         qr.write_svg(inv["link"], svg)
     except ImportError:
-        svg = None  # QR support not installed: pip install 'myous[qr]'
+        svg = None  # QR support not installed (qrcode): qr.install_hint()
 
     if args.json:
         print(json.dumps({"code": inv["code"], "link": inv["link"], "nameplate": inv["nameplate"],
@@ -80,7 +81,7 @@ def cmd_invite(agent: Agent, st: FileStorage, args) -> None:
     minutes = max(1, int((inv["expires_at"] - time.time()) // 60))
     print(f"pairing link: {inv['link']}")
     print(f"pairing code: {inv['code']}")
-    print(f"QR image:     {svg or '(not available; install myous[qr])'}")
+    print(f"QR image:     {svg or '(not available; to add QR images: ' + qr.install_hint() + ')'}")
     if args.qr_text and svg:
         print(qr.as_text(inv["link"]))
     print(f"valid for {minutes} minutes, for one person")
@@ -173,18 +174,28 @@ def context_line(e: dict) -> str | None:
 
 
 def _print_entries(entries: list[dict]) -> None:
+    """Entries as inbox and history print them: worker replies, and in the
+    history this agent's requests, readably rather than as their JSON."""
     for e in entries:
         when = time.strftime("%Y-%m-%d %H:%M", time.localtime(e.get("sent_at", e["at"])))
-        if e["type"] == "file":
-            who = f"me -> {e['alias']}" if e.get("direction") == "out" else f"from {e['alias']}"
-            late = f"late reply to {inbox.late_what(e['late'])}: " if e.get("late") else ""
-            print(f"[{when}] file {who}: {late}{e['name']} ({e.get('size')} bytes, id {e['seq']}; `myous fetch {e['seq']}`)")
+        if e["type"] == "file" and e.get("direction") == "out":
+            print(f"[{when}] file me -> {e['alias']}: {inbox.request_text(e) or inbox.describe_file(e)}")
+        elif e["type"] == "file":
+            about = ""
+            if e.get("late"):
+                about = f"late reply to {inbox.late_what(e['late'])}: "
+            elif inbox.reply_to(e):
+                about = f"reply to {inbox.reply_to(e)}: "
+            print(f"[{when}] file from {e['alias']}: {about}{e['name']} ({e.get('size')} bytes, id {e['seq']}; "
+                  f"`myous fetch {e['seq']}`)")
         elif e.get("late"):
             print(f"[{when}] {e['alias']}: {e['text']}")
+        elif e["type"] in inbox.REPLY_OPS:
+            print(f"[{when}] {e['alias']}: {inbox.reply_text(e)}")
         elif e["type"] != "message":
             print(f"[{when}] ({e['type']}) {e['text']}")
         elif e["direction"] == "out":
-            print(f"[{when}] me -> {e['alias']}: {e['text']}")
+            print(f"[{when}] me -> {e['alias']}: {inbox.request_text(e) or e['text']}")
         else:
             print(f"[{when}] {e['alias']}: {e['text']}")
             line = context_line(e)
@@ -217,7 +228,8 @@ def cmd_history(agent: Agent, st: FileStorage, args) -> None:
     if args.json:
         print(json.dumps([_public(e) for e in entries], indent=2))
     else:
-        _print_entries(entries)
+        gave_up = st.get("gave_up", {})
+        _print_entries([inbox.shown(e, gave_up) for e in entries])   # a late reply as the inbox showed it
 
 
 def cmd_send_file(agent: Agent, st: FileStorage, args) -> None:
@@ -250,16 +262,19 @@ def cmd_cp(agent: Agent, st: FileStorage, args) -> None:
     if bool(src) == bool(dst):
         sys.exit("exactly one side must be CONTACT:PATH (a paired contact), e.g. "
                  "myous cp report.pdf worker:in.pdf  or  myous cp worker:out.png out.png")
-    if dst:
-        if not os.path.isfile(args.src):
-            sys.exit(f"no such file: {args.src}")
-        ack = asyncio.run(agent.put(dst[0], args.src, dst[1] or os.path.basename(args.src), timeout=args.timeout,
-                                    ttl=args.ttl))
-        print(f"written on {dst[0]}: {ack['path']} ({ack['size']} bytes)")
-    else:
-        to = args.dst if args.dst not in (".", "") else "./"
-        path = asyncio.run(agent.get(src[0], src[1], to, timeout=args.timeout, ttl=args.ttl))
-        print(path)
+    if dst and not os.path.isfile(args.src):
+        sys.exit(f"no such file: {args.src}")
+    try:
+        if dst:
+            ack = asyncio.run(agent.put(dst[0], args.src, dst[1] or os.path.basename(args.src),
+                                        timeout=args.timeout, ttl=args.ttl))
+            print(f"written on {dst[0]}: {ack['path']} ({ack['size']} bytes)")
+        else:
+            to = args.dst if args.dst not in (".", "") else "./"
+            print(asyncio.run(agent.get(src[0], src[1], to, timeout=args.timeout, ttl=args.ttl)))
+    except TimeoutError as e:
+        sys.stderr.write(f"error: {e}\n")
+        sys.exit(124)   # as exec, and timeout(1)
 
 
 def _exec_options(args) -> None:
@@ -296,11 +311,59 @@ def _exec_options(args) -> None:
     args.cmd = args.cmd[cut:]
 
 
+def stdin_has_data(wait: float = 0.2) -> bool:
+    """Whether something was piped or redirected into this command's
+    stdin: a file or a here-document, or a pipe with data in it. Waits at
+    most `wait` seconds for a pipe's writer; a terminal, /dev/null, and a
+    pipe that is empty (closed, or open with nothing written, as agents'
+    shells often leave it) are no data. A pipe can't be peeked at, so a
+    byte may be read: call this only where the input is refused anyway."""
+    import stat
+    try:
+        fd = sys.stdin.fileno()
+        if os.isatty(fd):
+            return False
+        mode = os.fstat(fd).st_mode
+        if stat.S_ISREG(mode):
+            return os.lseek(fd, 0, os.SEEK_CUR) < os.fstat(fd).st_size
+        if not (stat.S_ISFIFO(mode) or stat.S_ISSOCK(mode)):
+            return False   # /dev/null, or another device
+        if os.name == "nt":
+            return _windows_pipe_has_data(fd, wait)
+        import select
+        if not select.select([fd], [], [], wait)[0]:
+            return False   # nothing written (yet): not ours to wait for
+        return os.read(fd, 1) != b""   # readable: data, or the end of an empty pipe
+    except (AttributeError, OSError, ValueError):
+        return False
+
+
+def _windows_pipe_has_data(fd: int, wait: float) -> bool:
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+    peek = ctypes.windll.kernel32.PeekNamedPipe
+    peek.argtypes = [wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD, ctypes.c_void_p,
+                     ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p]
+    handle, avail, deadline = msvcrt.get_osfhandle(fd), wintypes.DWORD(0), time.monotonic() + wait
+    while True:
+        if not peek(handle, None, 0, None, ctypes.byref(avail), None):
+            return False   # closed, or not a pipe we can look into
+        if avail.value or time.monotonic() >= deadline:
+            return bool(avail.value)
+        time.sleep(0.02)
+
+
 def cmd_exec(agent: Agent, st: FileStorage, args) -> None:
     _exec_options(args)
     cmd = " ".join(args.cmd[1:] if args.cmd[:1] == ["--"] else args.cmd)
     if not cmd.strip():
         sys.exit("give the command to run: myous exec CONTACT -- CMD...")
+    if stdin_has_data():
+        sys.exit("error: myous exec doesn't send its input to the worker, and something was piped or redirected "
+                 "into it (a here-document?). Put the script inside the command, as one quoted argument:\n"
+                 f"  myous exec \"{args.contact}\" -- 'python3 - <<\"EOF\"\n  print(\"hello\")\n  EOF'\n"
+                 "If that input isn't meant for the worker (a loop reading a file), add </dev/null to the command.")
     try:
         result = asyncio.run(agent.exec(args.contact, cmd, timeout=args.timeout, ttl=args.ttl))
     except TimeoutError as e:
@@ -341,8 +404,10 @@ def cmd_contacts(agent: Agent, st: FileStorage, args) -> None:
         return
     if not all_contacts:
         print("no contacts yet; pair with `myous invite` or `myous accept`")
+        return
+    print(f"{'name':<20} {'status':<9} {'relation':<10} {'added by':<8} key")
     for c in all_contacts.values():
-        print(f"{c['alias']:<20} {c['status']:<9} {c.get('relationship') or '-':<10} {c.get('added_by') or '-':<7} {c['npub']}")
+        print(f"{c['alias']:<20} {c['status']:<9} {c.get('relationship') or '-':<10} {c.get('added_by') or '-':<8} {c['npub']}")
         card = c.get("card") or {}
         if card.get("about") or (card.get("name") and card["name"] != c["alias"]):
             calls = f"calls itself \"{card['name']}\"; " if card.get("name") != c["alias"] else ""
@@ -373,13 +438,19 @@ def cmd_rename(agent: Agent, st: FileStorage, args) -> None:
 def cmd_poll(agent: Agent, st: FileStorage, args) -> None:
     entries = asyncio.run(agent.poll())
     vm.run_hook(st, entries)
+    entries = inbox.to_show(st, entries)   # not the replies a waiting exec or cp took
     if args.json:
-        print(json.dumps(entries, indent=2))
+        print(json.dumps([_public(e) for e in entries], indent=2))
     elif not args.quiet:
         print(f"{len(entries)} new item(s); read them with `myous inbox`")
 
 
 def cmd_listen(agent: Agent, st: FileStorage, args) -> None:
+    if args.stop:
+        pid = vm.stop_listener(st)
+        print(f"stopped the listener (pid {pid}); `myous ensure` starts a new one, and so does the background "
+              "task within a minute if it is installed" if pid else "no listener was running for this directory")
+        return
     asyncio.run(vm.run_listener(agent, st))
 
 
@@ -399,7 +470,7 @@ def cmd_ensure(agent: Agent, st: FileStorage, args) -> None:
     if not healthy or time.time() - last_poll > vm.SAFETY_POLL_EVERY:
         entries = asyncio.run(agent.poll())
         vm.run_hook(st, entries)
-        notes.append(f"polled, {len(entries)} new item(s)")
+        notes.append(f"polled, {len(inbox.to_show(st, entries))} new item(s)")
     if not args.quiet:
         print("; ".join(notes))
 
@@ -470,9 +541,21 @@ def cmd_status(agent: Agent, st: FileStorage, args) -> None:
     }
     if args.json:
         print(json.dumps(info, indent=2))
-    else:
-        for k, v in info.items():
-            print(f"{k:<17} {v}")
+        return
+    for k, v in info.items():
+        if k == "contact_list":
+            for c in v:
+                about = [c["status"], c.get("relationship"), c.get("added_by") and f"added by {c['added_by']}",
+                         c.get("paired_at") and "paired " + time.strftime("%Y-%m-%d", time.localtime(c["paired_at"]))]
+                print(f"  {c['alias']} ({', '.join(a for a in about if a)})")
+            continue
+        if k == "hook":   # `myous hook`, which runs a command on new items; not a tool's own hooks
+            k, v = "wake_hook", v or "(none)"
+        elif k == "last_used" and v:
+            v = time.strftime("%Y-%m-%d %H:%M", time.localtime(v))
+        elif k == "pending_pairings":
+            v = "; ".join(v) or "(none)"
+        print(f"{k:<17} {v}")
 
 
 def _pending_summary(agent: Agent) -> list[str]:
@@ -609,7 +692,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--quiet", action="store_true")
     p.add_argument("--json", action="store_true", help="print the new items as JSON")
 
-    add("listen", cmd_listen, "stay connected and receive messages live")
+    p = add("listen", cmd_listen, "stay connected and receive messages live")
+    p.add_argument("--stop", action="store_true",
+                   help="stop this directory's running listener instead (to upgrade, or when leaving)")
 
     p = add("ensure", cmd_ensure, "restart the listener if it died; poll if it's down (safe to repeat)")
     p.add_argument("--quiet", action="store_true")
@@ -640,6 +725,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_parser().parse_args()
+    mismatch = storage.home_mismatch()
+    if mismatch:
+        sys.exit(mismatch)
     st = FileStorage()
     agent = Agent(st, hub_url=getattr(args, "hub", None))
     try:

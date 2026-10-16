@@ -228,7 +228,9 @@ docker compose -p myous-worker ps && cat ~/.myous-worker/worker.json
 
 `worker.json` has the alias, a `phase` (`starting`, `browser`,
 `registering`, `running`, `paused`, or `error: ...`), the number of
-paired contacts, the last request and when, and the worker's `version`.
+paired contacts, the last request and when, and the worker's `version`;
+while it can't reach the relay, `relay_down_since` (Unix time; it keeps
+retrying, and keeps `worker.json` fresh meanwhile).
 The log of every request, allowed, refused or expired (sent longer ago
 than its agent waits for the answer, so not run), is `worker.log` in the
 worker folder, and `requests/` there keeps one JSON record per recent
@@ -244,11 +246,14 @@ of this.
   read-only command such as `ls`, `cat`, `grep`, `find`; anything else
   asks the user), or `all` (every request asks). The apps show the
   question with Allow and Refuse; no answer within 120 seconds refuses
-  the request with a reason the agent sees.
+  the request with a reason the agent sees. Without an app, the question
+  is `approvals/<id>.json` in the worker folder, and writing `allow` or
+  `refuse` into `approvals/<id>.answer` answers it.
 - **Stop:** `docker compose -p myous-worker down` (keeps identity, logins
   and files). A command the worker is running is ended, and the agent
   that sent it gets the answer "stopped by the owner (the worker is
-  shutting down)". Start it again with the `up -d` command from section 3.
+  shutting down)", as do the agents of requests waiting behind it, which
+  don't run. Start it again with the `up -d` command from section 3.
   Requests sent while it was stopped wait on the relay; when it starts,
   it runs those still within their ttl (by default, as long as the agent
   waited for the answer) and answers the others "expired" without
@@ -313,7 +318,8 @@ list knows PowerShell's reading commands.
 
 Stop in an app ends the command the worker is running, with everything
 it started, and the agent that asked gets "stopped by the owner" as its
-result. The app asks the worker to stop (a `commands/quit` file, and
+result; requests waiting behind it get the same answer and don't run.
+The app asks the worker to stop (a `commands/quit` file, and
 SIGTERM outside Windows) and ends it if it is still there ten seconds
 later.
 

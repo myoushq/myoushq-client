@@ -282,7 +282,7 @@ async fn enable_wsl() -> Outcome {
     Outcome { status, output }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 struct DirectStarted {
     pid: u32,
     /// The worker's browser: "" (not asked for), "starting", or why not.
@@ -310,48 +310,80 @@ async fn direct_start<R: Runtime>(
             bin.display()
         ));
     }
-    let mut browser_state = String::new();
+    tauri::async_runtime::spawn_blocking(move || {
+        let h = home.clone();
+        start_with_browser(
+            browser,
+            || direct::running(&home),
+            || browser::start(Path::new(&home), &name, Vec::new(), log.clone()),
+            || {
+                // No --note for the browser: the worker reads browser.json at each help.
+                let args = direct::worker_args(Path::new(&home), &bin, &name, &description, &[]);
+                log(format!("start: {} (output in worker.log)", args.join(" ")));
+                log(format!(
+                    "start: its PATH is {}",
+                    engine::worker_path_source()
+                ));
+                direct::start(&home, &args, move |status| {
+                    // The browser lives and dies with the worker.
+                    browser::stop(Path::new(&h));
+                    let _ = app.emit(
+                        "compose-done",
+                        Done {
+                            home: h,
+                            op: "direct-exit".into(),
+                            status,
+                        },
+                    );
+                })
+            },
+            || browser::stop(Path::new(&home)),
+            &log,
+        )
+    })
+    .await
+    .map_err(err)?
+}
+
+/// `direct_start`'s order: a worker this app runs already is left alone,
+/// and its browser with it (a second Start does nothing); else the
+/// browser first (`browser`), then the worker. When the worker doesn't
+/// start, its browser is ended only if this start started it and no
+/// other start of the worker runs.
+fn start_with_browser(
+    browser: bool,
+    running: impl Fn() -> bool,
+    start_browser: impl FnOnce() -> Result<browser::Started, String>,
+    start_worker: impl FnOnce() -> Result<u32, String>,
+    stop_browser: impl FnOnce(),
+    log: &browser::Log,
+) -> Result<DirectStarted, String> {
+    if running() {
+        return Err("this worker is already running".into());
+    }
+    let mut state = String::new();
+    let mut launched = false;
     if browser {
-        let (h, n, l) = (home.clone(), name.clone(), log.clone());
-        let r = tauri::async_runtime::spawn_blocking(move || {
-            browser::start(Path::new(&h), &n, Vec::new(), l)
-        })
-        .await
-        .map_err(err)?;
-        match r {
-            Ok(_) => browser_state = "starting".into(),
+        match start_browser() {
+            Ok(s) => {
+                state = "starting".into();
+                launched = s.launched;
+            }
             Err(e) => {
                 log(format!("browser: {e}"));
-                browser_state = e;
+                state = e;
             }
         }
     }
-    // No --note for the browser: the worker reads browser.json at each help.
-    let args = direct::worker_args(Path::new(&home), &bin, &name, &description, &[]);
-    log(format!("start: {} (output in worker.log)", args.join(" ")));
-    let h = home.clone();
-    let a = app.clone();
-    let started = direct::start(&home, &args, move |status| {
-        // The browser lives and dies with the worker.
-        browser::stop(Path::new(&h));
-        let _ = a.emit(
-            "compose-done",
-            Done {
-                home: h,
-                op: "direct-exit".into(),
-                status,
-            },
-        );
-    });
-    match started {
+    match start_worker() {
         Ok(pid) => Ok(DirectStarted {
             pid,
-            browser: browser_state,
+            browser: state,
         }),
         Err(e) => {
-            let h = home.clone();
-            let _ =
-                tauri::async_runtime::spawn_blocking(move || browser::stop(Path::new(&h))).await;
+            if launched && !running() {
+                stop_browser();
+            }
             Err(e)
         }
     }
@@ -582,7 +614,7 @@ fn write_compose(home: String) -> Result<String, String> {
     paths::ensure(&p).map_err(err)?;
     let text = COMPOSE_TEMPLATE.replace("@VERSION@", &image_tag());
     let file = paths::compose_file(&p);
-    std::fs::write(&file, text).map_err(err)?;
+    files::write_atomic(&file, text.as_bytes()).map_err(err)?;
     Ok(file.to_string_lossy().to_string())
 }
 
@@ -814,9 +846,7 @@ fn set_dock<R: Runtime>(app: AppHandle<R>, on: bool) -> Result<(), String> {
 /// for Mac keeps it: off unless the owner turned it on.
 #[cfg(target_os = "macos")]
 fn dock_setting() -> bool {
-    std::fs::read_to_string(paths::config_file(&paths::default_home()))
-        .ok()
-        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+    files::read_json(&paths::config_file(&paths::default_home()))
         .and_then(|v| v.get("dock").and_then(Value::as_bool))
         .unwrap_or(false)
 }
@@ -911,11 +941,30 @@ fn window_visible<R: Runtime>(app: AppHandle<R>) -> bool {
         .unwrap_or(false)
 }
 
+/// Quit (the window's and the tray's): the window and the tray icon go
+/// at once, the workers this app runs without a container and the
+/// browsers are stopped off the main thread (up to a worker's ten
+/// seconds), then the app exits. Cmd+Q (a Mac's app menu) ends through
+/// RunEvent::Exit, which stops them too.
 #[tauri::command]
-fn quit<R: Runtime>(app: AppHandle<R>) {
-    direct::stop_all();
-    browser::stop_all();
+async fn quit<R: Runtime>(app: AppHandle<R>) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.hide();
+    }
+    if let Some(tray) = app.tray_by_id(TRAY_ID) {
+        let _ = tray.set_visible(false);
+    }
+    let _ = tauri::async_runtime::spawn_blocking(stop_everything).await;
     app.exit(0)
+}
+
+/// Stops every worker this app runs without a container and every
+/// browser it runs, the two at once, waiting for them (so none is left
+/// behind).
+fn stop_everything() {
+    let workers = std::thread::spawn(direct::stop_all);
+    browser::stop_all();
+    let _ = workers.join();
 }
 
 /// Appends to app.log in the first worker's folder (the window keeps its
@@ -1008,9 +1057,19 @@ fn notification_response<R: Runtime>(app: &AppHandle<R>, response: usernotify::R
         verdict: String,
         error: String,
     }
+    #[derive(Clone, Serialize)]
+    struct NotShown {
+        home: String,
+        id: String,
+    }
     let (id, verdict) = match response {
         usernotify::Response::Open => return show_window(app.clone()),
         usernotify::Response::Answer { id, verdict } => (id, verdict),
+        // The window brings itself up on that worker, with the question.
+        usernotify::Response::NotShown { home, id } => {
+            let _ = app.emit("notify-failed", NotShown { home, id });
+            return;
+        }
     };
     let home = if files::valid_id(&id) {
         paths::all_homes()
@@ -1208,6 +1267,11 @@ pub fn run() {
                     w.set_size(tauri::LogicalSize::new(560.0, 420.0))?;
                     w.center()?;
                 }
+                // The login PATH for workers without a container, asked
+                // now so their first start doesn't wait for the shell.
+                std::thread::spawn(|| {
+                    let _ = engine::login_path();
+                });
                 // Notifications with Allow and Refuse, as myous for Mac's
                 // (none outside an app bundle: the plugin's plain ones).
                 let handle = app.handle().clone();
@@ -1280,8 +1344,7 @@ pub fn run() {
         .run(|app, event| {
             // Workers without a container are this app's children: don't leave them orphaned.
             if let tauri::RunEvent::Exit = event {
-                direct::stop_all();
-                browser::stop_all();
+                stop_everything();
             }
             // A Mac: a click on the Dock icon (when the setting shows one), or
             // opening the app again from the Finder, shows the window, as
@@ -1341,6 +1404,94 @@ mod tests {
     fn host_name_is_one_line() {
         let h = platform::hostname();
         assert!(!h.is_empty() && !h.contains('\n'), "{h:?}");
+    }
+
+    /// A second Start while the worker runs leaves it and its browser
+    /// alone; a failed start ends only a browser it started itself.
+    #[test]
+    fn start_leaves_a_running_worker_and_its_browser_alone() {
+        use std::cell::{Cell, RefCell};
+        let log: browser::Log = std::sync::Arc::new(|_| {});
+        let started = |launched| browser::Started {
+            port: 9,
+            app: "Edge".into(),
+            python: String::new(),
+            launched,
+        };
+        let calls = RefCell::new(Vec::<&str>::new());
+        let call = |what| calls.borrow_mut().push(what);
+        // Running already: nothing touched.
+        let r = start_with_browser(
+            true,
+            || true,
+            || {
+                call("browser");
+                Ok(started(true))
+            },
+            || {
+                call("worker");
+                Ok(1)
+            },
+            || call("stop browser"),
+            &log,
+        );
+        assert!(r.unwrap_err().contains("already running"));
+        assert!(calls.borrow().is_empty());
+        // Started: the browser first.
+        let r = start_with_browser(
+            true,
+            || false,
+            || {
+                call("browser");
+                Ok(started(true))
+            },
+            || {
+                call("worker");
+                Ok(42)
+            },
+            || call("stop browser"),
+            &log,
+        )
+        .unwrap();
+        assert_eq!((r.pid, r.browser.as_str()), (42, "starting"));
+        assert_eq!(*calls.borrow(), ["browser", "worker"]);
+        // The worker didn't start: a browser this start made goes; one
+        // that ran already, or one another start of the worker uses, stays.
+        for (launched, other_start_runs, stopped) in [
+            (true, false, true),
+            (false, false, false),
+            (true, true, false),
+        ] {
+            calls.borrow_mut().clear();
+            let asked = Cell::new(0);
+            let r = start_with_browser(
+                true,
+                || {
+                    asked.set(asked.get() + 1);
+                    other_start_runs && asked.get() > 1
+                },
+                || Ok(started(launched)),
+                || Err("could not start".into()),
+                || call("stop browser"),
+                &log,
+            );
+            assert_eq!(r.unwrap_err(), "could not start");
+            assert_eq!(calls.borrow().contains(&"stop browser"), stopped);
+        }
+        // No browser asked for: none started, none stopped.
+        calls.borrow_mut().clear();
+        let r = start_with_browser(
+            false,
+            || false,
+            || {
+                call("browser");
+                Ok(started(true))
+            },
+            || Err("no".into()),
+            || call("stop browser"),
+            &log,
+        );
+        assert!(r.is_err() && calls.borrow().is_empty());
     }
 
     #[test]

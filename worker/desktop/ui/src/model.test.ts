@@ -8,7 +8,7 @@ import { applyFake, fakeStates, previewBrowserCheck, previewContainers } from ".
 import { appMenu, browserItems, buildMenu, MenuActions, moreMenu } from "./menu.js";
 import { ADVANCE_SHOWS, Check, classifyContainers, Container, isAdvance, isUrgent, Model, Screen, staleChoice, UNKNOWN_AFTER, Worker, WorkerFiles } from "./model.js";
 import { advanceWords, attentionCard, browserAdvance, browserCard, browserRow, checkAdvance, checklist, hubHost, hubLine, installLine, macBrowserHint, macBrowserQuestion, runtimeCard } from "./setup.js";
-import { byteCount, countdown, dayLabel, defaultDescription, isDefaultDescription, newer, pairingMessage, plural, setHostOs, timeAgo } from "./text.js";
+import { byteCount, countdown, dayLabel, defaultDescription, escapeMarkup, isDefaultDescription, newer, pairingMessage, plural, renamedDescription, setHostOs, timeAgo } from "./text.js";
 
 const T = 1_791_700_000;
 
@@ -97,9 +97,15 @@ test("real files drive the screens through a start and a stop", () => {
   m.load([files({ config: { name: "Max's PC" }, status: { phase: "running", contacts: 1 }, status_modified: now })]);
   evaluate(m);
   assert.equal(w.screen, "running");
-  now += 60;
+  // The window looks every two seconds; the file isn't written any more. Stale after 15 s, and that
+  // holds on a look 4 s later.
   m.ticks = 5;
-  evaluate(m);
+  const look = (secs: number) => { for (let t = 0; t < secs; t += 2) { now += 2; evaluate(m); } };
+  look(16);
+  assert.equal(w.screen, "running", "one look at a stale file isn't enough");
+  look(2);
+  assert.equal(w.screen, "running");
+  look(2);
   assert.equal(w.screen, "stopped");
   assert.equal(w.attention, "The worker stopped on its own.");
   evaluate(m);
@@ -109,6 +115,44 @@ test("real files drive the screens through a start and a stop", () => {
   m.load([files({ config: { name: "Max's PC" }, status: { phase: "error: the hub refused the key" }, status_modified: now })]);
   evaluate(m);
   assert.equal(w.attention, "the hub refused the key");
+});
+
+test("a worker still running 90 s after Stop: the window says it didn't stop, for half a minute", () => {
+  const m = model();
+  let now = T;
+  m.now = () => now;
+  const needy: string[] = [];
+  m.needsAttention = (w) => needy.push(w.attention);
+  const files = (): WorkerFiles => ({ home: "/h", folder: "h", is_default: true, project: "p", config: { name: "Max's PC" },
+    status: { phase: "running", contacts: 1 }, status_modified: now, requests: [], approvals: [], paused: false, review: "trust" });
+  const look = (secs: number) => {
+    for (let t = 0; t < secs; t += 2) {
+      now += 2;
+      m.load([files()]);
+      evaluate(m);
+    }
+  };
+  look(2);
+  const w = m.current;
+  // Stop pressed; compose down never ends and the worker keeps writing.
+  w.stopping = true;
+  w.stoppedAt = now;
+  const pressed = now;
+  look(88);
+  assert.equal(w.screen, "stopping");
+  look(4);
+  assert.equal(w.screen, "running");
+  assert.equal(w.attention, "The worker didn't stop. The log says why.");
+  assert.equal(w.attentionButton, "Show log");
+  assert.equal(w.stateWord, "Needs attention");
+  assert.deepEqual(needy, ["The worker didn't stop. The log says why."], "news: the window comes up");
+  look(120 - (now - pressed) - 2);
+  assert.ok(now - pressed < 120);
+  assert.equal(w.screen, "running");
+  assert.notEqual((w as Worker).attention, "", "until two minutes after Stop");
+  look(2);
+  assert.equal(w.attention, "");
+  assert.equal(w.stateWord, "Running");
 });
 
 test("only a request waiting for an answer is urgent", () => {
@@ -220,6 +264,46 @@ test("app.json keeps keys this app doesn't know", () => {
   assert.equal(c.dock, false);
 });
 
+test("a reread while Settings is open keeps its edits, and a read older than a write doesn't undo it", async () => {
+  const m = model();
+  const files = (config: Record<string, unknown>, home = "/h"): WorkerFiles => ({ home, folder: home.slice(1), is_default: home === "/h", project: "p",
+    config, status: null, status_modified: 0, requests: [], approvals: [], paused: false, review: "trust" });
+  m.load([files({ name: "Max's PC", dock: false }), files({ name: "second" }, "/h-2")]);
+  // Settings opens on the second worker: it holds that worker's config and the app's (the first worker's).
+  const w = m.workers[1], app = m.appConfig, mine = w.config;
+  // The window rereads the folders every two seconds meanwhile.
+  m.load([files({ name: "Max's PC", dock: false, seen_requests_at: 5 }), files({ name: "second" }, "/h-2")]);
+  assert.equal(m.appConfig, app, "the same app settings");
+  assert.equal(w.config, mine, "the same worker config");
+  assert.equal(app.seenRequestsAt, 5, "with what was read");
+  // Save: the edits land in what the window holds, so they are what is written.
+  app.dock = true;
+  app.notifications = false;
+  app.setNotifies("refused", false);
+  app.autoUpdate = false;
+  app.showAgents = false;
+  mine.name = "Codex's worker";
+  assert.deepEqual(m.appConfig.data, { name: "Max's PC", dock: true, seen_requests_at: 5, notifications: false, notify: { refused: false }, auto_update: false, show_agents: false });
+  assert.equal(m.workers[1].config.name, "Codex's worker");
+  // A write, and a read that began before it ended: what the app holds stays (while it is written, and after).
+  let ended!: () => void;
+  const from = m.writesEnded;
+  const write = m.writing(w, () => new Promise<void>((r) => (ended = r)));
+  m.load([files({ name: "Max's PC" }), files({ name: "second" }, "/h-2")], from);
+  assert.equal(w.config.name, "Codex's worker", "not while it is written");
+  ended();
+  await write;
+  m.load([files({ name: "Max's PC" }), files({ name: "second" }, "/h-2")], from);
+  assert.equal(w.config.name, "Codex's worker", "not from a read that began before the write ended");
+  assert.equal(m.appConfig.dock, false, "the other worker's file is read as it is");
+  // A read that began after the write ended: the file, which now holds the write (or what changed it since).
+  m.load([files({ name: "Max's PC" }), files({ name: "renamed by hand" }, "/h-2")], m.writesEnded);
+  assert.equal(w.config.name, "renamed by hand");
+  // A write that failed ends too.
+  await m.writing(w, () => Promise.reject(new Error("disk full"))).catch(() => {});
+  assert.equal(w.writesInFlight, 0);
+});
+
 const noop = new Proxy({}, { get: () => () => {} }) as MenuActions;
 const labels = (items: { label?: string; separator?: boolean; children?: unknown[] }[]): string[] =>
   items.map((i) => (i.separator ? "----" : i.label ?? ""));
@@ -237,8 +321,80 @@ test("the ⋯ menu, and on a Mac the app menu with the same entries", () => {
   assert.equal(items[0].accelerator, "CmdOrCtrl+,");
   assert.ok(!l.includes("Quit myous"), "Quit is the app menu's own (Rust)");
   assert.deepEqual(new Set(more.filter((x) => x !== "----" && x !== "Quit myous")), new Set(l.filter((x) => x !== "----")));
-  assert.equal(actions.size, l.filter((x) => x !== "----").length);
-  assert.ok([...actions.keys()].every((id) => id.startsWith("app")), "ids apart from the tray's");
+  assert.equal(actions.size, l.filter((x) => x !== "----").length, "every entry its own id");
+  assert.ok([...actions.keys()].every((id) => id.startsWith("app:")), "ids apart from the tray's");
+  assert.ok(actions.has("app:Settings…") && actions.has("app:w:/home/max/.myous-worker:Open browser"), "named by label, and a worker's by its folder too");
+});
+
+/** Menu actions that note what ran, and on which worker. */
+function recorder(ran: string[]) {
+  return new Proxy({}, { get: (_t, p) => (x?: { name?: string }) => ran.push(x?.name ? `${String(p)} ${x.name}` : String(p)) }) as MenuActions;
+}
+const entryId = (items: { id?: string; label?: string; children?: unknown[] }[], label: string): string => {
+  for (const i of items) {
+    if (i.label === label) return i.id!;
+    const sub = i.children ? entryId(i.children as typeof items, label) : "";
+    if (sub) return sub;
+  }
+  return "";
+};
+
+test("a menu clicked after the window rebuilt it runs what it showed, on the worker it showed, or nothing", () => {
+  const m = model();
+  applyFake(m, "workers");
+  evaluate(m);
+  const ran: string[] = [];
+  const act = recorder(ran);
+  const [first, second] = m.workers;
+  const submenu = (items: ReturnType<typeof buildMenu>["items"], w: Worker) => items.find((i) => i.label?.startsWith(`${w.name} · `))!.children!;
+  const before = buildMenu(m, false, act).items;
+  const stopFirst = entryId(submenu(before, first), "Stop"), stopSecond = entryId(submenu(before, second), "Stop");
+  assert.equal(stopFirst, "w:/home/max/.myous-worker:Stop");
+  assert.equal(stopSecond, "w:/home/max/.myous-worker-2:Stop");
+  // The first worker stops; the window rebuilds the menu while the owner has the old one open.
+  first.screen = "stopped";
+  const after = buildMenu(m, false, act);
+  after.actions.get(stopFirst)?.();
+  assert.deepEqual(ran, [], "the first worker's Stop runs nothing: it has none now (not the second's)");
+  after.actions.get(entryId(before, "Settings…"))!();
+  after.actions.get(stopSecond)!();
+  assert.deepEqual(ran, ["settings", "stop Max's PC for Codex"]);
+  // A worker that went: its entries of the last menu run nothing.
+  ran.length = 0;
+  m.workers = [first];
+  after.actions.get(stopSecond)!();
+  after.actions.get(entryId(after.items, "Show container log"))!();
+  assert.deepEqual(ran, ["containerLog Max's PC"], "the Advanced entries are the current worker's");
+  // An agent's entry is its folder: it opens that agent, whatever the order.
+  applyFake(m, "agents");
+  evaluate(m);
+  const agent = buildMenu(m, false, act).items.find((i) => i.label?.startsWith("Claude Code"))!;
+  assert.equal(agent.id, "a:/home/max/.myous-claude");
+});
+
+test("a Mac's app menu clicked after it changed runs what it showed", () => {
+  const m = model();
+  m.os = "macos";
+  applyFake(m, "running");
+  evaluate(m);
+  const ran: string[] = [];
+  const act = recorder(ran);
+  // Built while the worker runs (its browser entry first), clicked once it stopped (no browser entry).
+  const before = appMenu(m, act).items;
+  m.current.screen = "stopped";
+  const after = appMenu(m, act);
+  assert.ok(!labels(after.items).includes("Open browser"));
+  after.actions.get(entryId(before, "Remove stale containers…"))!();
+  after.actions.get(entryId(before, "Open browser"))?.();
+  assert.deepEqual(ran, ["removeContainers"], "Remove stale containers…, and no browser for a worker that stopped");
+  // Another worker shown meanwhile: the first one's entries run nothing.
+  applyFake(m, "workers");
+  evaluate(m);
+  const logOfFirst = entryId(appMenu(m, act).items, "Show container log");
+  m.current = m.workers[1];
+  appMenu(m, act).actions.get(logOfFirst)?.();
+  assert.deepEqual(ran, ["removeContainers"]);
+  assert.notEqual(entryId(appMenu(m, act).items, "Show container log"), logOfFirst);
 });
 
 test("a Mac's made-up worker is Max's Mac", () => {
@@ -259,7 +415,7 @@ test("the tray menu offers what the state allows", () => {
   assert.equal(l.filter((x, i) => x === "----" && l[i + 1] === "----").length, 0, "no double separators");
   assert.ok(actions.has("open"));
   // Ids name their entries: a click on a menu built before the last change still runs the right action.
-  assert.ok(actions.has("m:Settings…") && actions.has("m:Stop") && actions.has("m:Add a worker…"));
+  assert.ok(actions.has("m:Settings…") && actions.has("w:/home/max/.myous-worker:Stop") && actions.has("m:Add a worker…"));
   assert.ok(actions.has("m:Remove stale containers…"), "it opens a dialog");
   applyFake(m, "stopped");
   evaluate(m);
@@ -273,7 +429,8 @@ test("the tray menu offers what the state allows", () => {
   assert.ok(labels(workers[1].children!).includes("Remove…"));
   assert.ok(!labels(workers[0].children!).includes("Remove…"), "the first worker stays");
   ({ items, actions } = buildMenu(m, false, noop));
-  assert.ok(actions.has("m:Stop") && actions.has("m:Stop#2") && actions.has("m:Add a worker…#2"), "a second entry with the same label gets #2");
+  assert.ok(actions.has("w:/home/max/.myous-worker:Stop") && actions.has("w:/home/max/.myous-worker-2:Stop"), "each worker's Stop names its folder");
+  assert.ok(actions.has("m:Add a worker…#2"), "a second entry with the same label gets #2");
   const l2 = labels(items);
   assert.equal(l2.filter((x, i) => x === "----" && l2[i + 1] === "----").length, 0, "no double separators");
   // Several workers: a WORKERS section with their submenus and Add a worker…, closed by a separator.
@@ -388,12 +545,101 @@ test("a worker whose container the owner removed is stopped, not stopped on its 
   m.load([{ ...files(), status_modified: now }]);
   evaluate(m);
   assert.equal(w.screen, "running");
-  now += 60;
-  evaluate(m);
+  for (let t = 0; t < 30; t += 2) {
+    now += 2;
+    evaluate(m);
+  }
   assert.equal(w.attention, "The worker stopped on its own.");
 });
 
+test("a sleep of the computer isn't a worker that stopped: it gets time to write again, and one late look is no news", () => {
+  const m = model();
+  let now = T, written = T;
+  m.now = () => now;
+  const sent: string[] = [], needy: string[] = [];
+  m.notify = (kind) => sent.push(kind);
+  m.needsAttention = (w) => needy.push(w.attention);
+  m.ticks = 5;
+  const files = (home: string): WorkerFiles => ({ home, folder: home.slice(1), is_default: home === "/h", project: home.slice(1),
+    config: { name: home }, status: { phase: "running", contacts: 1 }, status_modified: written, requests: [], approvals: [], paused: false, review: "trust" });
+  // Two workers; the second is the one shown. A look every two seconds; `writing`: the workers write before each.
+  const look = (secs: number, every = 2, writing = false) => {
+    for (let t = 0; t < secs; t += every) {
+      now += every;
+      if (writing) written = now;
+      m.load([files("/h"), files("/h-2")]);
+      evaluate(m);
+    }
+  };
+  look(2);
+  const [first, second] = m.workers;
+  m.current = second;
+  const running = () => m.workers.every((w) => w.screen === "running" && w.attention === "");
+  // The computer sleeps an hour: the next look is an hour on, worker.json an hour old.
+  written = now - 3;
+  look(3600, 3600);
+  assert.ok(running(), "the look after the wake doesn't call it stopped");
+  // The workers write again 8 s after the wake (a worker writes every 5 to 10 s).
+  look(8);
+  assert.ok(running());
+  look(30, 2, true);
+  assert.ok(running());
+  assert.deepEqual([sent, needy], [[], []], "no notification, the window not raised");
+  assert.equal(m.current, second, "the worker shown stays the one shown");
+  // One look at a stale file, then a write: no news.
+  look(16);
+  assert.ok(running());
+  written = now;
+  look(4);
+  assert.ok(running());
+  // A worker that doesn't write again after a wake: stopped once it had STALE_AFTER seconds, and that held 4 s on.
+  written = now - 2;
+  look(3600, 3600);
+  look(14);
+  assert.ok(running(), "still running within 15 s of the wake");
+  look(8);
+  assert.ok(m.workers.every((w) => w.screen === "stopped" && w.attention === "The worker stopped on its own."));
+  assert.deepEqual(sent, ["stopped", "stopped"], "now it's news");
+  assert.equal(needy.length, 2);
+  assert.equal(first.screen, "stopped");
+});
+
+test("a worker that dies while the app looks only now and then is still found", () => {
+  const m = model();
+  let now = T;
+  m.now = () => now;
+  m.ticks = 5;
+  const files = (written: number): WorkerFiles => ({ home: "/h", folder: "h", is_default: true, project: "p", config: { name: "x" },
+    status: { phase: "running", contacts: 1 }, status_modified: written, requests: [], approvals: [], paused: false, review: "trust" });
+  m.load([files(now)]);
+  evaluate(m);
+  const w = m.current;
+  // The app's timer slowed to a look every 20 s (a hidden window); the worker wrote once more, then died.
+  const looks: string[] = [];
+  for (let i = 0; i < 4; i++) {
+    now += 20;
+    m.load([files(T + 2)]);
+    evaluate(m);
+    looks.push(w.screen);
+  }
+  assert.deepEqual(looks, ["running", "running", "stopped", "stopped"], "the first slow look is given the doubt, once");
+  assert.equal(w.attention, "The worker stopped on its own.");
+});
+
+test("a new name: the default description follows it, the owner's own words stay", () => {
+  for (const direct of [false, true]) {
+    for (const browser of [false, true]) {
+      assert.equal(renamedDescription(defaultDescription("Max's PC", direct, browser), "Max's PC", "Max's laptop", direct),
+        defaultDescription("Max's laptop", direct, browser));
+    }
+  }
+  assert.equal(renamedDescription(`  ${defaultDescription("", false)}\n`, "", "Studio", false), defaultDescription("Studio", false), "from no name, spaces around");
+  assert.equal(renamedDescription("My laptop, for the builds.", "Max's PC", "Max's laptop", false), "My laptop, for the builds.");
+  assert.equal(renamedDescription(defaultDescription("Max's PC"), "Max's Mac", "Max's laptop", false), defaultDescription("Max's PC"), "a default for another name is the owner's");
+});
+
 test("words and numbers", () => {
+  assert.equal(escapeMarkup("grep -c '<b>' a.html && echo \"x > 1\""), "grep -c '&lt;b&gt;' a.html &amp;&amp; echo \"x &gt; 1\"");
   assert.equal(timeAgo(T - 5, T), "5 s ago");
   assert.equal(timeAgo(T - 125, T), "2 min ago");
   assert.equal(timeAgo(T - 7200, T), "2 h ago");

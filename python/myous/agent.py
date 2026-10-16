@@ -29,7 +29,7 @@ from nostr_sdk import Keys, PublicKey, RelayStatus
 
 import myous
 from myous import contacts, files, inbox, parts, relay
-from myous.hub import Hub
+from myous.hub import Hub, HubError
 from myous.pairing import Pairing
 from myous.storage import Storage
 
@@ -74,6 +74,9 @@ class Agent:
         self.hub = Hub(storage)
         self._keys: Keys | None = None
         self._live: relay.Connection | None = None  # the connection listen() holds, while it runs
+        # Since when listen() has had no relay connected (Unix time); None
+        # while one is, or before it tried. A worker writes it in its status.
+        self.relay_down_since: float | None = None
 
     # --- identity ----------------------------------------------------------
 
@@ -349,8 +352,10 @@ class Agent:
     # Each waits `timeout` (exec: the command's timeout plus 30 seconds) and
     # sends a ttl (protocol.md 7.1): by default the same, so a request it
     # gave up on never runs later; a longer one leaves it for a worker that
-    # is off, to run when it is back. A request it gave up on is remembered
-    # (inbox.give_up): its reply, if one comes, shows in the inbox.
+    # is off, to run when it is back. A request is remembered while it
+    # waits (inbox.waiting) and after it gave up (inbox.give_up): a reply
+    # that comes after it gave up, or after it was killed, shows in the
+    # inbox.
 
     async def exec(self, name: str, cmd: str, timeout: float = 120, ttl: int | None = None) -> dict:
         """Run a command on a worker and wait for its result
@@ -389,17 +394,25 @@ class Agent:
     async def _await_or_give_up(self, rid: str, name: str, request: dict, wait: float, ttl: int,
                                 conn: relay.Connection) -> dict:
         """_await_reply for a request just sent ({"op", ...} says what it
-        asks). If no reply comes in time, the request is remembered
-        (inbox.give_up), so that a reply that comes later is shown."""
+        asks). The request is remembered while this process waits
+        (inbox.waiting), forgotten when the reply comes, and given up
+        (inbox.give_up) when it doesn't come in time, or the wait ends
+        otherwise: a reply that comes later is shown."""
         sent = time.time()
         _, contact = contacts.find(self.st, name)
+        request = dict(request, peer=contact["npub"], alias=contact["alias"], sent_at=int(sent),
+                       expires=int(sent + ttl), ttl=ttl, wait=wait)
+        with self.st.lock():
+            inbox.waiting(self.st, rid, request)
         try:
-            return await self._await_reply(rid, wait, contact["npub"], conn, sent + ttl)
-        except TimeoutError:
+            reply = await self._await_reply(rid, wait, contact["npub"], conn, sent + ttl)
+        except BaseException:
             with self.st.lock():
-                inbox.give_up(self.st, rid, dict(request, peer=contact["npub"], alias=contact["alias"],
-                                                 sent_at=int(sent), expires=int(sent + ttl)))
+                inbox.give_up(self.st, rid, request)
             raise
+        with self.st.lock():
+            inbox.answered(self.st, rid)
+        return reply
 
     @staticmethod
     def _check(reply: dict) -> dict:
@@ -447,7 +460,10 @@ class Agent:
                     else:
                         await self.listen(on_new=check, on_tick=check, tick=2)
                 except (OSError, relay.RelayError):
-                    await self.poll()
+                    try:
+                        await self.poll()
+                    except (OSError, relay.RelayError, HubError):
+                        pass  # still down: listen again after the pause
                     check()
                     await asyncio.sleep(5)
 
@@ -470,7 +486,10 @@ class Agent:
         self.advance_pairings()
         self.check_notices()
         await self.sync_cards()
-        async with self._connect() as conn:
+        # One attempt to connect: a relay that is down fails the poll at
+        # once (RelayError) instead of passing for an empty inbox, and
+        # last_poll stays when it was last done.
+        async with self._connect(retry=False) as conn:
             wraps = await conn.fetch_wraps()
         with self.st.lock():
             inbox.handle_wraps(self.st, self.keys, wraps)
@@ -485,8 +504,15 @@ class Agent:
         connection is lost for good or the task is cancelled. Calls
         on_new(entries) for new messages and pairing results, and on_tick()
         every `tick` seconds (3 while a pairing is pending)."""
-        async with self._connect() as conn:
-            await self._listen_on(conn, on_new, on_tick, tick)
+        # The hub's settings off the event loop: refreshing them may wait
+        # for a hub that doesn't answer, and the loop must keep running.
+        cfg = await asyncio.get_running_loop().run_in_executor(None, self.hub.config)
+        try:
+            async with self._connect(cfg) as conn:
+                await self._listen_on(conn, on_new, on_tick, tick)
+        except (OSError, relay.RelayError):
+            self.relay_down_since = self.relay_down_since or time.time()
+            raise
 
     async def _listen_on(self, conn: relay.Connection, on_new=None, on_tick=None, tick: float = 20) -> None:
         """listen() on a connection already open. While it runs, sends from
@@ -510,6 +536,7 @@ class Agent:
                     states = [r.status() for r in (await conn.client.relays()).values()]
                     connected = any(s == RelayStatus.CONNECTED for s in states)
                     down_since = None if connected else (down_since or loop.time())
+                    self.relay_down_since = None if connected else (self.relay_down_since or time.time())
                     if down_since and loop.time() - down_since > 120:
                         raise ConnectionError("relay connection lost")
                     if on_tick:
@@ -608,8 +635,8 @@ class Agent:
 
     # --- internals ---------------------------------------------------------
 
-    def _connect(self, cfg: dict | None = None) -> relay.Connection:
-        return relay.Connection(self.keys, (cfg or self.hub.config())["relays"])
+    def _connect(self, cfg: dict | None = None, retry: bool = True) -> relay.Connection:
+        return relay.Connection(self.keys, (cfg or self.hub.config())["relays"], retry=retry)
 
     @contextlib.asynccontextmanager
     async def _use(self, conn: relay.Connection | None = None):
@@ -647,11 +674,24 @@ def timeout_text(wait: float, expires: float | None) -> str:
     text = f"no reply from the worker within {int(wait)} seconds"
     if expires is None:
         return text
-    if expires <= time.time():
+    left = expires - time.time()
+    if left <= inbox.TTL_MARGIN:
         return text + ("; it won't start this request any more (it is off or busy), "
                        "but if it already has, its reply will show in `myous inbox`")
-    return (text + f"; it may still run this request until {time.strftime('%H:%M', time.gmtime(expires))} UTC "
-            "(its ttl), and its reply will show in `myous inbox` when it comes")
+    return (text + f"; it may still run this request in the next {_duration(left)} "
+            f"(its ttl; until {time.strftime('%H:%M', time.localtime(expires))} this computer's time), "
+            "and its reply will show in `myous inbox` when it comes")
+
+
+def _duration(seconds: float) -> str:
+    """"40 seconds", "59 minutes", "23 hours": rounded up, so it never says
+    less time than is left."""
+    for unit, size in (("hour", 3600), ("minute", 60)):
+        if seconds > 2 * size:
+            n = -(-int(seconds) // size)
+            return f"{n} {unit}s"
+    n = max(1, int(-(-seconds // 1)))
+    return f"{n} second" + ("s" if n != 1 else "")
 
 
 class _Deliveries:

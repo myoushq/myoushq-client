@@ -12,6 +12,10 @@ from myous.storage import Storage
 
 DEFAULT_HUB = "https://myoushq.com"
 CONFIG_MAX_AGE = 6 * 3600
+# After a refresh fails, the cached config serves this long before the next
+# try: each try may wait for its timeout, and a poll asks more than once.
+CONFIG_RETRY = 600
+CONFIG_TIMEOUT = 10
 
 
 class HubError(Exception):
@@ -29,14 +33,18 @@ class Hub:
     def config(self, refresh: bool = False) -> dict:
         """Relay list and other settings, cached and refreshed every few hours."""
         cached = self.storage.get("hub")
-        fresh = cached and cached.get("url") == self.url and time.time() - cached.get("fetched_at", 0) < CONFIG_MAX_AGE
+        now = time.time()
+        fresh = cached and cached.get("url") == self.url and (
+            now - cached.get("fetched_at", 0) < CONFIG_MAX_AGE or now < cached.get("retry_at", 0))
         if fresh and not refresh:
             return cached
         try:
-            cfg = self.request("GET", "/config.json")
+            cfg = self.request("GET", "/config.json", timeout=CONFIG_TIMEOUT)
         except (HubError, OSError):
             if cached and cached.get("url") == self.url:
-                return cached  # hub unreachable: keep using what we had
+                # Hub unreachable: keep using what we had, and don't ask again for a while.
+                self.storage.put("hub", dict(cached, retry_at=int(now) + CONFIG_RETRY))
+                return cached
             raise
         cfg.update(url=self.url, fetched_at=int(time.time()))
         self.storage.put("hub", cfg)

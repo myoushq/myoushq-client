@@ -165,7 +165,7 @@ async fn run(cli: Cli) -> Result<()> {
                 agent.create_identity()?;
             }
             if !agent.is_registered()? {
-                println!("registering with {} (proof of work, a few seconds)...", agent.hub.url);
+                println!("registering with {} (proof of work: seconds, up to a minute on a slow machine)...", agent.hub.url);
             }
             agent.register(Some(&alias)).await?;
             let npub = agent.keys()?.public_key().to_bech32()?;

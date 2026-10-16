@@ -230,10 +230,42 @@ mod tests {
 
     /// A kind-14 gift wrap from `sender` to `me`, as the relay would deliver it.
     fn wrap(sender: &Keys, me: &Keys, text: &str) -> Event {
+        wrap_tagged(sender, me, text, &[])
+    }
+
+    fn wrap_tagged(sender: &Keys, me: &Keys, text: &str, extra: &[&[&str]]) -> Event {
+        let mut tags = vec![Tag::public_key(me.public_key())];
+        tags.extend(extra.iter().map(|t| Tag::parse(t.iter().copied()).unwrap()));
         let rumor = EventBuilder::new(Kind::PrivateDirectMessage, text)
-            .tags([Tag::public_key(me.public_key())])
+            .tags(tags)
             .finalize_unsigned(sender.public_key());
         GiftWrapBuilder::new(me.public_key(), rumor).finalize(sender).unwrap()
+    }
+
+    /// A listener hands each wrap over on its own: every part must be saved
+    /// as it comes, or the message is lost once its wraps count as seen.
+    #[test]
+    fn parts_in_separate_deliveries() {
+        let dir = tempfile::tempdir().unwrap();
+        let st = FileStorage::new(Some(dir.path().to_path_buf())).unwrap();
+        let (me, peer) = (Keys::generate(), Keys::generate());
+        let peer_hex = peer.public_key().to_hex();
+        contacts::add(&st, &peer_hex, "peer").unwrap();
+        for (i, text) in ["first ", "second ", "third"].iter().enumerate() {
+            let index = (i + 1).to_string();
+            let w = wrap_tagged(&peer, &me, text, &[&["part", "ab12", &index, "3"]]);
+            let stored = handle_wraps(&st, &me, &[w]).unwrap();
+            if i < 2 {
+                assert!(stored.is_empty());
+                let buf = st.get("partials").unwrap().unwrap();
+                let parts = buf[format!("{peer_hex}:ab12")]["parts"].as_object().unwrap().len();
+                assert_eq!(parts, i + 1, "part {index} not saved");
+            } else {
+                assert_eq!(stored.len(), 1);
+                assert_eq!(stored[0]["text"], "first second third");
+                assert!(stored[0].get("incomplete").is_none());
+            }
+        }
     }
 
     #[test]

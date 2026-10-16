@@ -184,12 +184,21 @@ class TauriBackend implements Backend {
 }
 
 /** A browser without Tauri: the screens with made-up data, no effects.
- * What the page did is kept in `calls`, for the browser tests. */
+ * What the page did is kept in `calls`, for the browser tests. With
+ * `?state=` empty there is no made-up state: the window runs as it does in
+ * the app, every two seconds reading `files` (one worker running in a
+ * container; a test changes them), and its app.json writes go there. */
 export class PreviewBackend implements Backend {
   readonly preview = true;
   calls: [string, unknown[]][] = [];
   tray: { icon: string | null; tooltip: string; items: TrayItem[] } | null = null;
-  constructor(private info: Partial<AppInfo> = {}) {}
+  files: WorkerFiles[];
+  constructor(private info: Partial<AppInfo> = {}) {
+    const mac = info.os === "macos", name = mac ? "Max's Mac" : "Max's PC";
+    this.files = [{ home: mac ? "/Users/max/.myous-worker" : "/home/max/.myous-worker", folder: ".myous-worker", is_default: true,
+      project: "myous-worker", config: { name }, status: { phase: "running", alias: name, contacts: 1 }, status_modified: 0,
+      requests: [], approvals: [], paused: false, review: "trust" }];
+  }
   private rec<T>(name: string, args: unknown[], value: T): Promise<T> {
     this.calls.push([name, args]);
     return Promise.resolve(value);
@@ -201,8 +210,16 @@ export class PreviewBackend implements Backend {
       product_name: os === "windows" ? "myous for Windows" : os === "macos" ? "myous for Mac" : "myous for Linux",
       download_path: `/download/${os}`, ...this.info, os });
   }
-  readWorkers() { return this.rec("readWorkers", [], [] as WorkerFiles[]); }
-  writeConfig(...a: [string, object]) { return this.rec("writeConfig", a, undefined); }
+  /** Copies, as a read gives them; a worker with a status writes it as the app reads it (it runs). */
+  readWorkers() {
+    const now = Date.now() / 1000;
+    return this.rec("readWorkers", [], this.files.map((f) => ({ ...JSON.parse(JSON.stringify(f)), status_modified: f.status ? now : 0 }) as WorkerFiles));
+  }
+  writeConfig(...a: [string, object]) {
+    const f = this.files.find((x) => x.home === a[0]);
+    if (f) f.config = JSON.parse(JSON.stringify(a[1]));
+    return this.rec("writeConfig", a, undefined);
+  }
   sendCommand(...a: [string, string]) { return this.rec("sendCommand", a, undefined); }
   setPaused(...a: [string, boolean]) { return this.rec("setPaused", a, undefined); }
   answerApproval(...a: [string, string, string]) { return this.rec("answerApproval", a, undefined); }

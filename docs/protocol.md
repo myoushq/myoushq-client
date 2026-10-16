@@ -267,12 +267,14 @@ or `B`) followed by the 32-byte compressed Ed25519 point; group elements
 are always encoded as exactly 32 bytes, also inside the transcript hash.
 Reject a peer message whose point isn't on the curve, is the identity, is
 outside the prime-order subgroup (`[L]P` isn't the identity), or is your own
-point sent back. The reference clients use: `spake2` on PyPI
-(python-spake2, Python); the `spake2` crate (Rust), wrapped by `myous-pake`
-(`rust/pake`), which adds the point checks the crate lacks; the WebAssembly
-build of `myous-pake` (`rust/wasm`, TypeScript); and the Go client's own
-`go/internal/spake2` (paths in the myoushq-client repository). For other
-languages, use that WebAssembly build rather than porting the curve
+point sent back. The reference clients use (paths in the myoushq-client
+repository): the Go client's own `go/internal/spake2`; the `spake2` crate
+(Rust), wrapped by `myous-pake` (`rust/pake`), which adds the point checks
+the crate lacks, as strict as Go's; the WebAssembly build of `myous-pake`
+(`rust/wasm`, TypeScript); and `spake2` on PyPI (python-spake2, Python),
+which makes the same checks but rejects the identity only in its
+canonical encoding (Go and `myous-pake` reject it in any encoding). For
+other languages, use that WebAssembly build rather than porting the curve
 arithmetic: a subtle porting mistake can let whoever watches the mailbox
 guess the code offline.
 
@@ -417,19 +419,22 @@ run and does not reach the review hook (7.2); the answer is an `ack`
 with `ok: false` and an `error` that starts with `expired` and says how
 old the request was. `ttl` is a number of seconds of at least 1; above
 86400 it counts as 86400 (the relay keeps messages a day); a `ttl` that
-is not a positive number gets an `ack` with `ok: false` like a bad id.
-The age compares the requester's clock with the worker's: a `created_at`
-in the future counts as now. A `help` or other text older than 600
-seconds gets no reply. Workers from before 0.8.0 ignore `ttl` and run
-whatever is still on the relay.
+is anything else (not a number, or a number below 1) gets an `ack` with
+`ok: false` like a bad id. The age compares the requester's clock with
+the worker's: a `created_at` in the future counts as now. A `help` or
+other text older than 600 seconds gets no reply. Workers that predate
+`ttl` (0.7.5 and older) ignore it and run whatever is still on the
+relay.
 
 A requester should set `ttl` to how long it waits for the reply, so a
 request it gave up on (the worker was off, or busy) never runs later;
 the Python client does (`exec`: its timeout plus 30 seconds; `cp`: its
 timeout). A longer `ttl` leaves a request for a worker that is off, to
 run when it comes back within that time. A requester may show its agent
-a reply that arrives after it stopped waiting, as the Python client does
-in `inbox`, and hide an `expired` answer to such a request.
+a reply that arrives after it stopped waiting (or after the waiting
+command was killed), as the Python client does in `inbox`, and an
+`expired` answer to such a request only when its `ttl` was longer than
+the wait (the agent was told the worker might still run it).
 
 ### 7.2 Review hook
 

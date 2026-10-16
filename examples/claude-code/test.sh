@@ -5,7 +5,8 @@
 #
 # 1. Against a fake `myous` on PATH that prints a given JSON list: always runs.
 # 2. Against the real client and a local hub: two agents pair, one sends,
-#    the hook shows it once. Runs when the hub source is next to this repo
+#    the hook shows it once; again with a listener running; then, with the
+#    listener gone and the hub down, the hook stays quiet and quick. Runs when the hub source is next to this repo
 #    (../myoushq/hub, or $MYOUS_HUB_SRC), Go is installed and $PYTHON
 #    (default python3) has the client installed; skipped otherwise.
 # inbox-hook.ps1 has its own tests, test.ps1 (Windows).
@@ -15,7 +16,12 @@ ROOT=$(cd "$HERE/../.." && pwd)
 HOOK="$HERE/inbox-hook.sh"
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/myous-cc-test.XXXXXX")
 HUB_PID=
-cleanup() { [ -n "$HUB_PID" ] && kill "$HUB_PID" 2>/dev/null; rm -rf "$TMP"; }
+listener_pid() { sed -n 's/.*"pid": *\([0-9][0-9]*\).*/\1/p' "$1/listener.json" 2>/dev/null; }
+cleanup() {
+    [ -n "$HUB_PID" ] && kill "$HUB_PID" 2>/dev/null
+    for h in "$TMP/alice" "$TMP/bob"; do p=$(listener_pid "$h"); [ -n "$p" ] && kill "$p" 2>/dev/null; done
+    rm -rf "$TMP"
+}
 trap cleanup EXIT
 FAILED=0
 fail() { echo "FAIL: $*"; FAILED=1; }
@@ -47,6 +53,26 @@ run_fake
 [ "$(cat "$FAKE_LOG")" = "$TMP/home inbox --json" ] && ok "MYOUS_HOME from the argument, inbox --json" \
     || fail "called as: $(cat "$FAKE_LOG")"
 
+# A running listener has fetched already: the hook only reads what it stored.
+listener() {  # listener HEARTBEAT_AGE PID: write listener.json, run the hook, print how myous was called
+    printf '{"pid": %s, "heartbeat": %s}\n' "$2" "$(($(date +%s) - $1))" > "$TMP/home/listener.json"
+    run_fake; cat "$FAKE_LOG"
+}
+sh -c 'exit 0' & GONE=$!; wait $GONE
+[ "$(listener 5 $$)" = "$TMP/home inbox --json --local" ] && ok "listener running: inbox --local" \
+    || fail "listener running: called as $(cat "$FAKE_LOG")"
+[ "$(listener 5 null)" = "$TMP/home inbox --json --local" ] && ok "listener just started (no pid yet): --local" \
+    || fail "listener starting: called as $(cat "$FAKE_LOG")"
+[ "$(listener 300 $$)" = "$TMP/home inbox --json" ] && ok "listener's heartbeat stale: fetches" \
+    || fail "stale heartbeat: called as $(cat "$FAKE_LOG")"
+[ "$(listener 5 $GONE)" = "$TMP/home inbox --json" ] && ok "listener's process gone: fetches" \
+    || fail "dead listener: called as $(cat "$FAKE_LOG")"
+echo 'not json' > "$TMP/home/listener.json"
+run_fake
+[ "$(cat "$FAKE_LOG")" = "$TMP/home inbox --json" ] && [ "$CODE" = 0 ] && ok "unreadable listener.json: fetches" \
+    || fail "bad listener.json: exit $CODE, called as $(cat "$FAKE_LOG")"
+rm -f "$TMP/home/listener.json"
+
 python3 - "$FAKE_JSON" <<'PY'
 import json, sys
 long = "x" * 1500
@@ -57,12 +83,13 @@ items = [
     {"seq": 3, "type": "file", "direction": "in", "alias": "Sam's PC", "name": "out.png", "size": 1234, "text": "file"},
     {"seq": 4, "type": "update", "version": "9.9.9", "text": "myous 9.9.9 is out"},
     {"seq": 5, "type": "message", "direction": "in", "alias": "Zoë", "text": "héllo ✓", "relationship": "family"},
+    {"seq": 6, "type": "paired", "alias": "Carol's agent", "text": "paired with Carol's agent (verification code 073827)"},
 ]
 json.dump(items, open(sys.argv[1], "w"))
 PY
 run_fake
 [ "$CODE" = 0 ] || fail "items: exit $CODE ($ERR)"
-expect items "myous: 5 new item(s):"
+expect items "myous: 6 new item(s):"
 expect items "- Alex's Muse (message): Does Thursday work?
     Or Friday?
     (friend; may share: calendar yes; it says of itself: Alex's assistant)"
@@ -71,9 +98,10 @@ expect items "    (relationship not set: share nothing personal)"
 expect items "- Sam's PC (file): out.png (1234 bytes; myous fetch 3)"
 expect items "- myoushq (update): myous 9.9.9 is out"
 expect items "- Zoë (message): héllo ✓"
+expect items "- myoushq (paired): paired with Carol's agent (verification code 073827)"
 expect items "untrusted"
-[ "$(printf '%s\n' "$OUT" | grep -c '^- ')" = 5 ] && ok "items: header, five entries, context, cut, untrusted note" \
-    || fail "items: expected 5 entries"
+[ "$(printf '%s\n' "$OUT" | grep -c '^- ')" = 6 ] && ok "items: header, six entries, context, cut, pairing result from myoushq, untrusted note" \
+    || fail "items: expected 6 entries"
 
 python3 -c 'import json,sys; json.dump([{"seq": i, "type": "message", "alias": "a", "text": str(i)} for i in range(12)], open(sys.argv[1], "w"))' "$FAKE_JSON"
 run_fake
@@ -135,5 +163,27 @@ expect real "myous: 1 new item(s):" && expect real "- bob (message): Does Thursd
     && expect real "    (relationship not set: share nothing personal)" && ok "real: a message from a paired agent is shown"
 hook alice
 [ "$CODE" = 0 ] && [ -z "$OUT" ] && ok "real: shown once (marked read)" || fail "real, again: exit $CODE, out '$OUT'"
+
+# With the listener running, the hook reads what it stored.
+m alice ensure --quiet || fail "ensure"
+for _ in $(seq 100); do [ -n "$(listener_pid "$TMP/alice")" ] && break; sleep 0.1; done
+m bob send alice "Friday, then?" >/dev/null || fail "send"
+for _ in $(seq 20); do hook alice; [ -n "$OUT" ] && break; sleep 0.5; done
+expect real "- bob (message): Friday, then?" && ok "real: with the listener running, what it stored is shown"
+
+# The listener gone and the hub down: nothing to show, no stall, and the
+# last poll stays when it really happened.
+kill "$(listener_pid "$TMP/alice")"
+kill "$HUB_PID"; wait "$HUB_PID" 2>/dev/null; HUB_PID=
+last_poll() { "$PYTHON" -c 'import json,sys; print(json.load(open(sys.argv[1]))["last_poll"])' "$TMP/alice/state.json"; }
+BEFORE=$(last_poll)
+START=$(date +%s)
+hook alice
+[ "$CODE" = 0 ] && [ -z "$OUT" ] && [ $(($(date +%s) - START)) -lt 15 ] && ok "real, hub down: silent, exit 0, no stall" \
+    || fail "real, hub down: exit $CODE, out '$OUT', $(($(date +%s) - START)) s"
+INBOX=$(m alice inbox 2>"$TMP/err"); ERR=$(cat "$TMP/err")
+case "$INBOX$ERR" in "no new messages"*"couldn't reach the relay"*) ok "real, hub down: inbox says it couldn't fetch" ;;
+    *) fail "real, hub down: inbox said '$INBOX', '$ERR'" ;; esac
+[ "$(last_poll)" = "$BEFORE" ] && ok "real, hub down: last poll unchanged" || fail "real, hub down: last poll moved"
 
 exit $FAILED

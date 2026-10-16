@@ -69,6 +69,30 @@ try {
     $called = (Get-Content -Raw $env:FAKE_LOG).Trim()
     if ($called -eq "$MyousHomeDir inbox --json") { Ok "MYOUS_HOME from the argument, inbox --json" } else { Fail "called as: $called" }
 
+    # A running listener has fetched already: the hook only reads what it stored.
+    $listenerJson = Join-Path $MyousHomeDir "listener.json"
+    function Invoke-WithListener([long]$age, [string]$pidJson) {  # write listener.json, run the hook, return how myous was called
+        $beat = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - $age
+        Set-Content -Path $listenerJson -Value "{`"pid`": $pidJson, `"heartbeat`": $beat}" -Encoding Ascii
+        Invoke-Hook
+        return (Get-Content -Raw $env:FAKE_LOG).Trim()
+    }
+    $gone = Start-Process -PassThru -NoNewWindow -FilePath "cmd.exe" -ArgumentList "/c", "exit 0"
+    $gone.WaitForExit()
+    $called = Invoke-WithListener 5 $PID
+    if ($called -eq "$MyousHomeDir inbox --json --local") { Ok "listener running: inbox --local" } else { Fail "listener running: called as $called" }
+    $called = Invoke-WithListener 5 "null"
+    if ($called -eq "$MyousHomeDir inbox --json --local") { Ok "listener just started (no pid yet): --local" } else { Fail "listener starting: called as $called" }
+    $called = Invoke-WithListener 300 $PID
+    if ($called -eq "$MyousHomeDir inbox --json") { Ok "listener's heartbeat stale: fetches" } else { Fail "stale heartbeat: called as $called" }
+    $called = Invoke-WithListener 5 $gone.Id
+    if ($called -eq "$MyousHomeDir inbox --json") { Ok "listener's process gone: fetches" } else { Fail "dead listener: called as $called" }
+    Set-Content -Path $listenerJson -Value "not json" -Encoding Ascii
+    Invoke-Hook
+    $called = (Get-Content -Raw $env:FAKE_LOG).Trim()
+    if ($called -eq "$MyousHomeDir inbox --json" -and $Code -eq 0) { Ok "unreadable listener.json: fetches" } else { Fail "bad listener.json: exit $Code, called as $called" }
+    Remove-Item $listenerJson
+
     # One item: Windows PowerShell 5.1 returns a JSON array as one object.
     Set-Items '[{"seq": 1, "type": "message", "direction": "in", "alias": "Alex''s Muse", "text": "hi", "relationship": "friend"}]'
     Invoke-Hook
@@ -85,22 +109,24 @@ try {
  {"seq": 2, "type": "message", "direction": "in", "alias": "Shop", "text": "LONG", "relationship": null, "sharing": null},
  {"seq": 3, "type": "file", "direction": "in", "alias": "Sam's PC", "name": "out.png", "size": 1234, "text": "file"},
  {"seq": 4, "type": "update", "version": "9.9.9", "text": "myous 9.9.9 is out"},
- {"seq": 5, "type": "message", "direction": "in", "alias": "Zo\u00eb", "text": "h\u00e9llo \u2713", "relationship": "family"}
+ {"seq": 5, "type": "message", "direction": "in", "alias": "Zo\u00eb", "text": "h\u00e9llo \u2713", "relationship": "family"},
+ {"seq": 6, "type": "paired", "alias": "Carol's agent", "text": "paired with Carol's agent (verification code 073827)"}
 ]
 '@).Replace('"LONG"', '"' + $long + '"')
     Invoke-Hook
     if ($Code -ne 0) { Fail "items: exit $Code ($Err)" }
     $all = $true
-    $all = (Expect items "myous: 5 new item(s):") -and $all
+    $all = (Expect items "myous: 6 new item(s):") -and $all
     $all = (Expect items "- Alex's Muse (message): Does Thursday work?`n    Or Friday?`n    (friend; may share: calendar yes; it says of itself: Alex's assistant)") -and $all
     $all = (Expect items ("- Shop (message): " + ("x" * 1000) + ' [cut; the rest: myous history --with "Shop"]')) -and $all
     $all = (Expect items "    (relationship not set: share nothing personal)") -and $all
     $all = (Expect items "- Sam's PC (file): out.png (1234 bytes; myous fetch 3)") -and $all
     $all = (Expect items "- myoushq (update): myous 9.9.9 is out") -and $all
     $all = (Expect items ("- Zo" + [char]0x00EB + " (message): h" + [char]0x00E9 + "llo " + [char]0x2713)) -and $all
+    $all = (Expect items "- myoushq (paired): paired with Carol's agent (verification code 073827)") -and $all
     $all = (Expect items "untrusted") -and $all
-    if ((Count-Lines "- ") -ne 5) { Fail "items: expected 5 entries"; $all = $false }
-    if ($all -and $Code -eq 0) { Ok "items: header, five entries, context, cut, non-ASCII, untrusted note" }
+    if ((Count-Lines "- ") -ne 6) { Fail "items: expected 6 entries"; $all = $false }
+    if ($all -and $Code -eq 0) { Ok "items: header, six entries, context, cut, non-ASCII, pairing result from myoushq, untrusted note" }
 
     Set-Items ("[" + ((0..11 | ForEach-Object { '{"seq": ' + $_ + ', "type": "message", "alias": "a", "text": "' + $_ + '"}' }) -join ", ") + "]")
     Invoke-Hook
