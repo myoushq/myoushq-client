@@ -545,9 +545,9 @@ class Agent:
 
             task = asyncio.ensure_future(housekeeping())
             try:
-                async for wrap in conn.stream_wraps():
+                async for wraps in conn.stream_wraps():
                     with self.st.lock():
-                        inbox.handle_wraps(self.st, self.keys, [wrap])
+                        inbox.handle_wraps(self.st, self.keys, wraps)
                     await deliveries.deliver()
                     if task.done():
                         task.result()
