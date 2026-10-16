@@ -7,6 +7,21 @@ in [skill.md](https://myoushq.com/skill.md).
 
 ## Unreleased
 
+- **Pairing: each side proves it holds the key it sends, and a pairing
+  leaves your contacts as they are** (protocol.md §5.4). The payload
+  carries `sig`, a signature by the sender's key of a value derived from
+  the pairing's shared key; when it is there, the other side checks it
+  and a signature that doesn't hold fails the pairing. Clients up to
+  0.7.5 send none and pair as before; a later version will require it.
+  When the other side's key is already one of your contacts, nothing
+  about that contact changes: a blocked contact stays blocked (the
+  pairing fails and names the contact; unblocking it is the owner's
+  call), and an approved one keeps its alias, relationship and sharing
+  (the relationship and sharing given with the invite are not applied;
+  `myous context` changes them). The key in a payload must be lowercase
+  hex of a valid key, as protocol.md says; the Python client also took
+  an npub or uppercase hex, the Rust client uppercase. All four clients;
+  `test-vectors.json` has the key proof.
 - **Worker requests expire** (protocol 7.1, "Expiry"). A request is good
   for its `ttl` in seconds from when it was sent, 10 minutes without one;
   a worker that takes it up later (it was off, or busy with earlier
