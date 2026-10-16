@@ -2214,28 +2214,40 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
         // A Mac: the apps in /Applications, else in ~/Applications, in
         // myous for Mac's order; the profile folder is the bundle id.
-        let mac = |p: &Path| p.to_string_lossy().contains("Microsoft Edge.app");
+        // The expected paths are joined as the code joins them (with
+        // backslashes on Windows, where this test runs too).
+        let app = |dir: &str, bundle: &str, exe: &str| {
+            Path::new(dir)
+                .join(bundle)
+                .join("Contents")
+                .join("MacOS")
+                .join(exe)
+        };
+        let edge = app("/Applications", "Microsoft Edge.app", "Microsoft Edge");
+        let mac = |p: &Path| p == edge;
         let f = find_browser_with("macos", &no_which, &none, &mac, &no_app_path).unwrap();
         assert_eq!(
             (f.id.as_str(), f.name.as_str(), f.path.as_str()),
             (
                 "com.microsoft.edgemac",
                 "Edge",
-                "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"
+                edge.to_string_lossy().as_ref()
             )
         );
         let home = |k: &str| (k == "HOME").then(|| "/Users/max".to_string());
-        let both = |p: &Path| {
-            let p = p.to_string_lossy();
-            p == "/Users/max/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"
-                || p == "/Applications/Chromium.app/Contents/MacOS/Chromium"
-        };
+        let brave = app(
+            "/Users/max/Applications",
+            "Brave Browser.app",
+            "Brave Browser",
+        );
+        let chromium = app("/Applications", "Chromium.app", "Chromium");
+        let both = |p: &Path| p == brave || p == chromium;
         let f = find_browser_with("macos", &no_which, &home, &both, &no_app_path).unwrap();
         assert_eq!(
             (f.id.as_str(), f.name.as_str()),
             ("com.brave.Browser", "Brave")
         );
-        assert!(f.path.starts_with("/Users/max/Applications/"));
+        assert!(Path::new(&f.path).starts_with("/Users/max/Applications"));
         assert_eq!(
             find_browser_with("macos", &no_which, &home, &|_| false, &no_app_path),
             None
