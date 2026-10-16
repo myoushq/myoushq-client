@@ -109,20 +109,32 @@ type builtinReview struct {
 	windows   bool          // PowerShell's read-only lists too
 }
 
-// level is review.json's level, or "trust".
+// failClosed is the level for a review.json that is present but can't be
+// read as a valid level (review.py's FAIL_CLOSED): ask about everything,
+// rather than running everything unreviewed. W2 used a truncated
+// review.json to drop the worker to "trust"; this makes a corrupt or
+// unreadable setting file fail safe. An absent file is a worker that was
+// never configured, and keeps the default.
+const failClosed = "all"
+
+// level is review.json's level: "trust" when the file is absent, failClosed
+// when it is present but unreadable or invalid.
 func (r *builtinReview) level() string {
 	raw, err := os.ReadFile(filepath.Join(r.home, "review.json"))
 	if err != nil {
-		return "trust"
+		if os.IsNotExist(err) {
+			return "trust" // never configured: the default
+		}
+		return failClosed // present but unreadable
 	}
 	var doc map[string]any
 	if json.Unmarshal(raw, &doc) != nil {
-		return "trust"
+		return failClosed
 	}
 	if lv, _ := doc["level"].(string); slices.Contains(reviewLevels, lv) {
 		return lv
 	}
-	return "trust"
+	return failClosed
 }
 
 // decide is review.py's decide: "" to allow, else why not.

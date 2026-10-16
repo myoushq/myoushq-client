@@ -66,6 +66,22 @@ class HookTest(unittest.TestCase):
         (self.home / "worker.paused").touch()
         self.assertEqual(self.run_hook({"op": "exec", "id": "a", "cmd": "ls"}), (1, "the worker is paused by its owner"))
 
+    def test_missing_or_corrupt_review_fails_closed(self):
+        # No review.json at all: never configured, so the default (trust) -
+        # even a change runs.
+        self.assertEqual(self.run_hook({"op": "exec", "id": "a", "cmd": "rm -rf x"})[0], 0)
+        # Present but unreadable, not JSON, or an invalid level: fail closed
+        # to "all", so even a read is asked about (W2 truncated review.json
+        # to drop the worker to trust; this closes that escalation).
+        self.env["MYOUS_APPROVAL_WAIT"] = "1"
+        for bad in ["", "{", "not json", "[1, 2, 3]", '{"level": "bogus"}', '{"level": 7}', '"changes"']:
+            (self.home / "review.json").write_text(bad)
+            code, why = self.run_hook({"op": "get", "id": "b", "path": "x"})
+            self.assertEqual((code, why), (1, "the owner didn't answer in time"), repr(bad))
+        # A valid level is still honoured.
+        self.level("changes")
+        self.assertEqual(self.run_hook({"op": "get", "id": "c", "path": "x"})[0], 0)
+
     def test_changes_level(self):
         self.level("changes")
         self.assertEqual(self.run_hook({"op": "exec", "id": "a", "cmd": "ls -la"})[0], 0)
