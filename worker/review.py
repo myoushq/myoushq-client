@@ -73,11 +73,24 @@ READ_ONLY_POWERSHELL = {
 UNSAFE_POWERSHELL = ("(", "&", "@", "--%", "Invoke-", "iex")
 
 
+# The level a worker starts at when it has never been configured (no
+# review.json): $MYOUS_DEFAULT_REVIEW, or "trust" when that is unset or not
+# a level. The container's entrypoint sets it to "changes" so a fresh
+# container asks before anything that changes things, as direct mode
+# (the desktop app) already does; an owner who sets a level in the app
+# writes review.json, which then wins.
+DEFAULT_LEVEL = os.environ.get("MYOUS_DEFAULT_REVIEW")
+if DEFAULT_LEVEL not in ("trust", "changes", "all"):
+    DEFAULT_LEVEL = "trust"
+
+
 def level() -> str:
     try:
         with open(REVIEW_FILE) as f:
             lv = json.load(f).get("level")
         return lv if lv in ("trust", "changes", "all") else "trust"
+    except FileNotFoundError:
+        return DEFAULT_LEVEL  # never configured: the default
     except (OSError, ValueError, AttributeError):
         return "trust"
 

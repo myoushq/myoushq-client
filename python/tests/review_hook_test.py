@@ -66,6 +66,25 @@ class HookTest(unittest.TestCase):
         (self.home / "worker.paused").touch()
         self.assertEqual(self.run_hook({"op": "exec", "id": "a", "cmd": "ls"}), (1, "the worker is paused by its owner"))
 
+    def test_default_level_for_an_unconfigured_worker(self):
+        # No review.json: the level is $MYOUS_DEFAULT_REVIEW (the container's
+        # entrypoint sets "changes"), else "trust".
+        self.env["MYOUS_DEFAULT_REVIEW"] = "changes"
+        self.env["MYOUS_APPROVAL_WAIT"] = "1"
+        self.assertEqual(self.run_hook({"op": "exec", "id": "a", "cmd": "ls -la"})[0], 0)  # a read runs
+        code, why = self.run_hook({"op": "exec", "id": "b", "cmd": "touch x"})            # a change asks
+        self.assertEqual((code, why), (1, "the owner didn't answer in time"))
+        # An unset or invalid value keeps today's default (trust): a change runs.
+        for val in ("", "bogus"):
+            self.env["MYOUS_DEFAULT_REVIEW"] = val
+            self.assertEqual(self.run_hook({"op": "exec", "id": "c", "cmd": "rm -rf x"})[0], 0, repr(val))
+        del self.env["MYOUS_DEFAULT_REVIEW"]
+        self.assertEqual(self.run_hook({"op": "exec", "id": "d", "cmd": "rm -rf x"})[0], 0)
+        # A written review.json still wins over the default.
+        self.env["MYOUS_DEFAULT_REVIEW"] = "changes"
+        self.level("trust")
+        self.assertEqual(self.run_hook({"op": "exec", "id": "e", "cmd": "rm -rf x"})[0], 0)
+
     def test_changes_level(self):
         self.level("changes")
         self.assertEqual(self.run_hook({"op": "exec", "id": "a", "cmd": "ls -la"})[0], 0)

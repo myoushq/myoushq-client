@@ -109,10 +109,26 @@ type builtinReview struct {
 	windows   bool          // PowerShell's read-only lists too
 }
 
-// level is review.json's level, or "trust".
+// defaultLevel is the level a worker starts at when it has never been
+// configured (no review.json): $MYOUS_DEFAULT_REVIEW, or "trust" when that
+// is unset or not a level. The container's entrypoint sets it to "changes"
+// so a fresh container asks before anything that changes things, as direct
+// mode (the desktop app) already does.
+func defaultLevel() string {
+	if lv := os.Getenv("MYOUS_DEFAULT_REVIEW"); slices.Contains(reviewLevels, lv) {
+		return lv
+	}
+	return "trust"
+}
+
+// level is review.json's level, or the default (defaultLevel) when the
+// file is absent, or "trust" when it is present but unreadable.
 func (r *builtinReview) level() string {
 	raw, err := os.ReadFile(filepath.Join(r.home, "review.json"))
 	if err != nil {
+		if os.IsNotExist(err) {
+			return defaultLevel() // never configured: the default
+		}
 		return "trust"
 	}
 	var doc map[string]any

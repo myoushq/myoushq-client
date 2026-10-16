@@ -79,6 +79,37 @@ func TestReviewTrustAllowsAndPauseRefuses(t *testing.T) {
 	}
 }
 
+func TestReviewDefaultLevelForAnUnconfiguredWorker(t *testing.T) {
+	r, home := reviewFor(t)
+	r.wait = 300 * time.Millisecond // the "changes" case waits for nobody
+	// No review.json: the level is $MYOUS_DEFAULT_REVIEW (the container sets
+	// "changes"), else "trust".
+	t.Setenv("MYOUS_DEFAULT_REVIEW", "changes")
+	if why := r.decide(context.Background(), req("exec", "a", pyKV{"cmd", "ls -la"})); why != "" {
+		t.Fatalf("a read should run at changes: %q", why)
+	}
+	if why := r.decide(context.Background(), req("exec", "b", pyKV{"cmd", "touch x"})); why != "the owner didn't answer in time" {
+		t.Fatalf("a change should ask at changes: %q", why)
+	}
+	// An unset or invalid value keeps today's default (trust): a change runs.
+	for _, v := range []string{"", "bogus"} {
+		t.Setenv("MYOUS_DEFAULT_REVIEW", v)
+		if why := r.decide(context.Background(), req("exec", "c", pyKV{"cmd", "rm -rf x"})); why != "" {
+			t.Fatalf("%q should fall back to trust: %q", v, why)
+		}
+	}
+	os.Unsetenv("MYOUS_DEFAULT_REVIEW")
+	if why := r.decide(context.Background(), req("exec", "d", pyKV{"cmd", "rm -rf x"})); why != "" {
+		t.Fatalf("unset should be trust: %q", why)
+	}
+	// A written review.json still wins over the default.
+	t.Setenv("MYOUS_DEFAULT_REVIEW", "changes")
+	setLevel(t, home, "trust")
+	if why := r.decide(context.Background(), req("exec", "e", pyKV{"cmd", "rm -rf x"})); why != "" {
+		t.Fatalf("review.json trust should win over the default: %q", why)
+	}
+}
+
 func TestReviewChangesLevel(t *testing.T) {
 	r, home := reviewFor(t)
 	setLevel(t, home, "changes")
