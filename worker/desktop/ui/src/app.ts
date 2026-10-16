@@ -1039,10 +1039,12 @@ function fillSidebar() {
 
 const KIND_COLORS: Record<Kind, string> = { grey: "#8e8e93", blue: "#0a84ff", green: "#2fa84f", orange: "#e8890c", red: "#e5484d" };
 
-/** The mark (worker/icons/mark.svg) in its 32 by 32 box: a rounded square, and a mu drawn as one stroke with a dot on each free end. */
+/** The mark (worker/icons/mark.svg) in its 32 by 32 box: a rounded square, and a mu drawn as one stroke with a ring
+ * on each free end, like a circuit board's pads; the stroke stops on each ring's centreline, so the square shows
+ * through the holes. */
 const MARK_SQUARE = "M7 0H25A7 7 0 0 1 32 7V25A7 7 0 0 1 25 32H7A7 7 0 0 1 0 25V7A7 7 0 0 1 7 0Z";
-const MARK_MU = "M7.5 6.5V25.5M7.5 13.5a5.25 5.25 0 0 0 10.5 0M18 6.5V15C18 21.5 22 24 26.25 24";
-const MARK_DOTS: [number, number][] = [[7.5, 6.5], [7.5, 25.5], [18, 6.5], [26.25, 24]];
+const MARK_MU = "M7.5 9.6V22.4M7.5 13.5a5.25 5.25 0 0 0 10.5 0M18 9.6V15C18 19.89 20.27 22.52 23.2 23.52";
+const MARK_PADS: [number, number][] = [[7.5, 6.5], [7.5, 25.5], [18, 6.5], [26.25, 24]];
 
 /** The mark on a square in `color`, scaled from its 32-point box and moved in by `offset` pixels. */
 function drawMark(g: CanvasRenderingContext2D, scale: number, offset: number, color: string) {
@@ -1053,10 +1055,11 @@ function drawMark(g: CanvasRenderingContext2D, scale: number, offset: number, co
   g.lineWidth = 2.75;
   g.lineJoin = "round";
   g.stroke(new Path2D(MARK_MU));
-  for (const [x, y] of MARK_DOTS) {
+  g.lineWidth = 1.6;
+  for (const [x, y] of MARK_PADS) {
     g.beginPath();
     g.arc(x, y, 3.1, 0, Math.PI * 2);
-    g.fill();
+    g.stroke();
   }
   g.setTransform(1, 0, 0, 1, 0, 0);
 }

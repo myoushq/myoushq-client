@@ -12,25 +12,30 @@ static void drawMark(NSRect square, NSColor *background, NSColor *foreground) {
     [background setFill];
     [[NSBezierPath bezierPathWithRoundedRect:square xRadius:7 * k yRadius:7 * k] fill];
     NSBezierPath *mu = [NSBezierPath bezierPath];
-    // M7.5 6.5V25.5: the stem
-    [mu moveToPoint:at(7.5, 6.5)];
-    [mu lineToPoint:at(7.5, 25.5)];
+    // M7.5 9.6V22.4: the stem, cut 3.1 short of each pad's centre
+    [mu moveToPoint:at(7.5, 9.6)];
+    [mu lineToPoint:at(7.5, 22.4)];
     // M7.5 13.5a5.25 5.25 0 0 0 10.5 0: the bowl, a half circle below its ends
     [mu moveToPoint:at(7.5, 13.5)];
     [mu appendBezierPathWithArcWithCenter:at(12.75, 13.5) radius:5.25 * k startAngle:180 endAngle:0 clockwise:NO];
-    // M18 6.5V15C18 21.5 22 24 26.25 24: the right arm and its tail
-    [mu moveToPoint:at(18, 6.5)];
+    // M18 9.6V15C18 19.89 20.27 22.52 23.2 23.52: the right arm and its tail,
+    // the tail's curve cut 3.1 before the pad's centre along its length
+    [mu moveToPoint:at(18, 9.6)];
     [mu lineToPoint:at(18, 15)];
-    [mu curveToPoint:at(26.25, 24) controlPoint1:at(18, 21.5) controlPoint2:at(22, 24)];
+    [mu curveToPoint:at(23.2, 23.52) controlPoint1:at(18, 19.89) controlPoint2:at(20.27, 22.52)];
     mu.lineWidth = 2.75 * k;
     mu.lineJoinStyle = NSLineJoinStyleRound;
     [foreground set];
     [mu stroke];
+    // A ring on each free end, like a circuit board's pad: radius 3.1 on its
+    // centreline, stroke 1.6, the background showing through the hole.
     CGFloat r = 3.1 * k;
     for (NSValue *v in @[[NSValue valueWithPoint:at(7.5, 6.5)], [NSValue valueWithPoint:at(7.5, 25.5)],
                          [NSValue valueWithPoint:at(18, 6.5)], [NSValue valueWithPoint:at(26.25, 24)]]) {
         NSPoint c = v.pointValue;
-        [[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(c.x - r, c.y - r, 2 * r, 2 * r)] fill];
+        NSBezierPath *pad = [NSBezierPath bezierPathWithOvalInRect:NSMakeRect(c.x - r, c.y - r, 2 * r, 2 * r)];
+        pad.lineWidth = 1.6 * k;
+        [pad stroke];
     }
 }
 
@@ -78,7 +83,7 @@ NSImage *statusIcon(NSColor *color, BOOL dot) {
         drawMark(NSInsetRect(r, 1, 1), color, [NSColor whiteColor]);
         if (dot) {
             // A white badge in the free top right corner, ringed in the
-            // state colour so it stands apart from the mu's own dots.
+            // state colour so it stands apart from the mu's own pads.
             NSBezierPath *badge = [NSBezierPath bezierPathWithOvalInRect:NSMakeRect(s - 6.6, s - 6.6, 5.2, 5.2)];
             badge.lineWidth = 1.2;
             [[NSColor whiteColor] setFill];
