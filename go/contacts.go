@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/nbd-wtf/go-nostr/nip19"
 )
@@ -128,11 +129,54 @@ func parseCard(text string) (name, about string, ok bool) {
 			return "", "", false
 		}
 	}
-	name, about = strings.TrimSpace(name), strings.TrimSpace(about)
-	if n := len([]rune(name)); n < 1 || n > maxName || len([]rune(about)) > maxAbout {
+	if n := len([]rune(strings.TrimSpace(name))); n < 1 || n > maxName || len([]rune(strings.TrimSpace(about))) > maxAbout {
 		return "", "", false
 	}
-	return name, about, true
+	// A peer's words: kept to one line, and the name safe on a command line.
+	name, about = cleanName(name), cleanText(about)
+	return name, about, name != ""
+}
+
+// invisible reports the characters that reorder or break what is shown
+// without showing themselves: bidi controls and line separators.
+func invisible(r rune) bool {
+	return r == 0x200E || r == 0x200F || r == 0x2028 || r == 0x2029 ||
+		(r >= 0x202A && r <= 0x202E) || (r >= 0x2066 && r <= 0x2069)
+}
+
+// cleanText is text from a peer to show on one line: whitespace (newlines
+// too) as single spaces, control and invisible characters (terminal
+// escape sequences, bidi overrides) removed.
+func cleanText(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case unicode.IsSpace(r):
+			b.WriteRune(' ')
+		case unicode.IsControl(r) || invisible(r):
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return strings.Join(strings.Fields(b.String()), " ")
+}
+
+// cleanName is a name a peer chose (its alias at pairing, the name in its
+// card), safe to show and to put between double quotes in a shell
+// command: cleanText without $ ` " and backslash, at most maxName
+// characters; "" if nothing is left. These would act inside the double
+// quotes of the client's own suggestions and of `myous send "NAME" ...`.
+func cleanName(s string) string {
+	s = cleanText(strings.Map(func(r rune) rune {
+		if strings.ContainsRune("$`\"\\", r) {
+			return -1
+		}
+		return r
+	}, s))
+	if r := []rune(s); len(r) > maxName {
+		s = string(r[:maxName])
+	}
+	return strings.TrimSpace(s)
 }
 
 // cardText is the JSON of this agent's card.

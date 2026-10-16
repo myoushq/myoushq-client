@@ -62,21 +62,36 @@ pub async fn relay_proxy(relays: &[String]) -> Result<Option<(SocketAddr, Option
         "http" => {}
         other => bail!("unsupported proxy {other}://; use http:// or socks5://"),
     }
-    let listener = TcpListener::bind("127.0.0.1:0").await?;
-    let addr = listener.local_addr()?;
-    let task = tokio::spawn(async move {
-        while let Ok((client, _)) = listener.accept().await {
-            let p = p.clone();
-            tokio::spawn(async move {
-                let _ = bridge(client, &p).await;
-            });
-        }
-    });
+    // Only the relays: any local process can connect to the bridge, and
+    // each CONNECT carries the user's proxy credentials.
+    let allowed = relays.iter().filter_map(|r| {
+        let u = Url::parse(r).ok()?;
+        Some((u.host_str()?.to_ascii_lowercase(), u.port_or_known_default()?))
+    }).collect();
+    let (addr, task) = serve_bridge(p, allowed).await?;
     Ok(Some((addr, Some(task))))
 }
 
-/// Serve one SOCKS5 (no auth) CONNECT by tunnelling through the HTTP proxy.
-async fn bridge(mut client: TcpStream, proxy: &Url) -> Result<()> {
+/// A SOCKS5 server (no auth) on 127.0.0.1 that tunnels through the HTTP
+/// proxy `p`, to the (host, port)s in `allowed` only.
+async fn serve_bridge(p: Url, allowed: Vec<(String, u16)>) -> Result<(SocketAddr, JoinHandle<()>)> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
+    let allowed = std::sync::Arc::new(allowed);
+    let task = tokio::spawn(async move {
+        while let Ok((client, _)) = listener.accept().await {
+            let (p, allowed) = (p.clone(), allowed.clone());
+            tokio::spawn(async move {
+                let _ = bridge(client, &p, &allowed).await;
+            });
+        }
+    });
+    Ok((addr, task))
+}
+
+/// Serve one SOCKS5 (no auth) CONNECT by tunnelling through the HTTP proxy,
+/// if it is for one of the `allowed` (host, port)s.
+async fn bridge(mut client: TcpStream, proxy: &Url, allowed: &[(String, u16)]) -> Result<()> {
     let mut hello = [0u8; 2];
     client.read_exact(&mut hello).await?;
     let mut methods = vec![0u8; hello[1] as usize];
@@ -113,7 +128,12 @@ async fn bridge(mut client: TcpStream, proxy: &Url) -> Result<()> {
     };
     let mut port = [0u8; 2];
     client.read_exact(&mut port).await?;
-    match connect(proxy, &host, u16::from_be_bytes(port)).await {
+    let port = u16::from_be_bytes(port);
+    if !allowed.iter().any(|(h, p)| h.eq_ignore_ascii_case(&host) && *p == port) {
+        client.write_all(&[5, 2, 0, 1, 0, 0, 0, 0, 0, 0]).await?; // not allowed by ruleset
+        bail!("{host}:{port} is not a relay");
+    }
+    match connect(proxy, &host, port).await {
         Ok(mut upstream) => {
             client.write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0]).await?;
             tokio::io::copy_bidirectional(&mut client, &mut upstream).await?;
@@ -154,4 +174,49 @@ async fn connect(proxy: &Url, host: &str, port: u16) -> Result<TcpStream> {
         bail!("proxy refused CONNECT: {status_line}");
     }
     Ok(s)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The reply code of a SOCKS5 CONNECT to host:port through the bridge.
+    async fn socks_connect(bridge: SocketAddr, host: &str, port: u16) -> u8 {
+        let mut s = TcpStream::connect(bridge).await.unwrap();
+        s.write_all(&[5, 1, 0]).await.unwrap();
+        let mut hello = [0u8; 2];
+        s.read_exact(&mut hello).await.unwrap();
+        let mut req = vec![5, 1, 0, 3, host.len() as u8];
+        req.extend_from_slice(host.as_bytes());
+        req.extend_from_slice(&port.to_be_bytes());
+        s.write_all(&req).await.unwrap();
+        let mut reply = [0u8; 10];
+        s.read_exact(&mut reply).await.unwrap();
+        reply[1]
+    }
+
+    #[tokio::test]
+    async fn the_bridge_tunnels_only_to_the_relays() {
+        // An HTTP proxy that records each CONNECT line and says yes.
+        let fake = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let fake_addr = fake.local_addr().unwrap();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let log = seen.clone();
+        tokio::spawn(async move {
+            while let Ok((mut c, _)) = fake.accept().await {
+                let mut buf = vec![0u8; 4096];
+                let n = c.read(&mut buf).await.unwrap_or(0);
+                let text = String::from_utf8_lossy(&buf[..n]).to_string();
+                log.lock().unwrap().push(text.lines().next().unwrap_or_default().to_string());
+                let _ = c.write_all(b"HTTP/1.1 200 Connection established\r\n\r\n").await;
+            }
+        });
+        let proxy = Url::parse(&format!("http://alice:s3cret@{fake_addr}")).unwrap();
+        let (bridge, task) = serve_bridge(proxy, vec![("relay.example.com".into(), 443)]).await.unwrap();
+        assert_eq!(socks_connect(bridge, "Relay.Example.com", 443).await, 0);
+        assert_eq!(socks_connect(bridge, "internal.example.net", 22).await, 2);
+        assert_eq!(socks_connect(bridge, "relay.example.com", 22).await, 2);
+        task.abort();
+        assert_eq!(*seen.lock().unwrap(), vec!["CONNECT Relay.Example.com:443 HTTP/1.1".to_string()]);
+    }
 }

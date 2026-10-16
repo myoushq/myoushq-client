@@ -252,8 +252,9 @@ class LateReplies(unittest.TestCase):
         self.assertEqual(e["text"], f"late result of exec `make test` (sent {self.clock}): exit 2\nbuilt\n"
                                     "stderr:\n1 failed\n(the output was cut to fit the message)")
         when = time.strftime("%Y-%m-%d %H:%M", time.localtime(e["at"]))
-        self.assertEqual(self.printed(entries), f"[{when}] Sam's Mac: {e['text']}\n")
-        self.assertEqual(watcher.describe(e), f"[{when}] Sam's Mac: {e['text']}")
+        shown = e["text"].replace("\n", "\n" + inbox.QUOTE)   # each further line marked
+        self.assertEqual(self.printed(entries), f"[{when}] Sam's Mac: {shown}\n")
+        self.assertEqual(watcher.describe(e), f"[{when}] Sam's Mac: {shown}")
         self.assertEqual(inbox.unread(self.st), [])   # once
         self.assertEqual(self.st.read_history()[-1]["text"][0], "{")   # the history keeps the reply as it came
 
@@ -378,7 +379,7 @@ class LateReplies(unittest.TestCase):
         n = entries[3]["seq"]
         self.assertEqual(self.history(), "\n".join([
             line(entries[0], "me -> Sam's Mac: exec `make test` (request 11111111)"),
-            line(entries[1], "Sam's Mac: result of request 11111111: exit 0\nok"),
+            line(entries[1], "Sam's Mac: result of request 11111111: exit 0\n    | ok"),
             line(entries[2], "me -> Sam's Mac: cp of /work/out.txt (request 22222222)"),
             line(entries[3], f"file from Sam's Mac: reply to request 22222222: out.txt (3 bytes, id {n}; `myous fetch {n}`)"),
             line(entries[4], "file me -> Sam's Mac: cp of in.pdf to /work/in.pdf (5 bytes, request 33333333)"),
@@ -390,7 +391,7 @@ class LateReplies(unittest.TestCase):
             line(entries[9], "file me -> Sam's Mac: notes.txt (9 bytes)"),
         ]) + "\n")
         [late] = inbox.unread(self.st)   # the inbox shows the late one the same way
-        self.assertEqual(self.printed([late]), line(entries[7], f"Sam's Mac: {late['text']}") + "\n")
+        self.assertEqual(self.printed([late]), line(entries[7], f"Sam's Mac: {inbox.quoted(late['text'])}") + "\n")
         # --json keeps the entries as stored.
         stored = json.loads(self.history(json_out=True))
         self.assertEqual([e["text"] for e in stored], [e["text"] for e in entries])

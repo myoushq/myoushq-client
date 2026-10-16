@@ -69,6 +69,7 @@ func NewFileStorage(dir string) (*FileStorage, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
+	makePrivate(dir)
 	return &FileStorage{Home: dir}, nil
 }
 

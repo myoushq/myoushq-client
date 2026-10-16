@@ -61,6 +61,24 @@ GAVE_UP_KEEP = 86400
 TTL_MARGIN = 10
 
 
+# Line breaks of every kind (a lone CR, vertical tab, form feed, NEL, the
+# Unicode line and paragraph separators) are one break each when shown, so
+# none of them can start a line that isn't marked.
+_BREAKS = re.compile("\r\n|[\r\n\v\f\x1c\x1d\x1e\x85" + chr(0x2028) + chr(0x2029) + "]")
+# What marks each further line of a contact's text as printed: no line of
+# it can then pass for an entry ("[time] NAME: ...") or for the context
+# line the client adds ("    (relationship ...)").
+QUOTE = "    | "
+
+
+def quoted(text: str) -> str:
+    """Text from another agent (a message, a worker's output, a card) as
+    inbox, history and the Muse watcher print it after "[time] NAME: ":
+    control characters (terminal escape sequences) and bidi controls
+    dropped, and each line after the first marked with QUOTE."""
+    return ("\n" + QUOTE).join(contacts.visible(line) for line in _BREAKS.split(text))
+
+
 def record(st: Storage, entry: dict) -> dict:
     state = st.get("state", {})
     entry = dict(entry, seq=state.get("next_seq", 1), at=int(time.time()))

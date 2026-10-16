@@ -23,6 +23,7 @@ import abc
 import contextlib
 import json
 import os
+import stat
 import sys
 import time
 from pathlib import Path
@@ -109,6 +110,29 @@ def home_mismatch() -> str | None:
             f"a myous directory of its own. Put {setting}.")
 
 
+def private(path, flags: int) -> int:
+    """An opener for open(): a file it creates is readable by this user
+    alone, whatever the umask."""
+    return os.open(path, flags, 0o600)
+
+
+def make_private(path) -> None:
+    """Make a directory of this user's readable by this user alone. mkdir's
+    mode only applies to a directory it creates: one made first by
+    `python3 -m venv` or by hand is usually 0755, and the files written in
+    it without a mode of their own would be readable by every user. A
+    directory owned by someone else is left alone, and so is Windows (no
+    modes: a folder takes its parent's access list)."""
+    if os.name == "nt":
+        return
+    try:
+        st = os.stat(path)
+        if st.st_uid == os.getuid() and st.st_mode & 0o077:
+            os.chmod(path, stat.S_IMODE(st.st_mode) & 0o700)
+    except OSError:
+        pass
+
+
 class FileStorage(Storage):
     """Everything in one directory (default ~/.myous, or $MYOUS_HOME):
     key, contacts.json, state.json, settings.json, hub.json, pending/*.json,
@@ -117,6 +141,7 @@ class FileStorage(Storage):
     def __init__(self, home: str | os.PathLike | None = None):
         self.home = Path(home or os.environ.get("MYOUS_HOME") or DEFAULT_HOME).expanduser()
         self.home.mkdir(mode=0o700, parents=True, exist_ok=True)
+        make_private(self.home)
 
     def path(self, name: str) -> Path:
         return self.home / name

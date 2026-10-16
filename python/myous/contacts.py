@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import time
+import unicodedata
 
 from nostr_sdk import PublicKey
 
@@ -31,6 +32,37 @@ RELATIONSHIPS = ("family", "friend", "colleague", "business", "service", "other"
 MAX_SHARING = 500
 MAX_NAME = 64     # an alias, as in the pairing payload
 MAX_ABOUT = 500   # a card's self-description
+
+
+# What a name a peer chose may not contain: characters that act inside the
+# double quotes a name is written in on a command line (the client's own
+# suggestions, `myous send "NAME" ...`), and the invisible ones that
+# reorder or break what is shown (bidi controls, line separators).
+_SHELL_ACTIVE = frozenset('$`"\\')
+_INVISIBLE = frozenset(chr(c) for c in (0x200E, 0x200F, 0x2028, 0x2029, *range(0x202A, 0x202F), *range(0x2066, 0x206A)))
+
+
+def clean_text(text: str) -> str:
+    """Text from a peer to show on one line: whitespace (newlines too) as
+    single spaces, control and invisible characters (terminal escape
+    sequences, bidi overrides) removed."""
+    kept = (" " if c.isspace() else c for c in text
+            if c.isspace() or (unicodedata.category(c) != "Cc" and c not in _INVISIBLE))
+    return " ".join("".join(kept).split())
+
+
+def visible(line: str) -> str:
+    """One line of text from a peer without control characters (terminal
+    escape sequences) and invisible ones; tabs and spaces kept."""
+    return "".join(c for c in line if c == "\t" or (unicodedata.category(c) != "Cc" and c not in _INVISIBLE))
+
+
+def clean_name(name: str) -> str:
+    """A name a peer chose (its alias at pairing, the name in its card),
+    safe to show and to put between double quotes in a shell command:
+    clean_text, without $ ` " and backslash, at most MAX_NAME characters.
+    "" if nothing is left."""
+    return clean_text("".join(c for c in name if c not in _SHELL_ACTIVE))[:MAX_NAME].strip()
 
 
 def context_fields(relationship: str | None = None, sharing: str | None = None,
@@ -77,8 +109,11 @@ def parse_card(text: str) -> dict | None:
     name, about = obj.get("name"), obj.get("about", "")
     if not isinstance(name, str) or not isinstance(about, str):
         return None
-    name, about = name.strip(), about.strip()
-    if not 1 <= len(name) <= MAX_NAME or len(about) > MAX_ABOUT:
+    if not 1 <= len(name.strip()) <= MAX_NAME or len(about.strip()) > MAX_ABOUT:
+        return None
+    # A peer's words: kept to one line, and the name safe on a command line.
+    name, about = clean_name(name), clean_text(about)
+    if not name:
         return None
     return {"name": name, "about": about}
 

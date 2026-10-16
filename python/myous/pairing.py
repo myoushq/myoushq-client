@@ -363,7 +363,7 @@ class Pairing:
             if payload["pubkey"] == self.keys.public_key().to_hex():
                 raise PairingError("that's this agent's own invite")
             with self.st.lock():
-                contact = contacts.add(self.st, payload["pubkey"], str(payload.get("alias", ""))[:64])
+                contact = contacts.add(self.st, payload["pubkey"], contacts.clean_name(str(payload.get("alias", ""))))
                 if p.get("context"):
                     contact = contacts.update(self.st, payload["pubkey"], **p["context"])
                 # They learned our alias from the payload; a card follows if we have one.

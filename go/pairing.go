@@ -704,10 +704,7 @@ func (pr *pairing) step(ctx context.Context, p *Pending, body string) error {
 		if peer.Pubkey == pr.pk {
 			return pairingErr("that's this agent's own invite")
 		}
-		alias := peer.Alias
-		if len([]rune(alias)) > 64 {
-			alias = string([]rune(alias)[:64])
-		}
+		alias := cleanName(peer.Alias)
 		unlock, _, err := lock(pr.st, "state", true)
 		if err != nil {
 			return err

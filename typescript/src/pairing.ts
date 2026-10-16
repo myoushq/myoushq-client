@@ -393,7 +393,7 @@ export class Pairing {
       const payload = unseal(key, peerRole, p.nameplate, msg);
       if (payload.pubkey === this.pubkey) throw new PairingError("that's this agent's own invite");
       await locked(this.st, "state", async () => {
-        let contact = await contacts.add(this.st, payload.pubkey, String(payload.alias ?? "").slice(0, 64));
+        let contact = await contacts.add(this.st, payload.pubkey, contacts.cleanName(String(payload.alias ?? "")));
         const fields = contacts.contextFields(p.context);
         if (Object.keys(fields).length) contact = await contacts.update(this.st, payload.pubkey, fields);
         // They learned our alias from the payload; a card follows if we have one.

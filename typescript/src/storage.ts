@@ -123,6 +123,7 @@ export async function locked<T>(st: Storage, name: string, fn: () => Promise<T>,
 export class FileStorage implements Storage {
   readonly home: string;
   private locks = new Map<string, Promise<unknown>>();
+  private homeReady = false;
 
   constructor(home?: string) {
     this.home = home ?? process.env.MYOUS_HOME ?? join(homedir(), ".myous");
@@ -130,6 +131,14 @@ export class FileStorage implements Storage {
 
   path(name: string): string {
     return join(this.home, name);
+  }
+
+  /** The home, made if missing and private to this user (makePrivate), once per process. */
+  private async ensureHome(): Promise<void> {
+    if (this.homeReady) return;
+    await fs.mkdir(this.home, { recursive: true, mode: 0o700 });
+    await makePrivate(this.home);
+    this.homeReady = true;
   }
 
   async loadKey(): Promise<string | null> {
@@ -142,7 +151,7 @@ export class FileStorage implements Storage {
   }
 
   async saveKey(nsec: string): Promise<void> {
-    await fs.mkdir(this.home, { recursive: true, mode: 0o700 });
+    await this.ensureHome();
     // "wx": never replace an existing key, even in a race.
     const f = await fs.open(this.path("key"), "wx", 0o600);
     try {
@@ -163,6 +172,7 @@ export class FileStorage implements Storage {
   }
 
   async put(name: string, value: unknown): Promise<void> {
+    await this.ensureHome();
     await writePrivate(this.path(name + ".json"), JSON.stringify(value, null, 2) + "\n");
   }
 
@@ -188,7 +198,7 @@ export class FileStorage implements Storage {
   }
 
   async appendHistory(entry: HistoryEntry): Promise<void> {
-    await fs.mkdir(this.home, { recursive: true, mode: 0o700 });
+    await this.ensureHome();
     const f = await fs.open(this.path("messages.jsonl"), "a", 0o600);
     try {
       await f.writeFile(JSON.stringify(entry) + "\n");
@@ -249,6 +259,23 @@ export class FileStorage implements Storage {
     } finally {
       release();
     }
+  }
+}
+
+/**
+ * Makes a directory of this user's readable by this user alone. mkdir's
+ * mode only applies to a directory it creates: one made first by
+ * `python3 -m venv` or by hand is usually 0755, and files written in it
+ * without a mode of their own would be readable by every user. A directory
+ * owned by someone else is left alone, and so is Windows (no modes).
+ */
+async function makePrivate(dir: string): Promise<void> {
+  if (process.platform === "win32") return;
+  try {
+    const st = await fs.stat(dir);
+    if (st.mode & 0o077 && st.uid === process.getuid?.()) await fs.chmod(dir, st.mode & 0o700);
+  } catch {
+    // not ours to change
   }
 }
 

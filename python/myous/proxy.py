@@ -53,15 +53,26 @@ def relay_proxy(relay_urls: list[str]) -> str | None:
     with _lock:
         if proxy not in _bridges:
             _bridges[proxy] = Socks5Bridge(p)
+        _bridges[proxy].allowed.update(_target(u) for u in relay_urls)
         return _bridges[proxy].address
+
+
+def _target(url: str) -> tuple[str, int]:
+    """(host, port) of a relay URL, as a SOCKS client asks for it."""
+    u = urllib.parse.urlparse(url)
+    return (u.hostname or "").lower(), u.port or (443 if u.scheme in ("wss", "https") else 80)
 
 
 class Socks5Bridge:
     """SOCKS5 (no auth) on 127.0.0.1, forwarding through an HTTP proxy with
-    CONNECT. Runs in daemon threads for the life of the process."""
+    CONNECT. Runs in daemon threads for the life of the process. Any local
+    process can connect to it, and each CONNECT carries the user's proxy
+    credentials, so it opens tunnels only to the relays in `allowed`
+    ((host, port), filled by relay_proxy)."""
 
     def __init__(self, proxy: urllib.parse.ParseResult):
         self.proxy = proxy
+        self.allowed: set[tuple[str, int]] = set()
         self.server = socket.create_server(("127.0.0.1", 0))
         self.address = "127.0.0.1:%d" % self.server.getsockname()[1]
         threading.Thread(target=self._serve, daemon=True).start()
@@ -75,6 +86,9 @@ class Socks5Bridge:
         upstream = None
         try:
             host, port = _socks_request(client)
+            if (host.lower(), port) not in self.allowed:
+                client.sendall(b"\x05\x02\x00\x01" + bytes(6))  # not allowed by ruleset
+                return
             try:
                 upstream, early = self._connect(host, port)
             except OSError:

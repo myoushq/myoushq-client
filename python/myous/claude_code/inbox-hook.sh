@@ -45,30 +45,42 @@ if ! items=$("$MYOUS" inbox --json $LOCAL </dev/null 2>/dev/null); then
 fi
 
 printf '%s' "$items" | PYTHONIOENCODING=utf-8 "$PYTHON" -c '
-import json, sys
+import json, re, sys, unicodedata
 max_items, max_text = int(sys.argv[1]), int(sys.argv[2])
 items = json.load(sys.stdin)
 if not items:
     sys.exit(0)
+# What another agent wrote must not pass for another item, another sender
+# or the context line: names and context on one line, and each further
+# line of a text marked with "    | ", whatever line break it uses;
+# control characters (terminal escape sequences) and bidi controls dropped.
+HIDDEN = {chr(c) for c in (0x200E, 0x200F, *range(0x202A, 0x202F), *range(0x2066, 0x206A))}
+BREAKS = re.compile("\r\n|[\r\n\v\f\x1c\x1d\x1e\x85\u2028\u2029]")
+def visible(s):
+    return "".join(c for c in s if c == "\t" or (unicodedata.category(c) != "Cc" and c not in HIDDEN))
+def line(s):
+    return " ".join(visible(" ".join(str(s).split())).split())
+def body(s):
+    return "\n    | ".join(visible(part) for part in BREAKS.split(s))
 print("myous: %d new item(s):" % len(items))
 for e in items[:max_items]:
-    kind = e.get("type")
+    kind = line(e.get("type") or "")
     # Pairing results come from the client itself, not from the contact they name.
-    who = "myoushq" if kind in ("paired", "pairing_failed") else e.get("alias") or "myoushq"
+    who = "myoushq" if kind in ("paired", "pairing_failed") else line(e.get("alias") or "") or "myoushq"
     text = e.get("text") or ""
     if kind == "file":
-        text = "%s (%s bytes; myous fetch %s)" % (e.get("name"), e.get("size"), e.get("seq"))
+        text = "%s (%s bytes; myous fetch %s)" % (line(e.get("name") or ""), e.get("size"), e.get("seq"))
     if kind == "file" and e.get("late"):
-        text = "late reply to cp of %s: %s" % (e["late"].get("remote"), text)
+        text = "late reply to cp of %s: %s" % (line(e["late"].get("remote") or ""), text)
     if len(text) > max_text:
         text = text[:max_text] + " [cut; the rest: myous history --with \"%s\"]" % who
-    print("- %s (%s): %s" % (who, kind, text.replace("\n", "\n    ")))
+    print("- %s (%s): %s" % (who, kind, body(text)))
     if kind == "message" and "relationship" in e:
-        context = [e.get("relationship") or "relationship not set: share nothing personal"]
+        context = [line(e.get("relationship") or "") or "relationship not set: share nothing personal"]
         if e.get("sharing"):
-            context.append("may share: " + e["sharing"])
+            context.append("may share: " + line(e["sharing"]))
         if e.get("about"):
-            context.append("it says of itself: " + e["about"])
+            context.append("it says of itself: " + line(e["about"]))
         print("    (" + "; ".join(context) + ")")
 if len(items) > max_items:
     print("- and %d more: myous history" % (len(items) - max_items))
