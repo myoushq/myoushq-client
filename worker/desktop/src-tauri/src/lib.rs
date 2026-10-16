@@ -160,20 +160,48 @@ fn new_worker() -> Result<String, String> {
     Ok(home.to_string_lossy().to_string())
 }
 
-/// Moves a worker's folder to the trash (never the first worker's).
+/// Moves a worker's folder to the trash (never the first worker's), off
+/// the main thread: a folder with a browser profile in it takes a while.
 #[tauri::command]
-fn remove_worker(home: String) -> Result<(), String> {
-    let p = PathBuf::from(&home);
+async fn remove_worker(home: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || remove_worker_now(&home))
+        .await
+        .map_err(err)?
+}
+
+fn remove_worker_now(home: &str) -> Result<(), String> {
+    let p = PathBuf::from(home);
     if paths::is_default(&p) {
         return Err("the first worker stays".into());
     }
     if !paths::all_homes().iter().any(|h| h == &p) {
         return Err("not a worker folder".into());
     }
-    if trash::delete(&p).is_err() {
+    if let Err(e) = trash_context().delete(&p) {
+        files::append_app_log(&format!(
+            "{} couldn't move {home} to the trash ({e}); removing it",
+            now_stamp()
+        ));
         std::fs::remove_dir_all(&p).map_err(err)?;
     }
     Ok(())
+}
+
+/// The system's trash. On a Mac through NSFileManager, as myous for Mac
+/// trashed a worker folder: the trash crate's default there asks the
+/// Finder through AppleScript (`osascript`), which needs the owner's
+/// permission for myous to control the Finder (an app with the hardened
+/// runtime and no Apple Events entitlement may simply be refused, and the
+/// folder then went for good), is slower, and plays the Finder's sound.
+fn trash_context() -> trash::TrashContext {
+    #[allow(unused_mut)]
+    let mut ctx = trash::TrashContext::new();
+    #[cfg(target_os = "macos")]
+    {
+        use trash::macos::{DeleteMethod, TrashContextExtMacos};
+        ctx.set_delete_method(DeleteMethod::NsFileManager);
+    }
+    ctx
 }
 
 /// The runtime's state for the Set up card (engine.rs: ok, missing,
@@ -1492,6 +1520,17 @@ mod tests {
             &log,
         );
         assert!(r.is_err() && calls.borrow().is_empty());
+    }
+
+    /// A Mac trashes through NSFileManager, never by asking the Finder.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_mac_trashes_without_the_finder() {
+        use trash::macos::{DeleteMethod, TrashContextExtMacos};
+        assert!(matches!(
+            trash_context().delete_method(),
+            DeleteMethod::NsFileManager
+        ));
     }
 
     #[test]

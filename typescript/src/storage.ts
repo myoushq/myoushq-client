@@ -222,7 +222,10 @@ export class FileStorage implements Storage {
   /**
    * A lock file under locks/, so separate processes (a listener and a
    * one-off poll, say) don't step on each other. Created with O_EXCL and
-   * treated as stale after 2 minutes.
+   * holding the owner's process id: a lock whose process is gone is taken
+   * over at once, and any lock after LOCK.staleMs. Its name ends in ".pid":
+   * the Python, Go and Rust clients flock() a file named without it, which
+   * they leave in place, and Node can't flock.
    */
   async withLock<T>(name: string, fn: () => Promise<T>, wait = true): Promise<T | undefined> {
     // Serialize within this process first: the lock file isn't reentrant.
@@ -232,22 +235,30 @@ export class FileStorage implements Storage {
     this.locks.set(name, previous.then(() => mine));
     await previous;
     try {
-      const file = join(this.home, "locks", name.replace(/\//g, "_"));
+      const file = join(this.home, "locks", name.replace(/\//g, "_") + ".pid");
       await fs.mkdir(dirname(file), { recursive: true, mode: 0o700 });
-      const deadline = Date.now() + 60_000;
+      const deadline = Date.now() + LOCK.waitMs;
       for (;;) {
         try {
           const f = await fs.open(file, fsc.O_CREAT | fsc.O_EXCL | fsc.O_WRONLY, 0o600);
-          await f.close();
+          try {
+            await f.writeFile(String(process.pid));
+          } finally {
+            await f.close();
+          }
           break;
         } catch (e) {
           if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
-          const stat = await fs.stat(file).catch(() => null);
-          if (stat && Date.now() - stat.mtimeMs > 120_000) {
+          if (await staleLock(file)) {
             await fs.rm(file, { force: true });
             continue;
           }
-          if (!wait || Date.now() > deadline) return undefined;
+          if (!wait) return undefined;
+          if (Date.now() > deadline) {
+            // Callers rely on fn having run: say why it couldn't, rather than return nothing.
+            throw new Error(`another myous run has held the ${name} lock for ${LOCK.waitMs / 1000} s (${file}); ` +
+              "if none is running, remove that file");
+          }
           await new Promise((r) => setTimeout(r, 50));
         }
       }
@@ -276,6 +287,28 @@ async function makePrivate(dir: string): Promise<void> {
     if (st.mode & 0o077 && st.uid === process.getuid?.()) await fs.chmod(dir, st.mode & 0o700);
   } catch {
     // not ours to change
+  }
+}
+
+/** How long withLock waits for a lock, and when a lock counts as abandoned even if its process id is in use. Tests shorten them. */
+export const LOCK = { waitMs: 60_000, staleMs: 600_000 };
+
+/** Whether a lock file was left behind: its process is gone, or it is older than LOCK.staleMs. */
+async function staleLock(file: string): Promise<boolean> {
+  const [text, stat] = await Promise.all([fs.readFile(file, "utf8").catch(() => null), fs.stat(file).catch(() => null)]);
+  if (!stat) return false; // just released: try again
+  if (Date.now() - stat.mtimeMs > LOCK.staleMs) return true;
+  const pid = Number(text);
+  if (!text || !Number.isInteger(pid) || pid <= 0) {
+    // Being written right now, or not ours: give it a moment.
+    return Date.now() - stat.mtimeMs > 5_000;
+  }
+  if (pid === process.pid) return false; // another FileStorage in this process
+  try {
+    process.kill(pid, 0); // signal 0: only checks that the process exists
+    return false;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === "ESRCH";
   }
 }
 
