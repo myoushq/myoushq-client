@@ -70,6 +70,19 @@ class Storage(abc.ABC):
     def read_history(self) -> list[dict]:
         """The whole message history, oldest first."""
 
+    def read_history_since(self, seq: int) -> list[dict]:
+        """The entries with a seq of at least `seq`, oldest first. Entries
+        are appended in seq order (record() runs under the lock), so a
+        store can read just the end of the history; this default reads it
+        all."""
+        return [e for e in self.read_history() if e["seq"] >= seq]
+
+    def history_reversed(self) -> Iterator[dict]:
+        """The history newest first, for a caller that stops at what it
+        looks for (the latest file, the last 50 entries). This default
+        reads it all."""
+        yield from reversed(self.read_history())
+
     def lock(self, name: str = "state", wait: bool = True) -> ContextManager[bool]:
         """Mutual exclusion between concurrent runs of the same agent.
 
@@ -181,18 +194,70 @@ class FileStorage(Storage):
         return [f"{directory}/{n}" if directory else n for n in found]
 
     def append_history(self, entry: dict) -> None:
-        fd = os.open(self.path("messages.jsonl"), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-        with os.fdopen(fd, "a") as f:
-            f.write(json.dumps(entry, sort_keys=True) + "\n")
-            f.flush()
-            os.fsync(f.fileno())
+        line = (json.dumps(entry, sort_keys=True) + "\n").encode()
+        flags = os.O_RDWR | os.O_CREAT | os.O_APPEND | getattr(os, "O_BINARY", 0)
+        fd = os.open(self.path("messages.jsonl"), flags, 0o600)
+        try:
+            _mend_tail(fd)
+            while line:
+                line = line[os.write(fd, line):]
+            os.fsync(fd)
+        finally:
+            os.close(fd)
 
     def read_history(self) -> list[dict]:
         try:
-            lines = self.path("messages.jsonl").read_text().splitlines()
+            text = self.path("messages.jsonl").read_text(encoding="utf-8")
         except FileNotFoundError:
             return []
+        # Lines end with "\n" only: splitlines() would also split a line
+        # another client wrote with U+2028 or U+0085 left unescaped.
+        lines = text.split("\n")
+        del text   # not two copies of the file while the lines are parsed
+        if _torn(lines[-1]):
+            lines.pop()   # a write cut short (a crash, a full disk): append_history mends it
         return [json.loads(line) for line in lines if line.strip()]
+
+    HISTORY_BLOCK = 64 * 1024  # bytes read at a time from the end (tests lower it)
+
+    def read_history_since(self, seq: int) -> list[dict]:
+        found = []
+        for e in self.history_reversed():
+            if e["seq"] < seq:
+                break
+            found.append(e)
+        found.reverse()
+        return found
+
+    def history_reversed(self) -> Iterator[dict]:
+        """Newest first, reading the file backwards a block at a time: the
+        hot paths (unread, a reply being waited for, the latest file) need
+        only its end, however long the history has grown. The file is open
+        only while a block is read, so a caller may stop at any point."""
+        path = self.path("messages.jsonl")
+        try:
+            pos = path.stat().st_size
+        except FileNotFoundError:
+            return
+        head = b""  # the start of a line whose beginning is in an earlier block
+        last = True  # the first line met is the last one, which a cut-short write leaves torn
+        while pos > 0:
+            step = min(self.HISTORY_BLOCK, pos)
+            pos -= step
+            with open(path, "rb") as f:
+                f.seek(pos)
+                block = f.read(step)
+            lines = (block + head).split(b"\n")
+            head = lines.pop(0)
+            for line in reversed(lines):
+                if last:
+                    last = False
+                    if _torn(line):
+                        continue
+                if line.strip():
+                    yield json.loads(line)
+        if head.strip() and not (last and _torn(head)):
+            yield json.loads(head)
 
     def last_used(self) -> int | None:
         """Unix time of the newest file under the home: when this agent last
@@ -235,6 +300,49 @@ class FileStorage(Storage):
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp, p)
+
+
+def _torn(last_line: str | bytes) -> bool:
+    """Whether what follows the history's last newline is a write cut
+    short: anything but blank or a whole JSON object."""
+    if not last_line.strip():
+        return False
+    try:
+        return not isinstance(json.loads(last_line), dict)
+    except ValueError:
+        return True
+
+
+def _mend_tail(fd: int) -> None:
+    """Before an append: if the history doesn't end with a newline (a
+    write was cut short), end its last line, or drop that line if it isn't
+    a whole entry, so the new entry gets a line of its own instead of
+    being glued to the fragment. Callers hold the state lock: no other
+    append is under way."""
+    size = os.lseek(fd, 0, os.SEEK_END)
+    if size == 0:
+        return
+    os.lseek(fd, size - 1, os.SEEK_SET)
+    if os.read(fd, 1) == b"\n":
+        return
+    # The last line: back from the end, a block at a time, to the newline before it.
+    start, tail = size, b""
+    while start > 0 and b"\n" not in tail:
+        step = min(1 << 16, start)
+        start -= step
+        os.lseek(fd, start, os.SEEK_SET)
+        block = b""
+        while len(block) < step:
+            chunk = os.read(fd, step - len(block))
+            if not chunk:
+                break
+            block += chunk
+        tail = block + tail
+    cut = tail.rfind(b"\n") + 1   # 0: the file is that one line
+    if _torn(tail[cut:]):
+        os.ftruncate(fd, start + cut)
+    else:
+        os.write(fd, b"\n")
 
 
 def _lock(fd: int, wait: bool) -> bool:

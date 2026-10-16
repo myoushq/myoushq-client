@@ -85,11 +85,12 @@ def context_fields(relationship: str | None = None, sharing: str | None = None,
     return fields
 
 
-def context_of(st: Storage, npub: str) -> dict:
+def context_of(st: Storage, npub: str, known: dict[str, dict] | None = None) -> dict:
     """{"relationship", "sharing", "about"} for the contact with this npub
     (None if unset): the owner's context, and what the contact says about
-    itself (its card)."""
-    for c in load(st).values():
+    itself (its card). `known`: the contacts, if the caller has loaded
+    them already (one load for many entries)."""
+    for c in (load(st) if known is None else known).values():
         if c["npub"] == npub:
             return {"relationship": c.get("relationship"), "sharing": c.get("sharing"),
                     "about": (c.get("card") or {}).get("about") or None}

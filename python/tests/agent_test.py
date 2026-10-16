@@ -190,7 +190,7 @@ class RequestTtl(unittest.TestCase):
         async def send_file(name, path, extra_tags=None, conn=None):
             self.tags.append(extra_tags)
 
-        async def await_reply(rid, timeout, npub, conn=None, expires=None):
+        async def await_reply(rid, timeout, npub, conn=None, expires=None, since=1):
             self.waits.append((timeout, expires))
             return {"type": "ack", "ok": True, "id": rid}
 
@@ -253,7 +253,7 @@ class RequestTtl(unittest.TestCase):
         self.assertIn("in the next 45 seconds", timeout_text(150, time.time() + 44.5))
 
     def test_a_request_given_up_on_is_remembered(self):
-        async def no_reply(rid, timeout, npub, conn=None, expires=None):
+        async def no_reply(rid, timeout, npub, conn=None, expires=None, since=1):
             raise TimeoutError("no reply from the worker")
 
         self.agent._await_reply = no_reply
@@ -281,7 +281,7 @@ class RequestTtl(unittest.TestCase):
     def test_while_it_waits_the_request_names_this_process(self):
         seen = []
 
-        async def await_reply(rid, timeout, npub, conn=None, expires=None):
+        async def await_reply(rid, timeout, npub, conn=None, expires=None, since=1):
             seen.append(self.st.get("gave_up")[rid])
             return {"type": "result", "id": rid, "exit": 0}
 
@@ -297,7 +297,7 @@ class RequestTtl(unittest.TestCase):
     def test_a_wait_ended_otherwise_gives_the_request_up(self):
         # A caller's own timeout around exec cancels the wait; this process
         # lives on, so the reply must not stay the command's.
-        async def cancelled(rid, timeout, npub, conn=None, expires=None):
+        async def cancelled(rid, timeout, npub, conn=None, expires=None, since=1):
             raise asyncio.CancelledError
 
         self.agent._await_reply = cancelled
