@@ -50,9 +50,11 @@ ID_RULE = re.compile(r"[A-Za-z0-9_-]{1,64}")
 BAD_ID = "bad request: the id must be 1 to 64 characters from A-Z, a-z, 0-9, - and _"
 
 # Commands that only read, for the "changes" level. A command line is
-# read-only when every segment (split on |, &&, ||, ;) starts with one of
-# these and nothing redirects output, substitutes commands or runs code
-# inside one (find -exec, awk '{...}').
+# read-only when every segment (split on |, &&, ||, ;, &) starts with one
+# of these and nothing redirects output, substitutes commands or runs code
+# inside one (find -exec, awk '{...}'). A single & backgrounds a command
+# and starts another, so it is a separator too: without it, `echo & rm x`
+# was judged by `echo` alone and ran `rm x` unreviewed.
 READ_ONLY = {
     "ls", "cat", "head", "tail", "less", "more", "grep", "rg", "find", "wc", "stat", "file", "pwd",
     "du", "df", "uname", "date", "whoami", "id", "echo", "printf", "sort", "uniq", "cut", "tr",
@@ -60,6 +62,12 @@ READ_ONLY = {
     "readlink", "md5sum", "sha256sum", "shasum", "hostname", "nproc", "free", "uptime",
 }
 UNSAFE_TOKENS = (">", "<", "$(", "`", "sed -i", "tee ", "{", "-exec", "-ok", "-delete")
+# A few allowlisted commands still write with the right flag: `sort -o/
+# --output FILE` writes (and overwrites) a file, and GNU find's -fprint,
+# -fprintf, -fprint0 and -fls write one. These are command-specific (a
+# bare "-o" is harmless for grep), so they can't be global UNSAFE_TOKENS;
+# _writes_a_file checks them against the command's own name.
+FIND_WRITE_PRIMARIES = ("-fprint", "-fprintf", "-fprint0", "-fls")
 # On Windows the worker's shell is PowerShell: its read-only commands, and
 # what runs code inside an otherwise harmless one ((...), & and script blocks).
 WINDOWS = os.name == "nt"
@@ -82,12 +90,28 @@ def level() -> str:
         return "trust"
 
 
+def _writes_a_file(words: list[str]) -> bool:
+    """Whether an otherwise read-only command writes a file through one of
+    its own flags: `sort -o/--output FILE` (also `-oFILE`), and GNU find's
+    -fprint/-fprintf/-fprint0/-fls."""
+    name, rest = words[0], words[1:]
+    if name == "sort":
+        for a in rest:
+            if a in ("-o", "--output") or a.startswith("--output=") or (a.startswith("-o") and not a.startswith("--") and len(a) > 2):
+                return True
+    elif name == "find":
+        if any(a in FIND_WRITE_PRIMARIES for a in rest):
+            return True
+    return False
+
+
 def read_only(cmd: str, windows: bool = WINDOWS) -> bool:
     if any(tok in cmd for tok in UNSAFE_TOKENS):
         return False
     if windows and any(tok.lower() in cmd.lower() for tok in UNSAFE_POWERSHELL):
         return False
-    for sep in ("||", "&&", "|", ";"):
+    # && before &: once && is gone, the remaining & are single backgrounders.
+    for sep in ("||", "&&", "|", ";", "&"):
         cmd = cmd.replace(sep, "\n")
     for segment in cmd.splitlines():
         try:
@@ -101,6 +125,8 @@ def read_only(cmd: str, windows: bool = WINDOWS) -> bool:
                 return False
         elif words[0] not in READ_ONLY:
             return False
+        elif _writes_a_file(words):
+            return False
     return True
 
 
@@ -112,6 +138,15 @@ def ask(req: dict) -> tuple[bool, str]:
     os.makedirs(APPROVALS, exist_ok=True)
     question = os.path.join(APPROVALS, rid + ".json")
     answer = os.path.join(APPROVALS, rid + ".answer")
+    # Only an answer written for *this* question counts. A leftover
+    # <id>.answer (the owner clicked after the wait ran out, so the earlier
+    # question was already gone; or a stop killed the hook before it read
+    # the answer) must not approve a later request that reuses the id: the
+    # agent chooses ids, so it could reuse one the owner once approved.
+    try:
+        os.unlink(answer)
+    except OSError:
+        pass
     with open(question + ".tmp", "w") as f:
         json.dump(dict(req, asked_at=int(time.time()), wait=WAIT), f)
     os.replace(question + ".tmp", question)

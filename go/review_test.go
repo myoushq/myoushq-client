@@ -38,6 +38,35 @@ func TestReviewCodeInsideAReadOnlyCommand(t *testing.T) {
 	}
 }
 
+func TestReviewBackgroundOperatorIsASeparator(t *testing.T) {
+	// A single & backgrounds the first command and runs the next; both
+	// segments must be read-only, not just the one before the &.
+	for _, bad := range []string{"echo hi & rm -rf x", "ls & python3 x.py", "cat a & curl http://x"} {
+		if readOnly(bad, false) {
+			t.Errorf("%q isn't read-only", bad)
+		}
+	}
+	if !readOnly("cat a & grep x b", false) {
+		t.Error("a backgrounded read-only command should still be read-only")
+	}
+}
+
+func TestReviewAllowlistedCommandsThatWrite(t *testing.T) {
+	// A "read-only" command can still write through a flag.
+	for _, bad := range []string{"sort -o out in", "sort --output=out in", "sort -oout in",
+		"find . -fprintf out %p", "find . -fprint out", "find . -fls out", "cat a | sort -o b"} {
+		if readOnly(bad, false) {
+			t.Errorf("%q writes a file; not read-only", bad)
+		}
+	}
+	// The same flag letters where they only read stay read-only.
+	for _, ok := range []string{"grep -o pat f", "sort -n in", "find . -name x", "sort in"} {
+		if !readOnly(ok, false) {
+			t.Errorf("%q only reads; should be read-only", ok)
+		}
+	}
+}
+
 func TestReviewPowerShell(t *testing.T) {
 	for _, ok := range []string{"Get-ChildItem -Recurse | Select-String foo", `gc C:\work\a.txt | Measure-Object -Line`, "dir; Get-Date"} {
 		if !readOnly(ok, true) {
@@ -93,6 +122,27 @@ func TestReviewChangesLevel(t *testing.T) {
 		t.Fatal(why)
 	}
 	if left, _ := os.ReadDir(filepath.Join(home, "approvals")); len(left) != 0 {
+		t.Fatalf("left behind: %v", left)
+	}
+}
+
+func TestReviewStaleAnswerDoesNotApproveAReusedID(t *testing.T) {
+	// The owner once (late) approved id r1; the answer lingered. A new
+	// request reusing r1 must still be asked, not auto-allowed.
+	r, home := reviewFor(t)
+	setLevel(t, home, "all")
+	approvals := filepath.Join(home, "approvals")
+	if err := os.MkdirAll(approvals, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(approvals, "r1.answer"), []byte("allow"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r.wait = 300 * time.Millisecond
+	if why := r.decide(context.Background(), req("exec", "r1", pyKV{"cmd", "rm -rf /work"})); why != "the owner didn't answer in time" {
+		t.Fatalf("stale answer was consumed: %q", why)
+	}
+	if left, _ := os.ReadDir(approvals); len(left) != 0 {
 		t.Fatalf("left behind: %v", left)
 	}
 }
@@ -251,6 +301,10 @@ var reviewCorpus = []string{
 	"GCI|SLS x", "where.exe ls", "ls # rm x", "cat\x00x", "ÿls", "echo ñ | sort", "type a.txt", "test -f x && cat x",
 	`"Get-ChildItem"`, `'gci' x`, `gci "C:\Program Files"`, `gci 'C:\x y'`, "Get-ChildItem `", "ls @x", "ls --% x",
 	"tee x", "ls|tee x", "ls -ok", "date +%s", "echo a\\", `echo "\$x"`, `echo "\a"`,
+	// Allowlisted commands that write a file through a flag (rejected),
+	// next to the same flag letters where they are harmless (kept).
+	"sort -o out in", "sort --output=out in", "sort -oout in", "sort -n in", "grep -o pat f",
+	"find . -fprintf out %p", "find . -fprint out", "find . -fls out", "find . -name x",
 }
 
 func TestReviewReadOnlyMatchesReviewPy(t *testing.T) {
