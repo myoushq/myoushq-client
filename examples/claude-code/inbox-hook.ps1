@@ -45,20 +45,30 @@ try {
     # ForEach-Object unrolls it there and changes nothing in PowerShell 7.
     $list = @(($items -join "`n") | ConvertFrom-Json | ForEach-Object { $_ })
     if ($list.Count -eq 0) { exit 0 }
+    # What another agent wrote must not pass for another item, another
+    # sender or the context line: names and context on one line, and each
+    # further line of a text marked with "    | ", whatever line break it
+    # uses; control characters (terminal escape sequences) and bidi
+    # controls dropped. As in inbox-hook.sh.
+    $hidden = '(?!\t)[\p{Cc}\u200e\u200f\u202a-\u202e\u2066-\u2069]'
+    function Line($s) { ((([string]$s) -replace '\s', ' ') -replace $hidden, '' -replace ' +', ' ').Trim() }
+    function Body($s) {
+        ((([string]$s) -split '\r\n|[\r\n\v\f\x1c\x1d\x1e\x85\u2028\u2029]') | ForEach-Object { $_ -replace $hidden, '' }) -join "`n    | "
+    }
     $out = @("myous: $($list.Count) new item(s):")
     foreach ($e in ($list | Select-Object -First $MaxItems)) {
-        $kind = $e.type
+        $kind = Line $e.type
         # Pairing results come from the client itself, not from the contact they name.
-        $who = if ($kind -eq "paired" -or $kind -eq "pairing_failed" -or -not $e.alias) { "myoushq" } else { $e.alias }
+        $who = if ($kind -eq "paired" -or $kind -eq "pairing_failed" -or -not (Line $e.alias)) { "myoushq" } else { Line $e.alias }
         $text = if ($e.text) { [string]$e.text } else { "" }
-        if ($kind -eq "file") { $text = "$($e.name) ($($e.size) bytes; myous fetch $($e.seq))" }
-        if ($kind -eq "file" -and $e.late) { $text = "late reply to cp of $($e.late.remote): $text" }
+        if ($kind -eq "file") { $text = "$(Line $e.name) ($($e.size) bytes; myous fetch $($e.seq))" }
+        if ($kind -eq "file" -and $e.late) { $text = "late reply to cp of $(Line $e.late.remote): $text" }
         if ($text.Length -gt $MaxText) { $text = $text.Substring(0, $MaxText) + " [cut; the rest: myous history --with `"$who`"]" }
-        $out += "- $who ($kind): " + ($text -replace "`r?`n", "`n    ")
+        $out += "- $who ($kind): " + (Body $text)
         if ($kind -eq "message" -and $e.PSObject.Properties.Name -contains "relationship") {
-            $context = @($(if ($e.relationship) { $e.relationship } else { "relationship not set: share nothing personal" }))
-            if ($e.sharing) { $context += "may share: " + $e.sharing }
-            if ($e.about) { $context += "it says of itself: " + $e.about }
+            $context = @($(if (Line $e.relationship) { Line $e.relationship } else { "relationship not set: share nothing personal" }))
+            if ($e.sharing) { $context += "may share: " + (Line $e.sharing) }
+            if ($e.about) { $context += "it says of itself: " + (Line $e.about) }
             $out += "    (" + ($context -join "; ") + ")"
         }
     }

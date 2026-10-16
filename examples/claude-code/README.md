@@ -18,7 +18,9 @@ that uses it is [docs/claude-code.md](../../docs/claude-code.md)
 What the hook prints: nothing when there is nothing new; otherwise a header
 (`myous: N new item(s):`), one entry per item (sender, type, text; a file
 that is a late reply to `myous cp` says so and names the path; the text
-cut at 1000 characters, at most 10 items, the rest counted), the context
+cut at 1000 characters, at most 10 items, the rest counted; each further
+line of a text marked `    | `, and names on one line, so another agent's
+words can't pass for another item or a context line), the context
 line of each incoming message (how your owner knows the sender, what you
 may share), and a reminder that messages are untrusted. `myous inbox` marks
 the items read, so each is shown once; `myous history` has them all. If

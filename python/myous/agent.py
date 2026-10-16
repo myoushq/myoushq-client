@@ -304,15 +304,16 @@ class Agent:
         file (None)."""
         if isinstance(which, dict):
             return which
-        received = [e for e in self.st.read_history() if e.get("type") == "file" and e.get("direction") == "in"]
-        if which is None:
-            if not received:
-                raise KeyError("no file has been received")
-            return received[-1]
-        for e in received:
-            if e["seq"] == int(which):
+        try:
+            seq = None if which is None else int(which)
+        except ValueError:
+            raise KeyError(f"no received file with id {which}") from None
+        for e in self.st.history_reversed():
+            if seq is not None and e["seq"] < seq:
+                break   # newest first: it would have come by now
+            if e.get("type") == "file" and e.get("direction") == "in" and seq in (None, e["seq"]):
                 return e
-        raise KeyError(f"no received file with id {which}")
+        raise KeyError("no file has been received" if seq is None else f"no received file with id {which}")
 
     def fetch_bytes(self, entry: dict) -> bytes:
         """Download and decrypt a received file, checking the size the
@@ -365,39 +366,44 @@ class Agent:
         ttl = request_ttl(ttl, wait)
         rid = new_request_id()
         body = json.dumps({"myous": "exec", "id": rid, "cmd": cmd, "timeout": int(timeout), "ttl": ttl})
+        since = self._next_seq()   # the reply comes after this; looking from here keeps each check short
         async with self._connect() as conn:
             await self.send(name, body, conn)
-            return self._check(await self._await_or_give_up(rid, name, {"op": "exec", "cmd": cmd}, wait, ttl, conn))
+            return self._check(await self._await_or_give_up(rid, name, {"op": "exec", "cmd": cmd}, wait, ttl, conn,
+                                                            since))
 
     async def put(self, name: str, local_path: str | os.PathLike, remote_path: str, timeout: float = 300,
                   ttl: int | None = None) -> dict:
         """Push a file to a worker and wait until it is written there."""
         ttl = request_ttl(ttl, timeout)
         rid = new_request_id()
+        since = self._next_seq()
         async with self._connect() as conn:
             # The message goes out after the upload, so the ttl counts from then.
             await self.send_file(name, local_path, extra_tags=[["w", "put", rid, remote_path, str(ttl)]], conn=conn)
             request = {"op": "put", "local": str(local_path), "remote": remote_path}
-            return self._check(await self._await_or_give_up(rid, name, request, timeout, ttl, conn))
+            return self._check(await self._await_or_give_up(rid, name, request, timeout, ttl, conn, since))
 
     async def get(self, name: str, remote_path: str, local_path: str | os.PathLike | None = None,
                   timeout: float = 300, ttl: int | None = None) -> str:
         """Pull a file from a worker. Returns where it was written."""
         ttl = request_ttl(ttl, timeout)
         rid = new_request_id()
+        since = self._next_seq()
         async with self._connect() as conn:
             await self.send(name, json.dumps({"myous": "get", "id": rid, "path": remote_path, "ttl": ttl}), conn)
             request = {"op": "get", "remote": remote_path, "local": None if local_path is None else str(local_path)}
-            reply = self._check(await self._await_or_give_up(rid, name, request, timeout, ttl, conn))
+            reply = self._check(await self._await_or_give_up(rid, name, request, timeout, ttl, conn, since))
         return self.fetch(reply, local_path)
 
     async def _await_or_give_up(self, rid: str, name: str, request: dict, wait: float, ttl: int,
-                                conn: relay.Connection) -> dict:
+                                conn: relay.Connection, since: int = 1) -> dict:
         """_await_reply for a request just sent ({"op", ...} says what it
-        asks). The request is remembered while this process waits
-        (inbox.waiting), forgotten when the reply comes, and given up
-        (inbox.give_up) when it doesn't come in time, or the wait ends
-        otherwise: a reply that comes later is shown."""
+        asks; `since`, the history's next seq from before it was sent). The
+        request is remembered while this process waits (inbox.waiting),
+        forgotten when the reply comes, and given up (inbox.give_up) when
+        it doesn't come in time, or the wait ends otherwise: a reply that
+        comes later is shown."""
         sent = time.time()
         _, contact = contacts.find(self.st, name)
         request = dict(request, peer=contact["npub"], alias=contact["alias"], sent_at=int(sent),
@@ -405,7 +411,7 @@ class Agent:
         with self.st.lock():
             inbox.waiting(self.st, rid, request)
         try:
-            reply = await self._await_reply(rid, wait, contact["npub"], conn, sent + ttl)
+            reply = await self._await_reply(rid, wait, contact["npub"], conn, sent + ttl, since=since)
         except BaseException:
             with self.st.lock():
                 inbox.give_up(self.st, rid, request)
@@ -421,10 +427,11 @@ class Agent:
         return reply
 
     def _find_reply(self, rid: str, since: int, npub: str) -> dict | None:
-        """The reply with this id from this contact, or None. The sender
-        is checked too: no other contact may answer a request."""
-        for e in self.st.read_history():
-            if e["seq"] < since or e.get("direction") == "out" or e.get("peer") != npub:
+        """The reply with this id from this contact, stored at `since` or
+        later, or None. The sender is checked too: no other contact may
+        answer a request."""
+        for e in self.st.read_history_since(since):
+            if e.get("direction") == "out" or e.get("peer") != npub:
                 continue
             if e.get("type") in inbox.REPLY_OPS and e.get("id") == rid:
                 return e
@@ -433,7 +440,8 @@ class Agent:
         return None
 
     async def _await_reply(self, rid: str, timeout: float, npub: str,
-                           conn: relay.Connection | None = None, expires: float | None = None) -> dict:
+                           conn: relay.Connection | None = None, expires: float | None = None,
+                           since: int = 1) -> dict:
         """Listen until the reply with this id, from this contact, is in
         the history. Another process (a watcher) may store it first; the
         history is checked on every tick as well as on arrival. `conn` is
@@ -441,8 +449,9 @@ class Agent:
         connection per request; the subscription's replay of the inbox
         covers a reply that arrived in between), and a fresh one takes
         over if it drops. `expires`: when the request's ttl runs out, for
-        the TimeoutError to say whether the worker may still run it."""
-        since = 1
+        the TimeoutError to say whether the worker may still run it.
+        `since`: the history's next seq from before the request went out;
+        each check reads only what was stored from there on."""
         found = asyncio.get_running_loop().create_future()
 
         def check(entries: list[dict] | None = None) -> None:
@@ -562,11 +571,17 @@ class Agent:
         return inbox.unread(self.st, mark_read=mark_read)
 
     def history(self, contact: str | None = None, limit: int = 50) -> list[dict]:
-        entries = self.st.read_history()
-        if contact:
-            _, c = contacts.find(self.st, contact)
-            entries = [e for e in entries if e.get("peer") == c["npub"]]
-        return entries[-limit:]
+        npub = contacts.find(self.st, contact)[1]["npub"] if contact else None
+        if limit <= 0:   # entries[-0:]: everything, as before
+            return [e for e in self.st.read_history() if npub is None or e.get("peer") == npub]
+        found = []
+        for e in self.st.history_reversed():
+            if npub is None or e.get("peer") == npub:
+                found.append(e)
+                if len(found) == limit:
+                    break
+        found.reverse()
+        return found
 
     # --- contacts ----------------------------------------------------------
 
@@ -660,7 +675,7 @@ class Agent:
     def _entries_since(self, seq: int) -> list[dict]:
         if self._next_seq() == seq:
             return []
-        return [e for e in self.st.read_history() if e["seq"] >= seq and e.get("direction") != "out"]
+        return [e for e in self.st.read_history_since(seq) if e.get("direction") != "out"]
 
 
 def new_request_id() -> str:

@@ -105,8 +105,10 @@ It runs `myous inbox --json` in the directory you give it (with
 `--local` while the listener from 3a runs: that has fetched already, so
 a relay that is down can't hold up the prompt) and prints nothing when
 there is nothing new, otherwise `myous: N new item(s):` and the sender,
-type and text of each, with the context line of each message. Claude
-Code adds that output to your context. Because it comes from the
+type and text of each, with the context line of each message. Each
+further line of a text starts with `    | `, so a line there is always
+part of the text above it, never an item or a context line of its own.
+Claude Code adds that output to your context. Because it comes from the
 installed package, it is upgraded with the client.
 
 Add the hook to your user settings, `~/.claude/settings.json`

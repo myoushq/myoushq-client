@@ -4,8 +4,11 @@ A pairing code looks like 4821-K7F3QX. The nameplate (4821) names a mailbox
 on the hub; the secret (K7F3QX) never leaves the two agents. Both sides run
 SPAKE2 with the full code as the password, relayed through the mailbox, and
 get a shared key the hub can't learn. Each side then sends its identity
-(public key and alias) encrypted with that key. A wrong code, or a hub that
-tampers, makes decryption fail and the pairing aborts.
+(public key and alias) encrypted with that key, with a signature by that
+key over a value derived from the shared key, which proves the sender
+holds it. A wrong code, or a hub that tampers, makes decryption fail and
+the pairing aborts. A pairing never changes an existing contact: a key
+that is already one stays as it is (blocked stays blocked).
 
 The PAKE lives in _pake_start/_pake_finish only, so it can be swapped out.
 
@@ -26,7 +29,7 @@ import urllib.parse
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
-from nostr_sdk import Keys, PublicKey
+from nostr_sdk import Event, Keys, PublicKey
 from spake2 import SPAKE2_A, SPAKE2_B
 
 from myous import contacts, inbox
@@ -120,10 +123,70 @@ def unseal(key: bytes, peer_role: str, nameplate: str, msg: dict) -> dict:
         plain = ChaCha20Poly1305(derive(key, f"from {peer_role}")).decrypt(
             _unb64(msg["n"]), _unb64(msg["c"]), nameplate.encode())
         payload = json.loads(plain)
-        PublicKey.parse(payload["pubkey"])
+        if not valid_pubkey(payload["pubkey"]):
+            raise ValueError("not a key")
     except Exception:
         raise PairingError("the code didn't match (or the exchange was tampered with)")
     return payload
+
+
+_P = 2**256 - 2**32 - 977  # secp256k1's field prime
+
+
+def valid_pubkey(text) -> bool:
+    """A key as protocol.md writes it: 64 lowercase hex characters, the x
+    of a point on secp256k1 (BIP-340's lift_x). PublicKey.parse alone also
+    takes npubs, uppercase and x values off the curve."""
+    if not (isinstance(text, str) and re.fullmatch(r"[0-9a-f]{64}", text)):
+        return False
+    x = int(text, 16)
+    return x < _P and pow((pow(x, 3, _P) + 7) % _P, (_P - 1) // 2, _P) == 1
+
+
+def key_proof(key: bytes, role: str) -> bytes:
+    """The 32 bytes a side signs with its identity key, so the other side
+    knows it holds the key in its payload (protocol.md, section 5.4). They
+    come from the shared key, so a signature made for one pairing proves
+    nothing in another."""
+    return derive(key, f"key proof from {role}")
+
+
+def sign_proof(keys: Keys, key: bytes, role: str) -> str:
+    return keys.sign_schnorr(key_proof(key, role))
+
+
+def proof_holds(pubkey_hex: str, message: bytes, sig) -> bool:
+    """Whether `sig` is a BIP-340 signature of `message` by `pubkey_hex`.
+    nostr_sdk has no bare Schnorr check, but Event.verify_signature checks
+    the signature over the event id as given (it doesn't recompute the id),
+    so an event whose id is `message` checks exactly that."""
+    if not (isinstance(sig, str) and re.fullmatch(r"[0-9a-f]{128}", sig)):
+        return False
+    event = {"id": message.hex(), "pubkey": pubkey_hex, "created_at": 0, "kind": 0,
+             "tags": [], "content": "", "sig": sig}
+    try:
+        return Event.from_json(json.dumps(event)).verify_signature()
+    except Exception:
+        return False
+
+
+def check_proof(key: bytes, peer_role: str, payload: dict) -> bool:
+    """True if the payload proves its key; False if it has no proof (clients
+    up to 0.7.5 send none; a later version will require it). A proof that
+    doesn't hold fails the pairing."""
+    if payload.get("sig") is None:
+        return False
+    if not proof_holds(payload["pubkey"], key_proof(key, peer_role), payload["sig"]):
+        raise PairingError("the other side didn't prove it holds the key it sent")
+    return True
+
+
+def _known_refused(c: dict, proven: bool) -> str:
+    """Why a pairing that named a contact which isn't approved changed nothing."""
+    who = (f'answered by your contact "{c["alias"]}" ({c["status"]})' if proven else
+           f'answered with the key of your contact "{c["alias"]}" ({c["status"]}), '
+           "which the other side didn't prove it holds")
+    return f'{who}; nothing changed: if that is right, unblock it (myous unblock "{c["alias"]}")'
 
 
 def _refused(e: HubError) -> bool:
@@ -355,24 +418,33 @@ class Pairing:
                 raise PairingError("bad message from the other side")
             p.update(key=_b64(key), stage="wait_payload")
             self._save(p)
-            mine = {"v": VERSION, "pubkey": self.keys.public_key().to_hex(), "alias": self.alias}
-            self._post(p["nameplate"], p["token"], seal(key, p["role"], p["nameplate"], mine))
+            self._post(p["nameplate"], p["token"], seal(key, p["role"], p["nameplate"], self._payload(key, p["role"])))
         elif p["stage"] == "wait_payload" and msg.get("t") == "payload":
             key = _unb64(p["key"])
             payload = unseal(key, peer_role, p["nameplate"], msg)
             if payload["pubkey"] == self.keys.public_key().to_hex():
                 raise PairingError("that's this agent's own invite")
+            proven = check_proof(key, peer_role, payload)
             with self.st.lock():
-                contact = contacts.add(self.st, payload["pubkey"], str(payload.get("alias", ""))[:64])
-                if p.get("context"):
-                    contact = contacts.update(self.st, payload["pubkey"], **p["context"])
+                known = contacts.load(self.st).get(payload["pubkey"])
+                if known and known["status"] != contacts.APPROVED:
+                    # Raised inside the lock's block, which releases it before _fail.
+                    raise PairingError(_known_refused(known, proven))
+                contact = known or contacts.add(self.st, payload["pubkey"], contacts.clean_name(str(payload.get("alias", ""))),
+                                                **(p.get("context") or {}))
                 # They learned our alias from the payload; a card follows if we have one.
                 contacts.peer_knows(self.st, payload["pubkey"], self.alias, "")
-                p.update(stage="done", contact=contact, verify=verify_code(key))
+                p.update(stage="done", contact=contact, verify=verify_code(key), known=bool(known))
                 self._trace(p.setdefault("trace", []), "done")
                 self.st.delete(f"pending/{p['nameplate']}")
                 text = f"paired with {contact['alias']} (verification code {p['verify']})"
-                if not contact.get("relationship"):
+                given = bool(p.get("context", {}).keys() & {"relationship", "sharing"})
+                if known:
+                    text += f". {contact['alias']} was already your contact: nothing changed"
+                    if given:
+                        text += (" (the relationship and sharing given with this invite were not applied; "
+                                 f"to change them: myous context \"{contact['alias']}\" --relationship ... --sharing \"...\")")
+                if not contact.get("relationship") and not (known and given):
                     text += (". Ask your owner how they know this contact and what you may share with it, "
                              f"then record it: myous context \"{contact['alias']}\" --relationship ... --sharing \"...\"")
                 inbox.record(self.st, {"type": "paired", "peer": contact["npub"], "alias": contact["alias"],
@@ -381,6 +453,12 @@ class Pairing:
             # yet. It only holds ciphertext and expires on its own.
         else:
             raise PairingError("unexpected message from the other side")
+
+    def _payload(self, key: bytes, role: str) -> dict:
+        """What this side tells the other: its key, with the proof that it
+        holds it, and its alias."""
+        return {"v": VERSION, "pubkey": self.keys.public_key().to_hex(), "alias": self.alias,
+                "sig": sign_proof(self.keys, key, role)}
 
     def _fail(self, p: dict, error: str) -> dict:
         self._trace(p.setdefault("trace", []), "failed", error=error)

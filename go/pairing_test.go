@@ -5,12 +5,15 @@ import (
 	"bytes"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/nbd-wtf/go-nostr"
 )
 
 // clientRoot is the root of the myoushq-client repository.
@@ -44,6 +47,14 @@ func TestVectors(t *testing.T) {
 			Plaintext string   `json:"plaintext"`
 			Message   Envelope `json:"message"`
 		} `json:"payload_seal"`
+		KeyProof struct {
+			K      string `json:"K_hex"`
+			SK     string `json:"secret_key_hex"`
+			Pubkey string `json:"pubkey_hex"`
+			FromA  string `json:"from_a_hex"`
+			FromB  string `json:"from_b_hex"`
+			Sig    string `json:"sig_hex"`
+		} `json:"key_proof"`
 	}
 	if err := json.Unmarshal(raw, &v); err != nil {
 		t.Fatal(err)
@@ -68,6 +79,26 @@ func TestVectors(t *testing.T) {
 	}
 	if got := VerifyCode(k); got != kd.VerifyCode {
 		t.Errorf("VerifyCode = %s, want %s", got, kd.VerifyCode)
+	}
+
+	kp := v.KeyProof
+	k = mustHex(t, kp.K)
+	if got := hex.EncodeToString(keyProof(k, "a")); got != kp.FromA {
+		t.Errorf("keyProof(a) = %s, want %s", got, kp.FromA)
+	}
+	if got := hex.EncodeToString(keyProof(k, "b")); got != kp.FromB {
+		t.Errorf("keyProof(b) = %s, want %s", got, kp.FromB)
+	}
+	if pk, _ := nostr.GetPublicKey(kp.SK); pk != kp.Pubkey || !nostr.IsValidPublicKey(pk) {
+		t.Errorf("public key %s, want %s", pk, kp.Pubkey)
+	}
+	flipped := kp.Sig[:127] + map[bool]string{true: "0", false: "1"}[kp.Sig[127] != '0']
+	if !proofHolds(kp.Pubkey, mustHex(t, kp.FromA), kp.Sig) || proofHolds(kp.Pubkey, mustHex(t, kp.FromB), kp.Sig) ||
+		proofHolds(kp.Pubkey, mustHex(t, kp.FromA), flipped) {
+		t.Error("the key proof's signature doesn't check as it should")
+	}
+	if sig, err := signProof(kp.SK, k, "a"); err != nil || !proofHolds(kp.Pubkey, mustHex(t, kp.FromA), sig) {
+		t.Errorf("signProof: %s %v", sig, err)
 	}
 
 	ps := v.PayloadSeal
@@ -204,4 +235,18 @@ func mustHex(t *testing.T, s string) []byte {
 		t.Fatal(err)
 	}
 	return b
+}
+
+// A payload whose nonce isn't 12 bytes fails like any bad payload. The
+// mailbox's other side (or the hub) chooses it, and chacha20poly1305
+// panics on a wrong nonce length, which stopped the whole client.
+func TestOpenRefusesBadNonce(t *testing.T) {
+	key := make([]byte, 32)
+	for _, n := range []string{"", "AAAA", b64(make([]byte, 24))} {
+		_, err := Open(key, "b", "1234", Envelope{T: "payload", V: 1, N: n, C: b64(make([]byte, 40))})
+		var pe *PairingError
+		if !errors.As(err, &pe) {
+			t.Fatalf("nonce %q: %v", n, err)
+		}
+	}
 }

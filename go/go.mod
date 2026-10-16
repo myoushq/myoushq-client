@@ -6,6 +6,7 @@ toolchain go1.27.2
 
 require (
 	filippo.io/edwards25519 v1.2.0
+	github.com/btcsuite/btcd/btcec/v2 v2.3.4
 	github.com/nbd-wtf/go-nostr v0.52.1
 	golang.org/x/crypto v0.57.0
 	golang.org/x/sys v0.48.0
@@ -13,7 +14,6 @@ require (
 
 require (
 	github.com/ImVexed/fasturl v0.0.0-20230304231329-4e41488060f3 // indirect
-	github.com/btcsuite/btcd/btcec/v2 v2.3.4 // indirect
 	github.com/btcsuite/btcd/btcutil v1.1.5 // indirect
 	github.com/btcsuite/btcd/chaincfg/chainhash v1.1.0 // indirect
 	github.com/bytedance/sonic v1.13.1 // indirect

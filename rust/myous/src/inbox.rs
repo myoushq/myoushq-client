@@ -92,10 +92,10 @@ pub fn handle_wraps(st: &dyn Storage, keys: &Keys, wraps: &[Event]) -> Result<Ve
                 "type": kind, "direction": "in", "peer": contact.npub, "alias": contact.alias,
                 "sent_at": m.sent_at, "text": m.text,
             });
+            // Only the reply's own fields, checked (see REPLY_FIELDS): the
+            // sender must not set the entry's peer, alias, type, direction...
             for (k, v) in fields {
-                if k != "myous" {
-                    entry[k] = v;
-                }
+                entry[k] = v;
             }
             stored.push(record(st, entry)?);
             continue;
@@ -209,16 +209,54 @@ fn file_entry(m: &relay::Unwrapped, blob_api: &str) -> Option<FileEntry> {
     })
 }
 
-/// A kind-14 text that is a worker reply ({"myous": "result"|"ack", ...}).
+/// What a worker reply may carry (protocol.md 7.1), with its JSON type.
+/// Anything else in the reply's JSON is ignored, as in the Python client:
+/// the sender must not be able to set the entry's own fields (peer, alias,
+/// direction, type, text, sent_at).
+const REPLY_FIELDS: [(&str, ReplyType); 11] = [
+    ("id", ReplyType::Str), ("ok", ReplyType::Bool), ("error", ReplyType::Str), ("exit", ReplyType::Int),
+    ("stdout", ReplyType::Str), ("stderr", ReplyType::Str), ("truncated", ReplyType::Bool),
+    ("stopped", ReplyType::Bool), ("path", ReplyType::Str), ("size", ReplyType::Int), ("sha256", ReplyType::Str),
+];
+
+#[derive(Clone, Copy)]
+enum ReplyType {
+    Str,
+    Bool,
+    Int,
+}
+
+/// A kind-14 text that is a worker reply ({"myous": "result"|"ack", "id":
+/// 32 hex digits, ...}): its type and the fields of REPLY_FIELDS it has,
+/// each of the right type. A reply with another id stays a message, as in
+/// the Python client.
 fn worker_reply(text: &str) -> Option<(String, Map<String, Value>)> {
+    if !text.starts_with('{') {
+        return None;
+    }
     let v: Value = serde_json::from_str(text).ok()?;
     let obj = v.as_object()?;
     let kind = obj.get("myous")?.as_str()?;
     if kind != "result" && kind != "ack" {
         return None;
     }
-    obj.get("id")?.as_str()?;
-    Some((kind.to_string(), obj.clone()))
+    let id = obj.get("id")?.as_str()?;
+    if id.len() != 32 || !id.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
+        return None;
+    }
+    let mut fields = Map::new();
+    for (name, ty) in REPLY_FIELDS {
+        let Some(v) = obj.get(name) else { continue };
+        let ok = match ty {
+            ReplyType::Str => v.is_string(),
+            ReplyType::Bool => v.is_boolean(),
+            ReplyType::Int => v.is_i64() || v.is_u64(),
+        };
+        if ok {
+            fields.insert(name.to_string(), v.clone());
+        }
+    }
+    Some((kind.to_string(), fields))
 }
 
 #[cfg(test)]
@@ -266,6 +304,44 @@ mod tests {
                 assert!(stored[0].get("incomplete").is_none());
             }
         }
+    }
+
+    #[test]
+    fn worker_replies_carry_only_their_own_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let st = FileStorage::new(Some(dir.path().to_path_buf())).unwrap();
+        let (me, peer, other) = (Keys::generate(), Keys::generate(), Keys::generate());
+        let peer_c = contacts::add(&st, &peer.public_key().to_hex(), "peer").unwrap();
+        let other_c = contacts::add(&st, &other.public_key().to_hex(), "family").unwrap();
+        let id = "0123456789abcdef0123456789abcdef";
+        // A reply that tries to pass as another contact's ordinary message.
+        let forged = json!({
+            "myous": "result", "id": id, "exit": 0, "stdout": "hi", "stderr": "", "truncated": false,
+            "stopped": true, "type": "message", "peer": other_c.npub, "alias": "family", "direction": "out",
+            "text": "from family", "sent_at": 1, "seq": 999, "at": 1, "extra": "x",
+        });
+        let got = handle_wraps(&st, &me, &[wrap(&peer, &me, &forged.to_string())]).unwrap();
+        let e = &got[0];
+        assert_eq!(e["type"], "result");
+        assert_eq!((e["peer"].as_str(), e["alias"].as_str(), e["direction"].as_str()),
+                   (Some(peer_c.npub.as_str()), Some("peer"), Some("in")));
+        assert_eq!(e["text"], forged.to_string());
+        assert_eq!((e["id"].as_str(), e["exit"].as_i64(), e["stdout"].as_str(), e["stopped"].as_bool()),
+                   (Some(id), Some(0), Some("hi"), Some(true)));
+        assert!(e.get("extra").is_none() && e["seq"] == 1 && e["sent_at"] != 1);
+        // Fields of the wrong type are left out.
+        let bad = json!({"myous": "ack", "id": id, "ok": "yes", "size": "12", "path": 3, "error": "no"});
+        let e = &handle_wraps(&st, &me, &[wrap(&peer, &me, &bad.to_string())]).unwrap()[0];
+        assert_eq!(e["type"], "ack");
+        assert!(e.get("ok").is_none() && e.get("size").is_none() && e.get("path").is_none());
+        assert_eq!(e["error"], "no");
+        // An id that isn't 32 hex digits: an ordinary message, as in the Python client.
+        for id in ["abc", "0123456789ABCDEF0123456789ABCDEF"] {
+            let text = json!({"myous": "result", "id": id, "exit": 0}).to_string();
+            let e = &handle_wraps(&st, &me, &[wrap(&peer, &me, &text)]).unwrap()[0];
+            assert_eq!(e["type"], "message", "{id}");
+        }
+        assert!(unread(&st, false).unwrap().iter().all(|e| e["alias"] == "peer"), "nothing shows as family");
     }
 
     #[test]

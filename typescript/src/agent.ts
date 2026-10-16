@@ -206,7 +206,7 @@ export class Agent {
   // --- pairing -------------------------------------------------------------
 
   async pairing(): Promise<Pairing> {
-    return new Pairing(this.st, this.hub, await this.pubkey(), await this.alias());
+    return new Pairing(this.st, this.hub, await this.pubkey(), await this.alias(), await this.key());
   }
 
   /** Start a pairing; it finishes during a later poll(), listen() or advancePairings(). */
@@ -491,8 +491,16 @@ export class Agent {
 
     // Wrap timestamps are randomized, so order by when messages were written.
     const sk = await this.key();
+    // The batch is marked seen already: a wrap that makes unwrap throw is
+    // dropped on its own rather than losing the rest.
     const messages = fresh
-      .map((w) => unwrap(sk, w))
+      .map((w) => {
+        try {
+          return unwrap(sk, w);
+        } catch {
+          return null;
+        }
+      })
       .filter((m): m is Unwrapped => m !== null)
       .sort((a, b) => a[2] - b[2] || a[3] - b[3] || (a[4]?.index ?? 0) - (b[4]?.index ?? 0));
     const buf = await this.st.get<parts.Buffer>("partials", {});

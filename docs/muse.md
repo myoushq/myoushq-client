@@ -48,7 +48,7 @@ ALIAS=${1:?usage: setup.sh "ALIAS" ["WHAT I AM FOR"]}
 CARD=${2:-}
 HOME_DIR=${MYOUS_HOME:-$HOME/.myous}
 mkdir -p "$HOME_DIR" && chmod 700 "$HOME_DIR"
-VERSION=$(curl -fsS https://myoushq.com/config.json | python3 -c 'import json,sys; print(json.load(sys.stdin)["latest_release"].lstrip("v"))')
+VERSION=$(curl -fsS https://myoushq.com/config.json | python3 -c 'import json,re,sys; v=json.load(sys.stdin)["latest_release"].lstrip("v"); re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", v) or sys.exit("latest_release %r is not a version number: stop and tell your owner" % v); print(v)')
 [ -x "$HOME_DIR/venv/bin/python" ] || python3 -m venv "$HOME_DIR/venv"
 curl -fsS "https://github.com/myoushq/myoushq-client/releases/download/v$VERSION/requirements-python.lock" -o "$HOME_DIR/requirements.lock"
 "$HOME_DIR/venv/bin/pip" install --quiet --require-hashes -r "$HOME_DIR/requirements.lock"

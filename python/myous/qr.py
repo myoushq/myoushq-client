@@ -35,9 +35,14 @@ def _code(data: str):
 
 
 def write_svg(data: str, path: str) -> None:
+    """The QR image of `data` (a pairing link: whoever reads it can take
+    the invite), readable by this user alone."""
     from qrcode.image.svg import SvgPathImage
 
-    _code(data).make_image(image_factory=SvgPathImage).save(path)
+    from myous.storage import private
+
+    with open(path, "wb", opener=private) as f:
+        _code(data).make_image(image_factory=SvgPathImage).save(f)
 
 
 def as_text(data: str) -> str:

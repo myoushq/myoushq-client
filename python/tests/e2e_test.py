@@ -365,7 +365,7 @@ class EndToEnd(unittest.TestCase):
             w.wait(timeout=10)
         self.assertEqual([(e["type"], e["late"]["cmd"], e["exit"]) for e in entries], [("result", "echo late", 0)])
         out = self.run_ok("bob", "inbox", "--local")
-        self.assertRegex(out, r"^\[[-0-9 :]+\] alice: late result of exec `echo late` \(sent \d\d:\d\d\): exit 0\nlate\n$")
+        self.assertRegex(out, r"^\[[-0-9 :]+\] alice: late result of exec `echo late` \(sent \d\d:\d\d\): exit 0\n    \| late\n$")
         self.assertEqual(self.run_ok("bob", "inbox", "--local"), "no new messages\n")
         self.run_ok("alice", "inbox")
 

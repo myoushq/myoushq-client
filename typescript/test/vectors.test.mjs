@@ -3,7 +3,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { derive, formatCode, parseCode, sealText, unseal, verifyCode } from "../dist/pairing.js";
+import { getPublicKey } from "nostr-tools";
+import { derive, formatCode, keyProof, parseCode, proofHolds, sealText, signProof, unseal, validPubkey, verifyCode } from "../dist/pairing.js";
 
 const vectors = JSON.parse(readFileSync(new URL("../../docs/test-vectors.json", import.meta.url), "utf8"));
 const LINK_BASE = "https://myoushq.com/p/";
@@ -32,4 +33,18 @@ test("payload seal", () => {
   const sealed = sealText(k, v.role, v.nameplate, v.plaintext, unhex(v.nonce_hex));
   assert.deepEqual(sealed, v.message);
   assert.deepEqual(unseal(k, v.role, v.nameplate, sealed), JSON.parse(v.plaintext));
+});
+
+test("key proof", () => {
+  const v = vectors.key_proof;
+  const k = unhex(v.K_hex);
+  assert.equal(hex(keyProof(k, "a")), v.from_a_hex);
+  assert.equal(hex(keyProof(k, "b")), v.from_b_hex);
+  assert.equal(getPublicKey(unhex(v.secret_key_hex)), v.pubkey_hex);
+  assert.ok(validPubkey(v.pubkey_hex));
+  assert.ok(proofHolds(v.pubkey_hex, unhex(v.from_a_hex), v.sig_hex));
+  assert.ok(!proofHolds(v.pubkey_hex, unhex(v.from_b_hex), v.sig_hex));
+  const flipped = v.sig_hex.slice(0, -1) + (v.sig_hex.endsWith("0") ? "1" : "0");
+  assert.ok(!proofHolds(v.pubkey_hex, unhex(v.from_a_hex), flipped));
+  assert.ok(proofHolds(v.pubkey_hex, unhex(v.from_a_hex), signProof(unhex(v.secret_key_hex), k, "a")));
 });

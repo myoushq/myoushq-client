@@ -136,7 +136,14 @@ type fileInfo struct {
 // parseFileTags reads the tags of a kind-15 rumor; malformed ones are dropped.
 func parseFileTags(tags nostr.Tags, content string) (*fileInfo, bool) {
 	f := &fileInfo{URL: content}
-	get := func(name string) string { return tags.GetFirst([]string{name, ""}).Value() }
+	// GetFirst is nil for a missing tag, and anyone can send a kind-15
+	// rumor: unwrap reads it before the sender is looked up.
+	get := func(name string) string {
+		if t := tags.GetFirst([]string{name, ""}); t != nil {
+			return t.Value()
+		}
+		return ""
+	}
 	if get("encryption-algorithm") != "aes-gcm" {
 		return nil, false
 	}

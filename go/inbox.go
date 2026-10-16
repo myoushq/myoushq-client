@@ -139,7 +139,7 @@ func handleWraps(st Storage, sk string, wraps []*nostr.Event) ([]Entry, error) {
 	// Wrap timestamps are randomized, so put messages in the order they were written.
 	var msgs []message
 	for _, w := range fresh {
-		if m, ok := unwrap(sk, w); ok {
+		if m, ok := unwrapOrDrop(sk, w); ok {
 			msgs = append(msgs, m)
 		}
 	}
@@ -225,6 +225,19 @@ func handleWraps(st Storage, sk string, wraps []*nostr.Event) ([]Entry, error) {
 		}
 	}
 	return stored, nil
+}
+
+// unwrapOrDrop is unwrap, with a wrap that makes it panic dropped like any
+// other invalid one. Anyone registered can send us a wrap, and the batch
+// it came in is already marked seen: a panic here would lose the messages
+// fetched with it and stop the listener (or the worker).
+func unwrapOrDrop(sk string, w *nostr.Event) (m message, ok bool) {
+	defer func() {
+		if recover() != nil {
+			m, ok = message{}, false
+		}
+	}()
+	return unwrap(sk, w)
 }
 
 func unread(st Storage, markRead bool) ([]Entry, error) {

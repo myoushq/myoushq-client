@@ -3,14 +3,18 @@
 // A code looks like 4821-K7F3QX: the nameplate (4821) names a mailbox on
 // the hub; the secret (K7F3QX) never leaves the two agents. Both sides run
 // SPAKE2 on the full code through the mailbox, getting a key the hub can't
-// learn, then send each other their identity encrypted with it. A wrong
-// code or a tampering hub makes decryption fail and the pairing aborts.
+// learn, then send each other their identity encrypted with it, with a
+// signature by that identity's key over a value derived from the shared
+// key, which proves the sender holds it. A wrong code or a tampering hub
+// makes decryption fail and the pairing aborts. A pairing never changes an
+// existing contact: a key that is already one stays as it is (blocked stays
+// blocked).
 
 import { chacha20poly1305 } from "@noble/ciphers/chacha.js";
+import { schnorr } from "@noble/curves/secp256k1.js";
 import { hkdf } from "@noble/hashes/hkdf.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { randomBytes } from "@noble/hashes/utils.js";
-import { nip19 } from "nostr-tools";
 import * as contacts from "./contacts.js";
 import type { Contact, ContactContext } from "./contacts.js";
 import { record } from "./history.js";
@@ -115,18 +119,75 @@ export interface Payload {
   v: number;
   pubkey: string;
   alias: string;
+  /** Proves the sender holds `pubkey` (see keyProof). Clients up to 0.7.5 send none. */
+  sig?: unknown;
 }
 
 export function unseal(key: Uint8Array, peerRole: Role, nameplate: string, msg: SealedMessage): Payload {
   try {
     const plain = chacha20poly1305(derive(key, `from ${peerRole}`), unb64(msg.n), utf8.encode(nameplate)).decrypt(unb64(msg.c));
     const payload = JSON.parse(new TextDecoder().decode(plain)) as Payload;
-    nip19.npubEncode(payload.pubkey); // throws on a malformed key
-    if (!/^[0-9a-f]{64}$/.test(payload.pubkey)) throw new Error("bad key");
+    if (!validPubkey(payload.pubkey)) throw new Error("bad key");
     return payload;
   } catch {
     throw new PairingError("the code didn't match (or the exchange was tampered with)");
   }
+}
+
+/** A key as protocol.md writes it: 64 lowercase hex characters, the x of a point on secp256k1. */
+export function validPubkey(text: unknown): boolean {
+  if (typeof text !== "string" || !/^[0-9a-f]{64}$/.test(text)) return false;
+  try {
+    schnorr.utils.lift_x(BigInt("0x" + text));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The 32 bytes a side signs with its identity key, so the other side knows
+ * it holds the key in its payload (protocol.md, section 5.4). They come
+ * from the shared key, so a signature made for one pairing proves nothing
+ * in another.
+ */
+export function keyProof(key: Uint8Array, role: Role): Uint8Array {
+  return derive(key, `key proof from ${role}`);
+}
+
+export function signProof(secretKey: Uint8Array, key: Uint8Array, role: Role): string {
+  return Buffer.from(schnorr.sign(keyProof(key, role), secretKey)).toString("hex");
+}
+
+/** Whether `sig` is a BIP-340 signature of `message` by `pubkey`. */
+export function proofHolds(pubkey: string, message: Uint8Array, sig: unknown): boolean {
+  if (typeof sig !== "string" || !/^[0-9a-f]{128}$/.test(sig) || !/^[0-9a-f]{64}$/.test(pubkey)) return false;
+  try {
+    return schnorr.verify(Buffer.from(sig, "hex"), message, Buffer.from(pubkey, "hex"));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Whether the payload proves its key: false if it has no proof (clients
+ * up to 0.7.5 send none; a later version will require it). Throws if the
+ * proof doesn't hold.
+ */
+function checkProof(key: Uint8Array, peerRole: Role, payload: Payload): boolean {
+  if (payload.sig === undefined || payload.sig === null) return false;
+  if (!proofHolds(payload.pubkey, keyProof(key, peerRole), payload.sig)) {
+    throw new PairingError("the other side didn't prove it holds the key it sent");
+  }
+  return true;
+}
+
+/** Why a pairing that named a contact which isn't approved changed nothing. */
+function knownRefused(c: Contact, proven: boolean): string {
+  const who = proven
+    ? `answered by your contact "${c.alias}" (${c.status})`
+    : `answered with the key of your contact "${c.alias}" (${c.status}), which the other side didn't prove it holds`;
+  return `${who}; nothing changed: if that is right, unblock it (myous unblock "${c.alias}")`;
 }
 
 function b64(b: Uint8Array): string {
@@ -157,6 +218,8 @@ export interface Pending {
   /** Relationship context to record on the contact once paired. */
   context?: ContactContext;
   contact?: Contact;
+  /** The key was already a contact, which the pairing left as it was. */
+  known?: boolean;
   verify?: string;
   error?: string;
   /** The handshake so far, for the owner to read when it fails. */
@@ -192,7 +255,9 @@ export interface Invite extends Pending {
 }
 
 export class Pairing {
-  constructor(private st: Storage, private hub: Hub, private pubkey: string, private alias: string) {}
+  /** `secretKey` signs this side's proof; without it the payload has none, as from clients up to 0.7.5. */
+  constructor(private st: Storage, private hub: Hub, private pubkey: string, private alias: string,
+              private secretKey?: Uint8Array) {}
 
   async pending(): Promise<Pending[]> {
     const found = await Promise.all((await this.st.names("pending/")).map((n) => this.st.get<Pending | null>(n, null)));
@@ -386,25 +451,36 @@ export class Pairing {
       p.key = b64(key);
       p.stage = "wait_payload";
       await this.save(p);
-      const mine = JSON.stringify({ alias: this.alias, pubkey: this.pubkey, v: VERSION });
+      const sig = this.secretKey ? { sig: signProof(this.secretKey, key, p.role) } : {};
+      const mine = JSON.stringify({ alias: this.alias, pubkey: this.pubkey, ...sig, v: VERSION });
       await this.post(p.nameplate, p.token, sealText(key, p.role, p.nameplate, mine));
     } else if (p.stage === "wait_payload" && msg?.t === "payload") {
       const key = unb64(p.key!);
       const payload = unseal(key, peerRole, p.nameplate, msg);
       if (payload.pubkey === this.pubkey) throw new PairingError("that's this agent's own invite");
+      const proven = checkProof(key, peerRole, payload);
       await locked(this.st, "state", async () => {
-        let contact = await contacts.add(this.st, payload.pubkey, String(payload.alias ?? "").slice(0, 64));
-        const fields = contacts.contextFields(p.context);
-        if (Object.keys(fields).length) contact = await contacts.update(this.st, payload.pubkey, fields);
+        const known = (await contacts.load(this.st))[payload.pubkey];
+        if (known && known.status !== "approved") throw new PairingError(knownRefused(known, proven));
+        const contact = await contacts.add(this.st, payload.pubkey, contacts.cleanName(String(payload.alias ?? "")), p.context);
         // They learned our alias from the payload; a card follows if we have one.
         await contacts.peerKnows(this.st, payload.pubkey, this.alias, "");
         p.stage = "done";
         this.trace((p.trace ??= []), "done");
         p.contact = contact;
+        p.known = Boolean(known);
         p.verify = verifyCode(key);
         await this.st.delete(`pending/${p.nameplate}`);
         let text = `paired with ${contact.alias} (verification code ${p.verify})`;
-        if (!contact.relationship) {
+        const given = p.context?.relationship !== undefined || p.context?.sharing !== undefined;
+        if (known) {
+          text += `. ${contact.alias} was already your contact: nothing changed`;
+          if (given) {
+            text += " (the relationship and sharing given with this invite were not applied; " +
+              `to change them: myous context ${JSON.stringify(contact.alias)} --relationship ... --sharing "...")`;
+          }
+        }
+        if (!contact.relationship && !(known && given)) {
           text += `. Ask your owner how they know this contact and what you may share with it, ` +
             `then record it: myous context ${JSON.stringify(contact.alias)} --relationship ... --sharing "..."`;
         }

@@ -30,9 +30,9 @@ var reviewRules = struct {
 	ReadOnly, Unsafe, ReadOnlyPowerShell, UnsafePowerShell []string
 }{
 	// Commands that only read, for the "changes" level. A command line is
-	// read-only when every segment (split on |, &&, ||, ;) starts with one
-	// of these and nothing redirects output, substitutes commands or runs
-	// code inside one (find -exec, awk '{...}').
+	// read-only when every segment (split on |, &&, ||, ;, &) starts with
+	// one of these and nothing redirects output, substitutes commands or
+	// runs code inside one (find -exec, awk '{...}').
 	ReadOnly: []string{
 		"ls", "cat", "head", "tail", "less", "more", "grep", "rg", "find", "wc", "stat", "file", "pwd",
 		"du", "df", "uname", "date", "whoami", "id", "echo", "printf", "sort", "uniq", "cut", "tr",
@@ -77,7 +77,9 @@ func readOnly(cmd string, windows bool) bool {
 			}
 		}
 	}
-	for _, sep := range []string{"||", "&&", "|", ";"} {
+	// && before &: once && is gone, the remaining & are single backgrounders
+	// (`echo & rm x` runs rm x; without & as a separator only `echo` was seen).
+	for _, sep := range []string{"||", "&&", "|", ";", "&"} {
 		cmd = strings.ReplaceAll(cmd, sep, "\n")
 	}
 	for _, segment := range pySplitLines(cmd) {
@@ -95,9 +97,34 @@ func readOnly(cmd string, windows bool) bool {
 			}
 		} else if !slices.Contains(reviewRules.ReadOnly, words[0]) {
 			return false
+		} else if writesAFile(words) {
+			return false
 		}
 	}
 	return true
+}
+
+// writesAFile is whether an otherwise read-only command writes a file
+// through one of its own flags: `sort -o/--output FILE` (also `-oFILE`),
+// and GNU find's -fprint/-fprintf/-fprint0/-fls. Command-specific (a bare
+// "-o" is harmless for grep), so not a global Unsafe token.
+func writesAFile(words []string) bool {
+	switch words[0] {
+	case "sort":
+		for _, a := range words[1:] {
+			if a == "-o" || a == "--output" || strings.HasPrefix(a, "--output=") ||
+				(strings.HasPrefix(a, "-o") && !strings.HasPrefix(a, "--") && len(a) > 2) {
+				return true
+			}
+		}
+	case "find":
+		for _, a := range words[1:] {
+			if a == "-fprint" || a == "-fprintf" || a == "-fprint0" || a == "-fls" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // builtinReview is review.py, in the worker.
@@ -165,6 +192,11 @@ func (r *builtinReview) ask(ctx context.Context, req pyObj) string {
 	}
 	question := filepath.Join(dir, name+".json")
 	answer := filepath.Join(dir, name+".answer")
+	// Only an answer written for this question counts. A leftover
+	// <id>.answer (the owner clicked after the wait ran out, or a stop
+	// killed the hook before it read the answer) must not approve a later
+	// request that reuses the id: the agent chooses ids.
+	os.Remove(answer)
 	q := req.with("asked_at", time.Now().Unix()).with("wait", r.wait.Seconds())
 	if err := os.WriteFile(question+".tmp", []byte(pyDumps(q, false)), 0o666); err != nil {
 		return err.Error()

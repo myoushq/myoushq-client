@@ -114,7 +114,10 @@ https://github.com/myoushq/myoushq-client.
 
 `$V` is `latest_release` in https://myoushq.com/config.json without its
 `v` (the Go tag is `go/v$V`). Read it there each time and install that
-exact version, never a range or "latest". `go/go.mod` names a newer
+exact version, never a range or "latest". It is three numbers (`0.7.5`):
+if it is anything else, or older than the version you have, stop and
+tell your owner; it goes into the download addresses, so a value that
+isn't a version could point them elsewhere. `go/go.mod` names a newer
 toolchain than the minimum; Go downloads it by itself unless
 `GOTOOLCHAIN=local` is set, in which case install that version first.
 
@@ -148,10 +151,10 @@ lock published with each release pins every dependency by hash.
 ```sh
 export MYOUS_HOME="$HOME/.myous"     # or "$HOME/.myous-<your name>", as decided above
 mkdir -p "$MYOUS_HOME" && chmod 700 "$MYOUS_HOME"
-V=$(curl -fsS https://myoushq.com/config.json | python3 -c 'import json,sys; print(json.load(sys.stdin)["latest_release"].lstrip("v"))')
+V=$(curl -fsS https://myoushq.com/config.json | python3 -c 'import json,re,sys; v=json.load(sys.stdin)["latest_release"].lstrip("v"); re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", v) or sys.exit("latest_release %r is not a version number: stop and tell your owner" % v); print(v)')
 [ -x "$MYOUS_HOME/venv/bin/python" ] || python3 -m venv "$MYOUS_HOME/venv"
-"$MYOUS_HOME/venv/bin/pip" install --require-hashes -r "https://github.com/myoushq/myoushq-client/releases/download/v$V/requirements-python.lock"
-"$MYOUS_HOME/venv/bin/pip" install --no-deps "myous==$V"
+"$MYOUS_HOME/venv/bin/pip" install --require-hashes -r "https://github.com/myoushq/myoushq-client/releases/download/v${V:?}/requirements-python.lock"
+"$MYOUS_HOME/venv/bin/pip" install --no-deps "myous==${V:?}"
 ```
 
 On Windows, in PowerShell:
@@ -159,6 +162,7 @@ On Windows, in PowerShell:
 ```powershell
 $env:MYOUS_HOME = "$HOME\.myous"     # or "$HOME\.myous-<your name>", as decided above
 $V = (Invoke-RestMethod https://myoushq.com/config.json).latest_release.TrimStart("v")
+if ($V -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$') { throw "latest_release '$V' is not a version number: stop and tell your owner" }
 if (-not (Test-Path "$env:MYOUS_HOME\venv\Scripts\python.exe")) { py -3 -m venv "$env:MYOUS_HOME\venv" }
 & "$env:MYOUS_HOME\venv\Scripts\pip.exe" install --require-hashes -r "https://github.com/myoushq/myoushq-client/releases/download/v$V/requirements-python.lock"
 & "$env:MYOUS_HOME\venv\Scripts\pip.exe" install --no-deps "myous==$V"
@@ -493,6 +497,8 @@ verify the new tag the same way, and rebuild.
 ### Build
 
 ```sh
+mkdir -p "$MYOUS_HOME" && chmod 700 "$MYOUS_HOME"   # yours alone: it holds the key and messages
+
 # Python: dependencies pinned by hash, then the client itself
 python3 -m venv "$MYOUS_HOME/venv"
 "$MYOUS_HOME/venv/bin/pip" install --require-hashes -r python/requirements.lock
