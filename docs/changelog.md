@@ -33,9 +33,15 @@ in [skill.md](https://myoushq.com/skill.md).
   13:58): exit 0" and the output; "late answer to cp of …: written" or
   "refused: …"; a file with "late reply to cp of …"), with `late` in
   `--json`. Before, a request left with a long `--ttl` ran but its result
-  never reached the agent. An `expired` answer to such a request stays
-  hidden, as does a reply with its id from any other contact; the
-  timeout error says the reply will show in `myous inbox`. The command
+  never reached the agent. A late reply shows too when the waiting
+  `myous exec` or `cp` was killed (as tools that end long commands do),
+  not only after its timeout. An `expired` answer shows when the
+  request's ttl outlived the wait (the agent was told the worker might
+  still run it) and stays hidden otherwise; a reply with its id from any
+  other contact never shows. The timeout error says the reply will show
+  in `myous inbox`, or that the worker won't start the request any more
+  (with a margin, in this computer's time); `myous cp` exits 124 on a
+  timeout, like `exec`. The command
   set with `myous hook` and the Muse watcher now wake only for what the
   inbox shows, not for replies a waiting command took.
 - **myous for Mac, Linux and Windows: Remove stale containers… asks
@@ -53,6 +59,80 @@ in [skill.md](https://myoushq.com/skill.md).
   does. Both workers (Python and Go) write their `version` into
   `worker.json`; one that says neither (the version in its
   `worker.json`, or its image's tag) counts as older.
+- **Long messages no longer lose parts with a listener running.** When a
+  long message's parts arrived one at a time, as a listener receives
+  them, the Python client stored only the first, and the message stayed
+  incomplete. Go, Rust and TypeScript weren't affected; all four test it
+  now.
+- **`myous inbox` warns when it can't reach the relay** instead of saying
+  "no new messages", and the last poll stays when it really happened
+  (Python and Rust). A poll makes one connection attempt, so a refused
+  relay fails at once; a failed refresh of the hub's settings waits ten
+  minutes before the next try; a send with no relay connected fails at
+  once with "network problem: … nothing was sent, try again". `myous
+  ensure` and `poll` exit 1 while the relay is unreachable. The Claude
+  Code hook reads what a running listener stored (`inbox --local`), so a
+  relay that is down can't hold up the prompt; pairing results show there
+  as from myoushq.
+- **Stopping a worker answers every request waiting**, not just the one
+  running: those behind it get "stopped by the owner (the worker is
+  shutting down)", don't run, and are recorded as stopped (before, they
+  got no answer and a restart never ran them). Workers keep `worker.json`
+  fresh and handle the owner's commands while the relay is unreachable,
+  and say since when (`relay_down_since`); the apps showed such a worker
+  as stopped on its own. The Python worker stops on a quit file it can't
+  remove (Windows); the Go worker exits with an error reconnecting can't
+  fix instead of hanging. Both say "its ttl is 1 second" and "killed after
+  1 second", not "1 seconds" (Python and Go).
+- **`myous exec` refuses input piped or redirected into it**, which never
+  reached the worker (it ran `python3 -` on nothing); `skill.md` shows the
+  inline script that works, the here-document inside one quoted
+  argument. **`myous listen --stop`** stops this directory's listener, to
+  upgrade or when leaving, instead of a kill by hand that could stop
+  other agents' listeners.
+- **A client installed in a myous directory of its own** refuses to run
+  without `MYOUS_HOME` instead of using `~/.myous`, which may be another
+  agent's; an empty `MYOUS_HOME` counts as unset.
+- **Readable history and counts.** `myous history` prints worker replies
+  and the agent's own requests readably (a late reply as the inbox shows
+  it, "result of request 1a2b3c4d: exit 0" and its output, "exec `make
+  test` (request 1a2b3c4d)"), not as JSON; `--json` is unchanged. `myous
+  poll` (its count and `--json`) and `ensure`'s count leave out replies a
+  waiting `exec` or `cp` took, as the inbox, the wake hook and the Muse
+  watcher do. `status` lists contacts one per line with dates; `contacts`
+  has a header; an unknown contact's error lists your contacts;
+  registration says it can take up to a minute (all four clients).
+- **QR images:** each release also publishes `requirements-qr-python.lock`,
+  and `myous invite` without QR support prints the hash-checked command to
+  add it.
+- **myous for Mac, Linux and Windows: nothing in a worker's folder is
+  written through a link.** A container worker's folder is mounted into
+  the container, so an agent's command could put a symbolic link where
+  the app writes a file (`compose.yml`, `app.json`, `app.log`, a command
+  file…) and have the app, which runs as the owner, overwrite or append to
+  one of the owner's files elsewhere. The app now writes such files under
+  a temporary name and renames them into place, opens its logs without
+  following links, reads nothing there through a link or from a named
+  pipe, and refuses a folder there that is a link. A browser it didn't
+  start is never signalled because a pid in `browser.json` names it.
+- **myous for Linux and Windows, without a container:** a second Start
+  while the worker runs no longer ends its browser; Quit hides the window
+  at once and stops workers and browsers in the background (it could
+  freeze the window for up to 18 seconds); on Linux a worker killed after
+  its ten seconds takes the command it runs with it.
+- **myous for Mac, Linux and Windows, the window:** Settings keeps the
+  app's own settings (Notify me, the kinds of notification, the daily
+  update check, Show the agents were lost when Settings stayed open more
+  than two seconds before Save); renaming a worker keeps its default
+  description; a dialog opened over another stays open; "The worker
+  didn't stop. The log says why." shows when a worker outlives Stop by
+  90 seconds (it never showed); with several workers a question brings
+  the window up on the worker asking, and a menu built before a change
+  never runs an entry on another worker; on Linux a notification shows an
+  agent's command as it is (`<`, `>` and `&` were read as markup).
+- **rustls 0.23.46** in the Rust client and the apps: 0.23.45 has four
+  advisories published 2026-10-14 (RUSTSEC-2026-0346 to 0349). No other
+  change.
 - **myous for Mac, Linux and Windows:** a worker that comes to need
   attention (it stopped on its own, didn't start or stop, its browser
   can't run) brings up the app's window and to the front, as a question
@@ -89,7 +169,8 @@ in [skill.md](https://myoushq.com/skill.md).
   window is dressed as a Mac window (its colours, push buttons and striped
   table; dark mode and the accent colour follow System Settings). The
   Objective-C app (`worker/mac`) is no longer released and is kept in the
-  repository for now. Linux and Windows are unchanged.
+  repository for now. A worker without a container runs with the owner's
+  login PATH, as in the Objective-C app. Linux and Windows are unchanged.
 - **A stopped worker container lets the worker answer**: `docker stop`
   and `docker compose down` (the apps' Stop) give the container ten
   seconds, but its entry point ended within a second (sending TERM to
