@@ -63,6 +63,12 @@ const (
 	requestTTL    = 600   // seconds, for a request without a ttl; also how long a help or other text gets a reply
 	requestMaxTTL = 86400 // a longer ttl counts as this: the relay keeps messages a day
 	badTTL        = "bad request: the ttl must be a number of seconds, at least 1"
+	// A requester whose clock runs behind the worker's makes a request look
+	// older than it is, so a worker with a stricter clock would call every
+	// request expired. The worker allows this margin (seconds) past the ttl
+	// before it treats a request as expired; the error still reports the real
+	// age. The owner can raise or lower it; 0 is the old behaviour.
+	clockSkewAllowance = 300
 	// Stopping the worker (Run's context ending: SIGTERM, SIGINT) ends the
 	// command it is running and answers that request, answers the ones
 	// waiting behind it the same (stopWaiting), then Run returns.
@@ -143,6 +149,7 @@ type Worker struct {
 	quitFile      string // commands/quit: stop, as on SIGTERM
 	requestsDir   string
 	allowAbsolute bool
+	skewAllowance int64 // grace (seconds) past the ttl for clock skew
 	notes         []string
 	out           io.Writer
 	windows       bool // PowerShell, and the help and hints that say so
@@ -179,7 +186,8 @@ func NewWorker(agent *Agent, st Storage, opts WorkerOptions) (*Worker, error) {
 
 func newWorker(agent workerAgent, st Storage, opts WorkerOptions) (*Worker, error) {
 	now := time.Now()
-	w := &Worker{agent: agent, st: st, allowAbsolute: opts.AllowAbsolute, notes: opts.Notes, out: opts.Out,
+	w := &Worker{agent: agent, st: st, allowAbsolute: opts.AllowAbsolute, skewAllowance: clockSkewAllowance,
+		notes: opts.Notes, out: opts.Out,
 		windows: isWindows, started: now.Unix(), startedAt: now, helpSent: map[string]time.Time{}}
 	if w.out == nil {
 		w.out = os.Stdout
@@ -900,7 +908,7 @@ func (w *Worker) expire(ctx context.Context, e Entry, rid string, ttl int64, op 
 	}
 	now := time.Now()
 	age := requestAge(e.SentAt, now)
-	if age <= ttl {
+	if age <= ttl+w.skewAllowance {
 		return false, nil
 	}
 	why := expiredWhy(age, ttl)
@@ -1103,7 +1111,7 @@ func (w *Worker) reply(ctx context.Context, e Entry, obj pyObj) error {
 }
 
 func (w *Worker) sendHelp(ctx context.Context, e Entry) error {
-	if e.SentAt != 0 && requestAge(e.SentAt, time.Now()) > requestTTL {
+	if e.SentAt != 0 && requestAge(e.SentAt, time.Now()) > requestTTL+w.skewAllowance {
 		return nil // from before the worker came back: whoever asked has moved on
 	}
 	w.mu.Lock()

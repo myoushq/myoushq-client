@@ -49,6 +49,12 @@ REQUESTS_KEEP = 200  # request records kept in <home>/requests for the owner's a
 DEFAULT_TTL = 600   # seconds, for a request without a ttl; also how long a `help` is worth answering
 MAX_TTL = 86400     # a longer ttl counts as this: the relay keeps messages a day
 BAD_TTL = "bad request: the ttl must be a number of seconds, at least 1"
+# A requester whose clock runs behind the worker's makes a request look
+# older than it is, so a worker with a stricter clock would call every
+# request expired. The worker allows this margin past the ttl before it
+# treats a request as expired (the error still reports the real age). The
+# owner can raise or lower it; 0 is the old behaviour (no allowance).
+CLOCK_SKEW_ALLOWANCE = 300
 # On Windows the shell is PowerShell: agents used to the container's Linux
 # workers are told so in the help, the pairing message and a failed command.
 WINDOWS_HELP = ("This worker runs on Windows: commands are PowerShell, not Linux shell commands "
@@ -131,6 +137,7 @@ class Worker:
         self.commands_dir = self.home / "commands" if self.home else None
         self.requests_dir = self.home / "requests" if self.home else None
         self.allow_absolute = allow_absolute
+        self.skew_allowance = CLOCK_SKEW_ALLOWANCE  # grace past the ttl for clock skew
         self.notes = notes or []
         self.out = out
         self.started = int(time.time())
@@ -530,7 +537,7 @@ class Worker:
             await self.refuse(e, rid, BAD_TTL)
             return True
         age = age_of(e)
-        if age is None or age <= seconds:
+        if age is None or age <= seconds + self.skew_allowance:
             return False
         why = expired_text(age, seconds)
         now = int(time.time())
@@ -610,7 +617,7 @@ class Worker:
 
     async def send_help(self, e: dict) -> None:
         age = age_of(e)
-        if age is not None and age > DEFAULT_TTL:
+        if age is not None and age > DEFAULT_TTL + self.skew_allowance:
             return   # sent while the worker was off: no one is waiting for the answer
         last = self.help_sent.get(e["peer"], 0)
         if time.time() - last < HELP_INTERVAL:

@@ -47,6 +47,7 @@ func keys(m map[string]any) string {
 
 func TestWorkerExpiredRequestsAreNeitherReviewedNorRun(t *testing.T) {
 	f := newWorkerFixture(t)
+	f.w.skewAllowance = 0 // this test checks the ttl boundary exactly
 	// The built-in review at "all" asks the owner about every request: an
 	// expired one must not get that far (no question, no wait).
 	os.WriteFile(filepath.Join(f.home, "review.json"), []byte(`{"level":"all"}`), 0o600)
@@ -119,6 +120,7 @@ func TestWorkerExpiredRequestsAreNeitherReviewedNorRun(t *testing.T) {
 func TestWorkerExpiredRequestSkipsTheReviewHook(t *testing.T) {
 	needPOSIX(t)
 	f := newWorkerFixture(t)
+	f.w.skewAllowance = 0 // this test checks the ttl boundary exactly
 	hook := filepath.Join(f.tmp, "review.sh")
 	seen := filepath.Join(f.tmp, "seen")
 	os.WriteFile(hook, []byte("touch "+seen+"\nexit 0\n"), 0o700)
@@ -169,6 +171,7 @@ func TestWorkerExpiredText(t *testing.T) {
 func TestWorkerRequestTTLs(t *testing.T) {
 	needPOSIX(t)
 	f := newWorkerFixture(t)
+	f.w.skewAllowance = 0 // this test checks the ttl boundary exactly
 	runs := func(e Entry) bool {
 		t.Helper()
 		os.Remove(filepath.Join(f.work, "ran"))
@@ -265,8 +268,29 @@ func TestWorkerBadTTLsAreRefused(t *testing.T) {
 	}
 }
 
+func TestWorkerClockSkewAllowance(t *testing.T) {
+	needPOSIX(t)
+	f := newWorkerFixture(t) // no review.json: trust, so an allowed exec runs
+	ran := func() bool { return exists(filepath.Join(f.work, "ran")) }
+	// A request that looks up to the allowance past its ttl (a requester
+	// whose clock lags the worker's) still runs.
+	os.Remove(filepath.Join(f.work, "ran"))
+	f.w.handle(f.ctx, sentAgo(execEntry("touch ran", map[string]any{"ttl": 150}), clockSkewAllowance+150-10))
+	if r := f.last(); r["exit"] != 0.0 || !ran() {
+		t.Fatalf("within the allowance should run: %v", r)
+	}
+	// One second past the margin: expired, and the error reports the real age.
+	os.Remove(filepath.Join(f.work, "ran"))
+	past := int64(clockSkewAllowance + 151)
+	f.w.handle(f.ctx, sentAgo(execEntry("touch ran", map[string]any{"ttl": 150}), past))
+	if r := f.last(); r["error"] != expiredWhy(past, 150) || ran() {
+		t.Fatalf("past the allowance should expire: %v", r)
+	}
+}
+
 func TestWorkerStaleTextGetsNoHelp(t *testing.T) {
 	f := newWorkerFixture(t)
+	f.w.skewAllowance = 0 // this test checks the help-age boundary exactly
 	// Sent while the worker was off, long enough ago that whoever asked has moved on.
 	f.w.handle(f.ctx, sentAgo(textEntry("help"), 700))
 	if n := f.agent.sentCount(); n != 0 {

@@ -554,6 +554,9 @@ class ExpiryTest(WorkerFixture):
         # Anything that reaches the review fails the request (and the test).
         self.reviewed = mock.Mock(side_effect=AssertionError("reviewed"))
         self.w.review = self.reviewed
+        # These tests check the ttl boundary exactly, so switch off the
+        # clock-skew allowance (its own test covers it).
+        self.w.skew_allowance = 0
 
     def exec_(self, age=None, **fields):
         req = dict({"myous": "exec", "id": RID, "cmd": "touch ran"}, **fields)
@@ -613,6 +616,26 @@ class ExpiryTest(WorkerFixture):
         self.run_(self.w.handle(self.exec_(age=60, ttl=60)))   # expired only when older than its ttl
         self.assertEqual(self.replies()[-1]["exit"], 0)
         self.assertTrue((self.work / "ran").exists())
+
+    def test_a_clock_skew_allowance_past_the_ttl(self):
+        # A requester whose clock is behind the worker's makes a request look
+        # older than it is. With the allowance (its default), the worker runs
+        # a request up to that margin past its ttl; past the margin it still
+        # expires, and the error reports the real age.
+        self.w.skew_allowance = worker.CLOCK_SKEW_ALLOWANCE
+        self.w.review = lambda *a, **k: None
+        at_edge = worker.CLOCK_SKEW_ALLOWANCE + 150  # ttl 150 + the whole allowance
+        self.run_(self.w.handle(self.exec_(age=at_edge, ttl=150)))
+        self.assertEqual(self.replies()[-1]["exit"], 0)
+        self.assertTrue((self.work / "ran").exists())
+        (self.work / "ran").unlink()
+        # One second past the margin: expired (and the review is never reached).
+        self.w.review = self.reviewed
+        past = worker.CLOCK_SKEW_ALLOWANCE + 151
+        self.run_(self.w.handle(self.exec_(age=past, ttl=150)))
+        self.assertEqual(self.replies()[-1]["error"], worker.expired_text(past, 150))
+        self.assertFalse((self.work / "ran").exists())
+        self.reviewed.assert_not_called()
 
     def test_without_a_ttl_600_seconds(self):
         self.run_(self.w.handle(self.exec_(age=601)))

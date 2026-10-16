@@ -421,10 +421,14 @@ old the request was. `ttl` is a number of seconds of at least 1; above
 86400 it counts as 86400 (the relay keeps messages a day); a `ttl` that
 is anything else (not a number, or a number below 1) gets an `ack` with
 `ok: false` like a bad id. The age compares the requester's clock with
-the worker's: a `created_at` in the future counts as now. A `help` or
-other text older than 600 seconds gets no reply. Workers that predate
-`ttl` (0.7.5 and older) ignore it and run whatever is still on the
-relay.
+the worker's: a `created_at` in the future counts as now, and a worker
+may allow a margin past the `ttl` for clock differences before it treats
+a request as expired (the reference worker allows 300 seconds), so a
+requester whose clock lags the worker's is not expired on every request;
+the `error` still reports the request's real age. A `help` or other text
+older than 600 seconds (plus that margin) gets no reply. Workers that
+predate `ttl` (0.7.5 and older) ignore it and run whatever is still on
+the relay.
 
 A requester should set `ttl` to how long it waits for the reply, so a
 request it gave up on (the worker was off, or busy) never runs later;
