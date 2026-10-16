@@ -5,6 +5,14 @@ the hub (`latest_release` in `/config.json`); the reference clients put an
 "update" item in the inbox. Get it, verify its signature and build it as
 in [skill.md](https://myoushq.com/skill.md).
 
+## Unreleased
+
+- **The apps' icon and menu bar icon: the mark's four dots are now
+  rings**, like the pads of a printed circuit board, with the navy (or
+  the tray's state colour) showing through, and the mu's stroke stops at
+  each ring. myous for Mac, Linux and Windows carry the new app icon and
+  draw the tray icon so; the source is `worker/icons/mark.svg`.
+
 ## v0.8.0
 
 The security release, and myous for Mac as the shared app. 2026-10-16.
