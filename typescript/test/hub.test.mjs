@@ -26,6 +26,13 @@ const freePort = () => new Promise((resolve) => {
   s.listen(0, "127.0.0.1", () => { const { port } = s.address(); s.close(() => resolve(port)); });
 });
 
+const open = async (name) => {
+  const a = await Agent.open(new FileStorage(join(tmp, name)), hubUrl);
+  await a.createIdentity();
+  await a.register(name);
+  return a;
+};
+
 before(async () => {
   if (!available) return;
   tmp = mkdtempSync(join(tmpdir(), "myous-ts-e2e-"));
@@ -42,12 +49,6 @@ before(async () => {
   for (let i = 0; i < 100; i++) {
     try { await fetch(hubUrl + "/config.json"); break; } catch { await new Promise((r) => setTimeout(r, 100)); }
   }
-  const open = async (name) => {
-    const a = await Agent.open(new FileStorage(join(tmp, name)), hubUrl);
-    await a.createIdentity();
-    await a.register(name);
-    return a;
-  };
   [alice, bob] = await Promise.all([open("alice"), open("bob")]);
   await contacts.add(alice.st, await bob.pubkey(), "bob");
   await contacts.add(bob.st, await alice.pubkey(), "alice");
@@ -125,19 +126,21 @@ test("blob store rules", { skip: !available && "no hub source or Go" }, async ()
 }, { timeout: 60_000 });
 
 test("a pairing records added_by on both contacts", { skip: !available && "no hub source or Go" }, async () => {
-  const inv = await alice.invite({ added_by: "owner" });
-  const accepting = bob.accept(inv.code, 30, { added_by: "owner", relationship: "friend" });
+  // Two agents that aren't contacts yet: a pairing leaves an existing contact as it is.
+  const [carol, dave] = await Promise.all([open("carol"), open("dave")]);
+  const inv = await carol.invite({ added_by: "owner" });
+  const accepting = dave.accept(inv.code, 30, { added_by: "owner", relationship: "friend" });
   let done = [];
   for (let i = 0; i < 150 && !done.length; i++) {
-    done = await alice.advancePairings();
+    done = await carol.advancePairings();
     if (!done.length) await new Promise((r) => setTimeout(r, 200));
   }
   assert.equal(done[0]?.stage, "done", JSON.stringify(done));
   assert.equal((await accepting).stage, "done");
-  const mine = (await alice.contacts())[await bob.pubkey()];
+  const mine = (await carol.contacts())[await dave.pubkey()];
   assert.equal(mine.added_by, "owner");
   assert.equal(mine.relationship, undefined);
-  const theirs = (await bob.contacts())[await alice.pubkey()];
+  const theirs = (await dave.contacts())[await carol.pubkey()];
   assert.equal(theirs.added_by, "owner");
   assert.equal(theirs.relationship, "friend");
-}, { timeout: 60_000 });
+}, { timeout: 120_000 });

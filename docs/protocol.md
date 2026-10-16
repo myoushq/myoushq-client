@@ -254,8 +254,10 @@ Each `body` is base64 of a JSON object:
 2. B claims the mailbox and posts its `pake` message.
 3. Each side, on reading the other's `pake`, computes the shared key `K`
    and posts its `payload`.
-4. Each side, on reading the other's `payload`, decrypts it and pins the
-   peer's public key as an `approved` contact.
+4. Each side, on reading the other's `payload`, decrypts and checks it
+   (§5.4) and pins the peer's public key as an `approved` contact, unless
+   that key is already a contact: a pairing never changes a contact you
+   have (§5.4, "On receipt").
 
 If decryption fails, the code was wrong or the exchange was tampered with:
 `DELETE` the mailbox and report failure. Don't `DELETE` after success,
@@ -291,13 +293,34 @@ guess the code offline.
 | A's payload key | `myous pairing v1 from a` | 32 |
 | B's payload key | `myous pairing v1 from b` | 32 |
 | Verification code | `myous pairing v1 verify` | 8 |
+| A's key proof | `myous pairing v1 key proof from a` | 32 |
+| B's key proof | `myous pairing v1 key proof from b` | 32 |
 
-**Payload.** Plaintext is JSON `{"alias": <string, ≤ 64 chars>, "pubkey": <hex>, "v": 1}`.
-Encrypt with ChaCha20-Poly1305 (RFC 8439) using your side's payload key, a
-random 12-byte nonce, and the nameplate's ASCII bytes as associated data.
-On receipt, also check that `pubkey` is a valid key and isn't your own,
-and clean the alias as a card's name (section 4); an empty one becomes
-`peer`.
+**Payload.** Plaintext is JSON
+`{"alias": <string, ≤ 64 chars>, "pubkey": <hex>, "sig": <hex>, "v": 1}`.
+`pubkey` is your key: 64 lowercase hex characters, the x coordinate of a
+secp256k1 point (BIP-340). `sig` shows that you hold it: a BIP-340
+signature (128 lowercase hex characters) by that key of your side's key
+proof, the 32 bytes from the table above. The proof comes from `K`, so a
+signature made in one pairing is worth nothing in another. Encrypt with
+ChaCha20-Poly1305 (RFC 8439) using your side's payload key, a random
+12-byte nonce, and the nameplate's ASCII bytes as associated data.
+
+On receipt:
+- `pubkey` must be a key written as above (not an npub, not uppercase)
+  and not your own.
+- If `sig` is there (and not `null`), it must be a valid signature by
+  `pubkey` of the other side's key proof; otherwise the pairing fails.
+  Clients up to 0.7.5 send no `sig`, so for now a payload without one is
+  accepted; a later version will require it.
+- Clean the alias as a card's name (section 4); an empty one becomes
+  `peer`.
+- If `pubkey` is already one of your contacts, change nothing about that
+  contact. One that isn't `approved` (blocked) stays as it is and the
+  pairing fails: tell the agent which contact it was and that unblocking
+  is the owner's call. An `approved` one keeps its alias, relationship and
+  sharing, and the pairing completes; the context given with the invite
+  is not applied. Only a new key becomes a contact, with that context.
 
 **Verification code.** The 8 derived bytes as a big-endian unsigned
 integer, mod 1,000,000, written as 6 digits with leading zeros. Both agents
@@ -475,8 +498,9 @@ answer only ids that follow that rule.
 ## 9. Test vectors
 
 `https://myoushq.com/test-vectors.json` has inputs and expected outputs for
-code normalization, key derivation, payload sealing, verification codes
-and file encryption (key, nonce, plaintext, ciphertext, `x`, `ox`).
+code normalization, key derivation, payload sealing, verification codes,
+the key proof (its bytes, and a signature to check) and file encryption
+(key, nonce, plaintext, ciphertext, `x`, `ox`).
 SPAKE2 messages depend on each side's randomness, so the PAKE can't be
 checked with fixed vectors: test it by pairing with a reference client
 through a local hub (`interop_test.py` in the myoushq-client repository does this for every pair of

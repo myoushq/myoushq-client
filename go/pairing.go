@@ -6,8 +6,12 @@ package myous
 // mailbox on the hub; the secret (K7F3QX) never leaves the two agents. Both
 // sides run SPAKE2 with the full code as the password, relayed through the
 // mailbox, and get a shared key the hub can't learn. Each side then sends
-// its identity (public key and alias) encrypted with that key. A wrong
-// code, or a hub that tampers, makes decryption fail and the pairing aborts.
+// its identity (public key and alias) encrypted with that key, with a
+// signature by that key over a value derived from the shared key, which
+// proves the sender holds it. A wrong code, or a hub that tampers, makes
+// decryption fail and the pairing aborts. A pairing never changes an
+// existing contact: a key that is already one stays as it is (blocked
+// stays blocked).
 
 import (
 	"context"
@@ -27,6 +31,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/nbd-wtf/go-nostr"
 	"golang.org/x/crypto/chacha20poly1305"
 	"golang.org/x/crypto/hkdf"
@@ -193,7 +199,69 @@ type Envelope struct {
 type payload struct {
 	Alias  string `json:"alias"`
 	Pubkey string `json:"pubkey"`
-	V      int    `json:"v"`
+	// Sig proves the sender holds Pubkey (see keyProof). Clients up to
+	// 0.7.5 send none; null counts as none.
+	Sig *string `json:"sig,omitempty"`
+	V   int     `json:"v"`
+}
+
+// keyProof is the 32 bytes a side signs with its identity key, so the
+// other side knows it holds the key in its payload (protocol.md, section
+// 5.4). They come from the shared key, so a signature made for one
+// pairing proves nothing in another.
+func keyProof(key []byte, role string) []byte {
+	return Derive(key, "key proof from "+role, 32)
+}
+
+// signProof signs role's key proof with the secret key skHex (BIP-340).
+func signProof(skHex string, key []byte, role string) (string, error) {
+	b, err := hex.DecodeString(skHex)
+	if err != nil {
+		return "", err
+	}
+	sk, _ := btcec.PrivKeyFromBytes(b)
+	sig, err := schnorr.Sign(sk, keyProof(key, role))
+	if err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(sig.Serialize()), nil
+}
+
+var sigRe = regexp.MustCompile(`^[0-9a-f]{128}$`)
+
+// proofHolds reports whether sigHex is a BIP-340 signature of msg by pubkey.
+func proofHolds(pubkey string, msg []byte, sigHex string) bool {
+	pk, err1 := hex.DecodeString(pubkey)
+	sb, err2 := hex.DecodeString(sigHex)
+	if err1 != nil || err2 != nil || !sigRe.MatchString(sigHex) {
+		return false
+	}
+	pub, err1 := schnorr.ParsePubKey(pk)
+	sig, err2 := schnorr.ParseSignature(sb)
+	return err1 == nil && err2 == nil && sig.Verify(msg, pub)
+}
+
+// checkProof reports whether the peer's payload proves its key: false if
+// it has no proof (clients up to 0.7.5 send none; a later version will
+// require it), an error if the proof doesn't hold.
+func checkProof(key []byte, peerRole string, peer payload) (bool, error) {
+	if peer.Sig == nil {
+		return false, nil
+	}
+	if !proofHolds(peer.Pubkey, keyProof(key, peerRole), *peer.Sig) {
+		return false, pairingErr("the other side didn't prove it holds the key it sent")
+	}
+	return true, nil
+}
+
+// knownRefused says why a pairing that named a contact which isn't
+// approved changed nothing.
+func knownRefused(c Contact, proven bool) string {
+	who := fmt.Sprintf(`answered with the key of your contact "%s" (%s), which the other side didn't prove it holds`, c.Alias, c.Status)
+	if proven {
+		who = fmt.Sprintf(`answered by your contact "%s" (%s)`, c.Alias, c.Status)
+	}
+	return fmt.Sprintf(`%s; nothing changed: if that is right, unblock it (myous unblock "%s")`, who, c.Alias)
 }
 
 // Seal encrypts plaintext with role's payload key. nonce may be nil.
@@ -260,8 +328,10 @@ type Pending struct {
 	Sharing      string   `json:"sharing,omitempty"`
 	AddedBy      string   `json:"added_by,omitempty"`
 	Contact      *Contact `json:"contact,omitempty"`
-	Verify       string   `json:"verify,omitempty"`
-	Error        string   `json:"error,omitempty"`
+	// Known: the key was already a contact, which the pairing left as it was.
+	Known  bool   `json:"known,omitempty"`
+	Verify string `json:"verify,omitempty"`
+	Error  string `json:"error,omitempty"`
 	// The handshake so far, for the owner to read when it fails.
 	Trace []TraceStep `json:"trace,omitempty"`
 }
@@ -681,7 +751,11 @@ func (pr *pairing) step(ctx context.Context, p *Pending, body string) error {
 		if err := pr.st.Put("pending/"+p.Nameplate, p); err != nil {
 			return err
 		}
-		mine, _ := json.Marshal(payload{Alias: pr.alias, Pubkey: pr.pk, V: pairingVersion})
+		sig, err := signProof(pr.sk, key, p.Role)
+		if err != nil {
+			return err
+		}
+		mine, _ := json.Marshal(payload{Alias: pr.alias, Pubkey: pr.pk, Sig: &sig, V: pairingVersion})
 		sealed, err := Seal(key, p.Role, p.Nameplate, mine, nil)
 		if err != nil {
 			return err
@@ -704,33 +778,49 @@ func (pr *pairing) step(ctx context.Context, p *Pending, body string) error {
 		if peer.Pubkey == pr.pk {
 			return pairingErr("that's this agent's own invite")
 		}
+		proven, err := checkProof(key, peerRole, peer)
+		if err != nil {
+			return err
+		}
 		alias := cleanName(peer.Alias)
 		unlock, _, err := lock(pr.st, "state", true)
 		if err != nil {
 			return err
 		}
 		defer unlock()
-		c, err := addContact(pr.st, peer.Pubkey, alias)
+		contacts, err := loadContacts(pr.st)
 		if err != nil {
 			return err
 		}
-		if cc := (ContactContext{p.Relationship, p.Sharing, p.AddedBy}); cc != (ContactContext{}) {
-			if c, err = updateContact(pr.st, peer.Pubkey, cc.apply); err != nil {
-				return err
-			}
+		known, isKnown := contacts[peer.Pubkey]
+		if isKnown && known.Status != Approved {
+			return pairingErr("%s", knownRefused(known, proven))
+		}
+		cc := ContactContext{p.Relationship, p.Sharing, p.AddedBy}
+		c, err := addContact(pr.st, peer.Pubkey, alias, cc)
+		if err != nil {
+			return err
 		}
 		// They learned our alias from the payload; a card follows if we have one.
 		if err := peerKnows(pr.st, peer.Pubkey, pr.alias, ""); err != nil {
 			return err
 		}
 		c.PeerKnows = &PeerKnows{Name: pr.alias}
-		p.Stage, p.Contact, p.Verify = "done", &c, VerifyCode(key)
+		p.Stage, p.Contact, p.Known, p.Verify = "done", &c, isKnown, VerifyCode(key)
 		pr.trace(&p.Trace, "done", nil, 0)
 		if err := pr.st.Delete("pending/" + p.Nameplate); err != nil {
 			return err
 		}
 		text := fmt.Sprintf("paired with %s (verification code %s)", c.Alias, p.Verify)
-		if c.Relationship == "" {
+		given := p.Relationship != "" || p.Sharing != ""
+		if isKnown {
+			text += fmt.Sprintf(". %s was already your contact: nothing changed", c.Alias)
+			if given {
+				text += fmt.Sprintf(" (the relationship and sharing given with this invite were not applied; "+
+					"to change them: myous context %q --relationship ... --sharing \"...\")", c.Alias)
+			}
+		}
+		if c.Relationship == "" && !(isKnown && given) {
 			text += fmt.Sprintf(". Ask your owner how they know this contact and what you may share with it, "+
 				"then record it: myous context %q --relationship ... --sharing \"...\"", c.Alias)
 		}

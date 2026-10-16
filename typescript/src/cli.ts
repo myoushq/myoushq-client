@@ -258,6 +258,7 @@ function report(r: Pending): void {
   if (r.stage === "done") {
     console.log(`paired with ${r.contact!.alias} (${r.contact!.npub})`);
     console.log(`verification code: ${r.verify} (both owners should see the same number)`);
+    if (r.known) console.log(`${r.contact!.alias} was already your contact: nothing changed (see \`myous inbox\`)`);
   } else if (r.stage === "failed") {
     fail(`pairing failed: ${r.error}`);
   } else if (r.stage === "elsewhere") {

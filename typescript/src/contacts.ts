@@ -153,19 +153,22 @@ export async function load(st: Storage): Promise<Contacts> {
   return st.get<Contacts>("contacts", {});
 }
 
-/** Pin a peer as approved. Re-pairing with a known key keeps its alias. */
-export async function add(st: Storage, pubkey: string, alias: string): Promise<Contact> {
+/**
+ * Pin a new peer as approved, with `context` (checked by contextFields). A
+ * key that is already a contact is returned as it is: a pairing never
+ * unblocks a contact or changes its alias or context; the owner does that
+ * (unblock, rename, context).
+ */
+export async function add(st: Storage, pubkey: string, alias: string, context?: ContactContext): Promise<Contact> {
   const contacts = await load(st);
-  if (contacts[pubkey]) {
-    contacts[pubkey].status = "approved";
-  } else {
-    contacts[pubkey] = {
-      alias: uniqueAlias(contacts, alias || "peer"),
-      npub: nip19.npubEncode(pubkey),
-      status: "approved",
-      paired_at: Math.floor(Date.now() / 1000),
-    };
-  }
+  if (contacts[pubkey]) return contacts[pubkey];
+  contacts[pubkey] = {
+    alias: uniqueAlias(contacts, alias || "peer"),
+    npub: nip19.npubEncode(pubkey),
+    status: "approved",
+    paired_at: Math.floor(Date.now() / 1000),
+    ...contextFields(context),
+  };
   await st.put("contacts", contacts);
   return contacts[pubkey];
 }

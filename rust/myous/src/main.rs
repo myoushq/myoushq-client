@@ -461,9 +461,12 @@ fn with_trace(st: &dyn myous::Storage, started: u64, e: anyhow::Error) -> anyhow
 
 fn report(outcome: Outcome) -> Result<()> {
     match outcome {
-        Outcome::Done { contact, verify } => {
+        Outcome::Done { contact, verify, known } => {
             println!("paired with {} ({})", contact.alias, contact.npub);
             println!("verification code: {verify} (both owners should see the same number)");
+            if known {
+                println!("{} was already your contact: nothing changed (see `myous inbox`)", contact.alias);
+            }
         }
         Outcome::Elsewhere => println!("the pairing was completed by another run; see `myous inbox`"),
         Outcome::Failed(error) => bail!("pairing failed: {error}"),
