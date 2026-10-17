@@ -1197,6 +1197,7 @@ pub fn run() {
         version(),
         platform::os()
     ));
+    default_review_levels();
     // A Windows GUI program has no console: a crash would leave no trace.
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -1384,6 +1385,36 @@ pub fn run() {
             #[cfg(not(target_os = "macos"))]
             let _ = app;
         });
+}
+
+/// Each set-up worker without a review.json, in a container or without
+/// one, gets the level the window shows for it (changes), once, at the
+/// app's start (`files::write_missing_review_level`); one line in app.log
+/// each. Not with a made-up state, which never touches a worker folder.
+fn default_review_levels() {
+    if !std::env::var("MYOUS_FAKE_STATE")
+        .unwrap_or_default()
+        .is_empty()
+    {
+        return;
+    }
+    for home in paths::all_homes() {
+        let folder = home
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        match files::write_missing_review_level(&home) {
+            Ok(true) => files::append_app_log(&format!(
+                "{} {folder}: review level set to changes (no review.json; the default from v0.8.1)",
+                now_stamp()
+            )),
+            Ok(false) => {}
+            Err(e) => files::append_app_log(&format!(
+                "{} {folder}: could not set the review level to changes (no review.json): {e}",
+                now_stamp()
+            )),
+        }
+    }
 }
 
 fn now_stamp() -> String {

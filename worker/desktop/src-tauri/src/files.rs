@@ -407,6 +407,36 @@ pub fn set_review_level(home: &Path, level: &str) -> io::Result<()> {
     write_atomic(&paths::review_file(home), data.as_bytes())
 }
 
+/// Whether a worker folder holds a worker that was set up (the window's
+/// `isSetUp`): app.json names it, or the worker has written worker.json.
+pub fn is_set_up(home: &Path) -> bool {
+    let named = read_json(&paths::config_file(home))
+        .and_then(|c| c.get("name").and_then(Value::as_str).map(|n| !n.is_empty()))
+        .unwrap_or(false);
+    named || read_json(&paths::status_file(home)).is_some_and(|s| !s.is_null())
+}
+
+/// The level a set-up worker without a review.json is given at the app's
+/// start: the one the window shows for it (`review_level`). Written once,
+/// it is what every worker acts on, whatever it does without the file: a
+/// container from before 0.8.1 runs everything, and a container's `.env`
+/// may set another default the app doesn't read. Settings changes it as
+/// any other level. A worker not set up yet is left to Set up, which
+/// writes the level the owner chooses; a review.json that is there, even
+/// one that can't be read (shown as all), is left as it is. True when it
+/// wrote.
+pub fn write_missing_review_level(home: &Path) -> io::Result<bool> {
+    if !is_set_up(home) {
+        return Ok(false);
+    }
+    match fs::symlink_metadata(paths::review_file(home)) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        _ => return Ok(false),
+    }
+    set_review_level(home, "changes")?;
+    Ok(true)
+}
+
 /// Appends a line to app.log in the default worker folder.
 pub fn append_app_log(line: &str) {
     let home = paths::default_home();
@@ -615,6 +645,77 @@ mod tests {
         set_review_level(&home, "trust").unwrap();
         assert_eq!(review_level(&home), "trust");
         fs::remove_dir_all(&home).unwrap();
+    }
+
+    /// At the app's start a set-up worker without a review.json gets the
+    /// level the window shows (changes), once; a worker not set up yet and
+    /// a review.json that is there, valid or not, are left alone.
+    #[test]
+    fn a_set_up_worker_without_review_json_is_given_changes_once() {
+        let base =
+            std::env::temp_dir().join(format!("myous-default-review-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let file = |h: &Path| paths::review_file(h);
+        // Not set up: no folder, an empty app.json, a name that is empty, worker.json null.
+        let fresh = base.join("fresh");
+        assert!(!write_missing_review_level(&fresh).unwrap());
+        assert!(!fresh.exists());
+        write_config(&fresh, &serde_json::json!({})).unwrap();
+        assert!(!write_missing_review_level(&fresh).unwrap());
+        write_config(&fresh, &serde_json::json!({"name": ""})).unwrap();
+        fs::write(paths::status_file(&fresh), "null").unwrap();
+        assert!(!write_missing_review_level(&fresh).unwrap());
+        assert!(!file(&fresh).exists());
+        assert_eq!(review_level(&fresh), "changes");
+        // Named in app.json (container or direct alike): written, then the file is the truth.
+        let named = base.join("named");
+        write_config(
+            &named,
+            &serde_json::json!({"name": "Max's PC", "mode": "image"}),
+        )
+        .unwrap();
+        assert_eq!(review_level(&named), "changes");
+        assert!(write_missing_review_level(&named).unwrap());
+        assert_eq!(
+            fs::read_to_string(file(&named)).unwrap(),
+            r#"{"level":"changes"}"#
+        );
+        assert!(!write_missing_review_level(&named).unwrap(), "once");
+        set_review_level(&named, "trust").unwrap();
+        assert!(!write_missing_review_level(&named).unwrap());
+        assert_eq!(review_level(&named), "trust");
+        let direct = base.join("direct");
+        write_config(
+            &direct,
+            &serde_json::json!({"name": "Max's PC", "mode": "direct"}),
+        )
+        .unwrap();
+        assert!(write_missing_review_level(&direct).unwrap());
+        assert_eq!(review_level(&direct), "changes");
+        // A worker that has run (worker.json) without a name in app.json: set up too.
+        let ran = base.join("ran");
+        fs::create_dir_all(&ran).unwrap();
+        fs::write(paths::status_file(&ran), r#"{"phase": "running"}"#).unwrap();
+        assert!(write_missing_review_level(&ran).unwrap());
+        assert_eq!(review_level(&ran), "changes");
+        // One that is there but not valid stays as it is, shown as all.
+        let torn = base.join("torn");
+        write_config(&torn, &serde_json::json!({"name": "x"})).unwrap();
+        fs::write(file(&torn), "{").unwrap();
+        assert!(!write_missing_review_level(&torn).unwrap());
+        assert_eq!(fs::read_to_string(file(&torn)).unwrap(), "{");
+        assert_eq!(review_level(&torn), "all");
+        // A link, even one to nothing, is there: left alone (and shown as all).
+        #[cfg(unix)]
+        {
+            let linked = base.join("linked");
+            write_config(&linked, &serde_json::json!({"name": "x"})).unwrap();
+            std::os::unix::fs::symlink(base.join("nowhere"), file(&linked)).unwrap();
+            assert!(!write_missing_review_level(&linked).unwrap());
+            assert!(is_link(&file(&linked)) && !base.join("nowhere").exists());
+            assert_eq!(review_level(&linked), "all");
+        }
+        fs::remove_dir_all(&base).unwrap();
     }
 
     #[test]
