@@ -18,8 +18,10 @@ dependencies = [
     # spake2 0.9 needs cryptography, which has no Intel Mac wheels since 49
     # (a ten-minute compile there). On Intel Macs, 0.8: the same protocol
     # code on the pure-Python hkdf package (messages and keys byte-identical,
-    # checked 2026-10-17). Bump both lines together; they go when Intel Macs
-    # are out of support (macOS 26 is the last for them).
+    # checked 2026-10-17, tests/pake_bytes_test.py). The 0.9 line is bumped
+    # as usual; 0.8 is the last release on hkdf, so its line stays as it is
+    # until the Intel Mac path goes, when Intel Macs are out of support
+    # (macOS 26 is the last for them).
     "spake2==0.9; sys_platform != 'darwin' or platform_machine != 'x86_64'",
     "spake2==0.8; sys_platform == 'darwin' and platform_machine == 'x86_64'",
 ]

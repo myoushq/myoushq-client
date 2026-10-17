@@ -32,19 +32,28 @@ fi
 # "The Intel Mac path"). pip-audit skips lines whose markers don't match the
 # machine it runs on and refuses a package twice, so each lock is split into
 # files that hold every line once, markers dropped, and each file is audited.
+# The split fails (and so the audit) on a line it can't read, if it would
+# leave out any line, and on a lock with none.
 SPLIT='
 import pathlib, re, sys
 lock, out = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
-views = []
-for block in re.split(r"\n(?=[A-Za-z])", lock.read_text()):
-    m = re.match(r"([A-Za-z0-9_.-]+)==", block)
-    if not m:
+text = lock.read_text()
+wanted = sum(1 for line in text.splitlines() if line.strip() and not line[0].isspace() and not line.startswith("#"))
+views, written = [], 0
+for block in re.split(r"\n(?=\S)", text):
+    if not block.strip() or block.startswith("#"):
         continue
+    m = re.match(r"([A-Za-z0-9_.-]+)==[^\s;\\]+(?: ;[^\\\n]*)? \\\n", block)
+    if not m:
+        sys.exit(f"{lock}: not a pinned line with hashes: {block.splitlines()[0]}")
     view = next((v for v in views if m.group(1).lower() not in v), None)
     if view is None:
         view = {}
         views.append(view)
     view[m.group(1).lower()] = re.sub(r"^(\S+) ;[^\\\n]*\\", r"\1 \\", block, count=1)
+    written += 1
+if not wanted or written != wanted:
+    sys.exit(f"{lock}: {wanted} requirement lines, {written} split out")
 out.mkdir(parents=True, exist_ok=True)
 for i, view in enumerate(views):
     path = out / f"{lock.stem}-{i + 1}.txt"

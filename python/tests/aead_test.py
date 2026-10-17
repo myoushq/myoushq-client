@@ -4,7 +4,10 @@ PairingError. Only the sizes the protocol uses are taken: a nonce of
 another length, or a ciphertext shorter than its tag, is refused like a
 bad tag."""
 import base64
+import json
 import unittest
+
+from Crypto.Cipher import AES, ChaCha20_Poly1305
 
 from myous import files, pairing
 
@@ -42,6 +45,23 @@ class FileCipher(unittest.TestCase):
     def test_the_wrong_key_or_nonce_is_refused(self):
         self.refused(self.enc.ciphertext, key=bytes(32))
         self.refused(self.enc.ciphertext, nonce=bytes(12))
+
+    def sealed(self, key: bytes, nonce: bytes) -> bytes:
+        """A valid AES-GCM payload of b"hello", made with the library
+        directly, which also opens it: only the guard in decrypt refuses it."""
+        body, tag = AES.new(key, AES.MODE_GCM, nonce=nonce, mac_len=16).encrypt_and_digest(b"hello")
+        self.assertEqual(AES.new(key, AES.MODE_GCM, nonce=nonce, mac_len=16).decrypt_and_verify(body, tag), b"hello")
+        return body + tag
+
+    def test_an_8_byte_nonce_is_refused(self):
+        self.refused(self.sealed(self.enc.key, bytes(8)), nonce=bytes(8))
+
+    def test_a_24_byte_nonce_is_refused(self):
+        self.refused(self.sealed(self.enc.key, bytes(24)), nonce=bytes(24))
+
+    def test_a_16_byte_key_is_refused(self):
+        key = self.enc.key[:16]  # AES-128: the library takes it, the protocol doesn't
+        self.refused(self.sealed(key, self.enc.nonce), key=key)
 
     def test_other_sizes_are_refused(self):
         self.refused(self.enc.ciphertext, nonce=self.enc.nonce + bytes(4))
@@ -82,6 +102,25 @@ class PayloadCipher(unittest.TestCase):
             self.refused({**self.msg, "n": b64(nonce)})
         with self.assertRaises(ValueError):
             pairing.seal(K, "a", NAMEPLATE, PAYLOAD, nonce=bytes(24))
+
+    def sealed_with(self, nonce: bytes) -> dict:
+        """A valid payload message with this nonce, made with the library
+        directly, which opens 8 bytes as the original ChaCha20 and 24 as
+        XChaCha20: only the guard in unseal refuses it."""
+        def cipher():
+            c = ChaCha20_Poly1305.new(key=pairing.derive(K, "from a"), nonce=nonce)
+            c.update(NAMEPLATE.encode())
+            return c
+        plain = json.dumps(PAYLOAD, sort_keys=True).encode()
+        body, tag = cipher().encrypt_and_digest(plain)
+        self.assertEqual(cipher().decrypt_and_verify(body, tag), plain)
+        return {"t": "payload", "v": 1, "n": b64(nonce), "c": b64(body + tag)}
+
+    def test_an_8_byte_nonce_is_refused(self):
+        self.refused(self.sealed_with(bytes(8)))
+
+    def test_a_24_byte_nonce_is_refused(self):
+        self.refused(self.sealed_with(bytes(24)))
 
     def test_a_malformed_message_is_refused(self):
         self.refused({"t": "payload", "v": 1})

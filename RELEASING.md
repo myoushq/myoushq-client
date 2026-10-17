@@ -129,10 +129,11 @@ publishes.
 
 - Wait at least 14 days after a dependency release before adopting it,
   unless it fixes a vulnerability that affects us. That means a published
-  advisory or CVE for the version we run, or a fix in a code path we call;
+  advisory or CVE for the version we run, or a security fix (a timing fix
+  included) in a code path we call, whether or not it has an advisory;
   look in the project's changelog, its GitHub security advisories and OSV
-  (osv.dev). Hardening with no advisory, and fixes in code we don't call,
-  don't shorten the wait.
+  (osv.dev). Fixes and hardening in code we don't call, with no advisory
+  for our version, don't shorten the wait.
 - Read the diff of security-relevant dependencies before bumping:
   `nostr-sdk`, `spake2` and its HKDF (`hkdf` on Intel Macs, `cryptography`
   elsewhere), `pycryptodome`, `filippo.io/edwards25519`,
@@ -157,6 +158,9 @@ minutes. `pyproject.toml` therefore has two spake2 lines with environment
 markers: 0.8 (the same protocol code on the pure-Python `hkdf`) where
 `sys_platform` is `darwin` and `platform_machine` is `x86_64`, 0.9
 everywhere else; the lock carries both, and pip installs the lines whose
-markers match. Bump the two lines together (CI's `python-intel-mac-set`
-job tests the 0.8 set). The path goes when Intel Macs are out of support
-(macOS 26 is the last for them; a TODO in the private repository).
+markers match. The 0.9 line is bumped as usual; 0.8 is the last release
+on `hkdf`, so its line stays as it is until the path is removed. CI's
+`python-intel-mac-set` job tests the 0.8 set, and
+`python/tests/pake_bytes_test.py` checks that both give the same bytes.
+The path goes when Intel Macs are out of support (macOS 26 is the last
+for them; a TODO in the private repository).
