@@ -56,6 +56,8 @@ let appMenuActions = new Map<string, () => void>();
 let lastAppMenu = "";
 let lastCounts = 0;
 let setupFilledFor = "";
+/** The worker whose level the review select on Set up shows: the owner's pick stays through a switch between a container and none. */
+let setupReviewFor: Worker | null = null;
 let lastRequestsKey = "";
 let pairAgents: Agent[] = [];
 let runtimeProbing = false;
@@ -495,9 +497,13 @@ function fillSetup(w: Worker) {
     name.placeholder = info.hostname;
     desc.value = w.config.description || defaultDescription(name.value, direct, !direct || w.config.hostBrowser);
     name.dataset.prev = name.value;
-    // The review level: the worker's (review.json's; "changes" when it has none), the owner's pick from then on.
-    const review = $<HTMLSelectElement>("setup-review");
-    if (!review.options.length) review.append(...REVIEW_LEVELS.map((l) => el("option", { value: l.level, text: l.label })));
+  }
+  // The review level: the worker's (review.json's; "changes" when it has none), the owner's pick from then
+  // on, also when the card is filled again for a switch between a container and none.
+  const review = $<HTMLSelectElement>("setup-review");
+  if (!review.options.length) review.append(...REVIEW_LEVELS.map((l) => el("option", { value: l.level, text: l.label })));
+  if (setupReviewFor !== w) {
+    setupReviewFor = w;
     review.value = reviewLevel(w.review);
   }
   const level = setupReviewChosen();
