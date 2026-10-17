@@ -10,10 +10,12 @@ requires-python = ">=3.9"
 license = {text = "MIT"}
 dependencies = [
     # Exact pins: these handle keys and crypto. Exact transitive pins with
-    # hashes are in requirements.lock (see docs/supply-chain.md).
+    # hashes are in requirements.lock (see RELEASING.md, "Dependency
+    # updates"). pycryptodome, not cryptography: it ships wheels for Intel
+    # Macs too, so no install builds it from source.
     "nostr-sdk==0.45.1",
     "spake2==0.9",
-    "cryptography==50.0.2",
+    "pycryptodome==4.0.0",
 ]
 
 [project.optional-dependencies]

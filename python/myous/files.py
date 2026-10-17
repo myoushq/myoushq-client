@@ -19,7 +19,7 @@ import urllib.error
 import urllib.request
 from typing import NamedTuple
 
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from Crypto.Cipher import AES
 from nostr_sdk import EventBuilder, Keys, Kind, Tag, Timestamp
 
 KIND_BLOB_AUTH = 24242
@@ -47,14 +47,15 @@ def sha256(data: bytes) -> str:
 
 def encrypt(plaintext: bytes, key: bytes | None = None, nonce: bytes | None = None) -> Encrypted:
     """AES-256-GCM with a fresh random key and nonce per file (fixed ones
-    only for test vectors). The 16-byte tag is appended, as the library does."""
+    only for test vectors). The 16-byte tag is appended to the ciphertext."""
     if len(plaintext) > MAX_PLAINTEXT:
         raise ValueError(f"file is {len(plaintext)} bytes; the limit is {MAX_PLAINTEXT} ({MAX_BLOB >> 20} MB less the tag)")
     key = key or secrets.token_bytes(KEY_BYTES)
     nonce = nonce or secrets.token_bytes(NONCE_BYTES)
     if len(key) != KEY_BYTES or len(nonce) != NONCE_BYTES:
         raise ValueError("key must be 32 bytes and nonce 12 bytes")
-    ciphertext = AESGCM(key).encrypt(nonce, plaintext, None)
+    sealed, tag = AES.new(key, AES.MODE_GCM, nonce=nonce, mac_len=TAG_BYTES).encrypt_and_digest(plaintext)
+    ciphertext = sealed + tag
     return Encrypted(key, nonce, ciphertext, sha256(ciphertext), sha256(plaintext))
 
 
@@ -64,7 +65,12 @@ def decrypt(ciphertext: bytes, key: bytes, nonce: bytes, x: str | None = None, o
     if x is not None and sha256(ciphertext) != x:
         raise ValueError("the downloaded blob doesn't match the hash in the message")
     try:
-        plaintext = AESGCM(key).decrypt(nonce, ciphertext, None)
+        # Only the sizes this protocol uses (pycryptodome would take other
+        # nonce lengths), and a ciphertext at least as long as its tag.
+        if len(key) != KEY_BYTES or len(nonce) != NONCE_BYTES or len(ciphertext) < TAG_BYTES:
+            raise ValueError("bad sizes")
+        cipher = AES.new(key, AES.MODE_GCM, nonce=nonce, mac_len=TAG_BYTES)
+        plaintext = cipher.decrypt_and_verify(ciphertext[:-TAG_BYTES], ciphertext[-TAG_BYTES:])
     except Exception:
         raise ValueError("the file could not be decrypted (wrong key, or the blob was altered)") from None
     if ox is not None and sha256(plaintext) != ox:

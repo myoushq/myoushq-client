@@ -130,7 +130,7 @@ publishes.
 - Wait at least 14 days after a dependency release before adopting it,
   unless it fixes a vulnerability that affects us.
 - Read the diff of security-relevant dependencies before bumping:
-  `nostr-sdk`, `spake2`, `cryptography`, `filippo.io/edwards25519`,
+  `nostr-sdk`, `spake2`, `pycryptodome`, `filippo.io/edwards25519`,
   `golang.org/x/crypto`, `go-nostr`, `nostr-tools`, `@noble/*`, the
   `spake2`/`curve25519-dalek` crates.
 - Regenerate lock files (`pip-compile --generate-hashes` for the Python
