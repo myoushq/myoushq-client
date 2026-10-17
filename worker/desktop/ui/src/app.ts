@@ -59,6 +59,10 @@ let setupFilledFor = "";
 /** The worker whose level the review select on Set up shows: the owner's pick stays through a switch between a container and none. */
 let setupReviewFor: Worker | null = null;
 let lastRequestsKey = "";
+let lastSaid = "";
+let lastBanner = "";
+let lastQuestion = "";
+let warnedQuestion = "";
 let pairAgents: Agent[] = [];
 let runtimeProbing = false;
 let capabilityChecking = false;
@@ -139,6 +143,23 @@ function dialog(o: DialogOpts): Promise<{ value: string; input: string } | null>
 }
 
 const alertBox = (title: string, text: string) => dialog({ title, text });
+
+// --- what a screen reader is told -------------------------------------------------------
+
+/** Words a screen reader says as they happen (the page's two live regions): `now` interrupts what it
+ * is saying (a question waiting for the owner), else they come after it. What one render says goes
+ * out together; the region is cleared first, so the same words again are said again. */
+const announcing: Record<string, string[]> = {};
+function announce(text: string, now = false) {
+  const id = now ? "announce-now" : "announce";
+  const queue = (announcing[id] ??= []);
+  if (queue.push(text) > 1) return;
+  $(id).textContent = "";
+  setTimeout(() => {
+    $(id).textContent = queue.join(" ");
+    queue.length = 0;
+  }, 100);
+}
 async function confirmBox(title: string, text: string, ok: string, danger = false) {
   const r = await dialog({ title, text, buttons: [{ label: "Cancel", value: "no" }, { label: ok, value: "yes", primary: !danger, danger }] });
   return r?.value === "yes";
@@ -344,6 +365,22 @@ async function togglePaused(w: Worker = m.current) {
 
 // --- the window and what it shows ----------------------------------------------------
 
+/** The window came up for a question: the focus on it (its words read out, Allow next), unless a
+ * dialog is open or the focus is on it already. */
+function focusQuestion() {
+  const row = $("approval-row");
+  if (row.hidden || $<HTMLDialogElement>("dlg").open || row.contains(document.activeElement)) return;
+  row.focus();
+}
+
+/** The question went (answered, here or on its notification, or expired) while the focus was on it:
+ * the focus goes to the list of requests, its row there, not to the page. */
+function leaveQuestion() {
+  const first = $("requests").querySelector<HTMLElement>("tbody tr");
+  if (first && !$("card-requests").hidden) first.focus();
+  else (document.activeElement as HTMLElement | null)?.blur();
+}
+
 async function showWindow(w?: Worker) {
   if (w) {
     m.current = w;
@@ -380,6 +417,15 @@ function render() {
     attention = `myous ${m.latestRelease} is available (you have ${m.version}).`;
     button = "Download";
   }
+
+  // A screen reader hears the shown worker's state change (a question says itself, below) and a new red line.
+  const said = `${w.home}|${w.stateWord}`;
+  if (lastSaid.startsWith(`${w.home}|`) && said !== lastSaid && !(w.approvals.length > 0 && w.stateWord === "Needs attention")) {
+    announce(`${w.name}: ${w.stateWord}`);
+  }
+  lastSaid = said;
+  if (attention !== lastBanner && attention && lastSaid) announce(attention);
+  lastBanner = attention;
 
   // Header
   $("head-dot").className = kindClass(w.stateKind);
@@ -601,6 +647,7 @@ function fillBrowserRow(box: HTMLElement, w: Worker) {
     copy.onclick = async () => {
       await be.copyText(r.lines.join("\n"));
       setText(copy, "Copied");
+      announce("Copied");
       setTimeout(() => setText(copy, "Copy"), 2000);
     };
     kids.push(el("pre", { className: "lines", textContent: r.lines.join("\n") }), el("div", { className: "row" }, copy));
@@ -926,6 +973,8 @@ function fillRequests(w: Worker) {
   if (key === lastRequestsKey) return;
   lastRequestsKey = key;
   const body = $("requests").querySelector("tbody")!;
+  // The row with the keyboard's focus keeps it through a rebuild (a request finished, a new one came).
+  const had = body.contains(document.activeElement) ? (document.activeElement as HTMLElement).dataset.id : undefined;
   body.replaceChildren(...w.requests.map((r) => {
     const at = num(r.at);
     const day = dayLabel(at, now);
@@ -942,10 +991,12 @@ function fillRequests(w: Worker) {
       el("td", { textContent: text, title: text }),
       el("td", { textContent: out, className: cls }));
     tr.onclick = () => void showRequestDetail(r);
+    tr.dataset.id = str(r.id);
     tr.tabIndex = 0;
     tr.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); void showRequestDetail(r); } };
     return tr;
   }));
+  if (had !== undefined) (body.querySelector<HTMLElement>(`tr[data-id="${CSS.escape(had)}"]`) ?? body.querySelector<HTMLElement>("tr"))?.focus();
 }
 
 /** Why a request expired (sent longer ago than its agent waits; not run), without the
@@ -975,12 +1026,33 @@ function showRequestDetail(r: Record<string, unknown>) {
   return dialog({ title: "Request", pre: lines.join("\n") });
 }
 
+/** The question waiting for the owner, above the table. A screen reader is told it at once (and again
+ * with 30 s left); the seconds that tick are for the eyes, the time to answer by is in its description. */
 function fillApproval(w: Worker) {
   const q = w.approvals[0];
-  show($("approval-row"), !!q && !m.selectedAgent);
-  if (!q) return;
-  const left = num(q.asked_at) + num(q.wait) - m.now();
-  setText($("approval-text"), `${str(q.alias) || "Your agent"} wants to ${verb(str(q.op))} ${what(q)}${left > 0 ? `  (${Math.floor(left)} s left)` : ""}`);
+  const row = $("approval-row");
+  const shown = !!q && !m.selectedAgent;
+  if (!shown && row.contains(document.activeElement)) leaveQuestion();
+  show(row, shown);
+  if (!q || !shown) {
+    if (!q) lastQuestion = "";
+    return;
+  }
+  const until = num(q.asked_at) + num(q.wait);
+  const left = until - m.now();
+  const asks = `${str(q.alias) || "Your agent"} wants to ${verb(str(q.op))} ${what(q)}`;
+  setText($("approval-what"), asks);
+  setText($("approval-left"), left > 0 ? `  (${Math.floor(left)} s left)` : "");
+  setText($("approval-by"), until > 0 ? `Answer by ${clockTime(until)}, or it is refused.` : "");
+  const key = `${w.home}|${str(q.id)}`;
+  if (key !== lastQuestion) {
+    lastQuestion = key;
+    warnedQuestion = left <= 30 ? key : "";
+    announce(`Question on ${w.name}: ${asks}. Allow or Refuse${left > 0 ? `, ${Math.floor(left)} seconds left` : ""}.`, true);
+  } else if (left > 0 && left <= 30 && warnedQuestion !== key) {
+    warnedQuestion = key;
+    announce(`${Math.floor(left)} seconds left to answer: ${asks}.`, true);
+  }
 }
 
 async function answer(verdict: "allow" | "refuse") {
@@ -989,6 +1061,7 @@ async function answer(verdict: "allow" | "refuse") {
   if (!q) return;
   if (!m.fake) await be.answerApproval(w.home, str(q.id), verdict);
   appendLog(`${verdict}: ${str(q.op)} ${what(q)}`);
+  announce(`${verdict === "allow" ? "Allowed" : "Refused"}: ${what(q)}`);
   w.approvals = [];
   render();
 }
@@ -1793,6 +1866,7 @@ function wire() {
   $("runtime-copy").onclick = async () => {
     await be.copyText($("runtime-lines").textContent ?? "");
     setText($("runtime-copy"), "Copied");
+    announce("Copied");
     setTimeout(() => setText($("runtime-copy"), "Copy"), 2000);
   };
   $("runtime-link").onclick = () => { if (m.options?.compose_url) void be.openUrl(m.options.compose_url); };
@@ -1814,6 +1888,8 @@ function wire() {
     setText($("pair-wait"), "Asking the worker for a new code…");
   };
   $("pair-which").onchange = pairWhichChanged;
+  // "Copied", "Asking … to accept the code", why it couldn't: said as they change.
+  $("pair-wait").setAttribute("aria-live", "polite");
   $("pair-local").onclick = () => void acceptAsLocalAgent();
   $("paired-continue").onclick = async () => {
     const w = m.current;
@@ -1950,7 +2026,7 @@ async function main() {
     const sent = be.notify(title, info.os === "linux" ? escapeMarkup(body) : body, isUrgent(kind), ask ?? null);
     // A question's window shows the worker asking (its Allow and Refuse are there), while the window has it.
     const asking = ask ? m.workers.find((w) => w.home === ask.home) : undefined;
-    const up = () => void showWindow(asking && m.workers.includes(asking) ? asking : undefined);
+    const up = () => void showWindow(asking && m.workers.includes(asking) ? asking : undefined).then(() => { if (ask) focusQuestion(); });
     if (isUrgent(kind) && info.os === "macos") {
       // A Mac answers a question from its notification (Allow, Refuse); the window comes up only when that can't.
       sent.then(
