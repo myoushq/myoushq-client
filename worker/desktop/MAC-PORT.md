@@ -260,9 +260,11 @@ ID certificate imported into a throwaway keychain as before; then
 ./make-mac.sh --universal --no-dmg --sign "$identity"   # ad hoc, without --sign, when the secrets are missing
 worker/mac/notarize.sh worker/desktop/build/myous.app --key-id … --issuer … --key …
 worker/mac/make-dmg.sh worker/desktop/build/myous.app out/myous-$TAG.dmg --sign "$identity"
+worker/mac/notarize.sh out/myous-$TAG.dmg --key-id … --issuer … --key …   # then stapler validate and spctl on the image
 ```
 
-and `out/` (the dmg and `SHA256SUMS`) uploaded as the artifact
+and `out/` (the dmg and `SHA256SUMS`, written after the image is
+stapled) uploaded as the artifact
 `mac-app`, which the `github-release` job attaches as before. The asset
 keeps its name, `myous-<tag>.dmg`, which is what the hub's
 `/download/mac` serves. `worker/mac` is no longer built by the release

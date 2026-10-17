@@ -287,8 +287,11 @@ jobs:
   mac-app:
     # myous for Mac: the Tauri app of worker/desktop (the same code as
     # myous for Linux and Windows), one universal app for Apple Silicon
-    # and Intel. Packed and notarized with worker/mac's scripts; the
-    # asset name is what the hub's /download/mac serves.
+    # and Intel. Packed and notarized with worker/mac's scripts: the app
+    # is notarized and stapled, then packed into the disk image, which is
+    # signed, notarized and stapled itself, so Gatekeeper accepts both
+    # without a network check; the asset name is what the hub's
+    # /download/mac serves.
     name: macOS app (signed and notarized when the secrets exist)
     needs: [verify, test-python]
     runs-on: macos-15
@@ -367,7 +370,7 @@ jobs:
           echo "$NOTARY_KEY" | base64 --decode > /tmp/notary.p8
           worker/mac/notarize.sh worker/desktop/build/myous.app --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" --key /tmp/notary.p8
           rm /tmp/notary.p8
-      - name: disk image and checksum
+      - name: disk image
         run: |
           set -eu
           mkdir -p out
@@ -376,6 +379,24 @@ jobs:
           else
             worker/mac/make-dmg.sh worker/desktop/build/myous.app "out/myous-$TAG.dmg"
           fi
+      - name: notarize and staple the disk image
+        if: env.HAVE_CERT == 'true'
+        env:
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+          NOTARY_KEY: ${{ secrets.NOTARY_KEY }}
+        run: |
+          set -eu
+          # The image gets its own ticket: with only the app's, the stapler
+          # finds none on the image and Gatekeeper rejects the image itself.
+          echo "$NOTARY_KEY" | base64 --decode > /tmp/notary.p8
+          worker/mac/notarize.sh "out/myous-$TAG.dmg" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" --key /tmp/notary.p8
+          rm /tmp/notary.p8
+          xcrun stapler validate "out/myous-$TAG.dmg"
+          spctl -a -t open --context context:primary-signature -vv "out/myous-$TAG.dmg"
+      - name: checksum (after stapling, which changes the image's bytes)
+        run: |
+          set -eu
           # shellcheck disable=SC2035 # our own file names; ./ would show in SHA256SUMS
           (cd out && shasum -a 256 *.dmg > SHA256SUMS)
           cat out/SHA256SUMS
