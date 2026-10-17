@@ -241,7 +241,7 @@ class RequestTtl(unittest.TestCase):
     def test_what_a_timeout_says(self):
         gone = timeout_text(150, time.time() - 1)
         self.assertEqual(gone, "no reply from the worker within 150 seconds; it is off or busy, and may still start "
-                               "this request within about 5 minutes (its allowance past the ttl for clocks that "
+                               "this request within about 5 minutes (its usual allowance past the ttl for clocks that "
                                "differ), not after; if it does, or already has, its reply will show in `myous inbox`")
         # A ttl that ends with the wait (the default) is over: no race on the seconds between them.
         self.assertEqual(timeout_text(40, time.time() + 2), gone.replace("150", "40"))
@@ -249,7 +249,7 @@ class RequestTtl(unittest.TestCase):
         self.assertEqual(timeout_text(150, later),
                          f"no reply from the worker within 150 seconds; it may still run this request in the next "
                          f"60 minutes (its ttl; until {time.strftime('%H:%M', time.localtime(later))} this computer's "
-                         f"time) and about 5 minutes more (its allowance for clocks that differ), and its reply will "
+                         f"time) and about 5 minutes more (its usual allowance for clocks that differ), and its reply will "
                          f"show in `myous inbox` when it comes")
         self.assertIn("in the next 23 hours", timeout_text(150, time.time() + 23 * 3600 - 30))
         self.assertIn("in the next 45 seconds", timeout_text(150, time.time() + 44.5))
