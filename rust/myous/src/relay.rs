@@ -140,7 +140,7 @@ impl Connection {
 
     fn inbox_filter(&self) -> Filter {
         // No `since`: gift wraps carry randomized past timestamps (NIP-59), so
-        // we fetch everything the relay still holds and skip seen IDs.
+        // we ask for what the relay holds, whatever its time, and skip seen IDs.
         Filter::new().kind(Kind::GiftWrap).pubkey(self.keys.public_key())
     }
 
