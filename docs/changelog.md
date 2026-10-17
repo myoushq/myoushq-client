@@ -5,6 +5,57 @@ the hub (`latest_release` in `/config.json`); the reference clients put an
 "update" item in the inbox. Get it, verify its signature and build it as
 in [skill.md](https://myoushq.com/skill.md).
 
+## v0.8.2
+
+The Python client installs in seconds on every Mac. 2026-10-18. A
+fix for Intel Macs, where `pip install myous` compiled `cryptography`
+for about ten minutes (silently, and not at all without Rust and
+OpenSSL headers), plus the disk image notarized, and the worker guide
+saying which plain reads still ask at `changes`.
+
+- **Intel Macs no longer compile `cryptography`.** On them the Python
+  client installs pycryptodome instead (3.24.0, wheels, nothing built
+  at install) and spake2 0.8 instead of 0.9, because spake2 0.9 needs
+  `cryptography` for its HKDF; 0.8 is the same protocol code on the
+  pure-Python `hkdf`, with messages and keys byte-identical (a test
+  checks both versions against the same recorded bytes, and a pairing
+  started by one version finishes in the other). Everywhere else
+  nothing changes: `cryptography` 50.0.2 and spake2 0.9 as in v0.8.1,
+  and OpenSSL's constant-time AES on Apple silicon and arm64 Linux. A
+  small backend module picks the library present at import; both
+  backends give the same bytes (the test vectors, the interop test with
+  Go and Rust, and 18,000 random cases in review), so a file written by
+  v0.8.1 reads as before. The lines in `pyproject.toml` carry
+  environment markers; the lock files are universal (one file for every
+  platform, every line hashed) and the audit script reads all of them
+  whatever machine it runs on. A fresh install from the lock on an
+  Intel Mac: under ten seconds. pip prints a few "Ignoring … markers
+  don't match your environment" lines; they are expected. The Intel Mac
+  lines go when Intel Macs are out of support (macOS 26 is Apple's last
+  release for them).
+- **Python refuses what the other clients refuse:** a file key that
+  isn't 32 bytes or a nonce that isn't 12 bytes is an error now (v0.8.1
+  accepted 16- and 24-byte keys), as in the Go, Rust and TypeScript
+  clients.
+- **The qr lock gains `colorama` on Windows**, which `qrcode` needs
+  there; the old lock, made on a Mac, lacked it, so a hashed install
+  of the qr extra on Windows would have failed.
+- **The Mac disk image is notarized and stapled itself**, not only the
+  app inside it, so Gatekeeper accepts the download as well as the app
+  (v0.8.0 and v0.8.1's images carried no ticket). The release run
+  validates the ticket and fails if the image is rejected.
+- **The worker guide says which plain reads ask at `changes`** (§6):
+  quoted text holding a separator, a redirection or an expansion
+  character (`grep 'a|b' f`, `grep '<h1>' f`, `grep 'x$' f`), and
+  read-only tools not on the hook's list (`jq`, `od`, `xxd`, `sed -n`
+  and others). A question is the hook's answer when it isn't sure;
+  Allow runs that command once. No change to the hook.
+- **Releasing:** the 14-day rule for dependency updates now says what
+  counts as a security exception; the Python locks are made with uv's
+  universal mode; CI gains a Linux job that installs the Intel Mac
+  dependency set and runs the Python suite on the pycryptodome backend,
+  while the main job runs it on `cryptography`.
+
 ## v0.8.1
 
 The worker asks first. 2026-10-16. A worker now starts at the `changes`
