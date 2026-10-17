@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // The worker's review (protocol.md 7.2). With a review command (`myous
@@ -562,15 +564,33 @@ func (r *builtinReview) defaultLevel() string {
 }
 
 // level is review.py's level: review.json's level. Absent: the default
-// (defaultLevel). Present but unreadable, not JSON, not an object or not a
-// level: failClosed.
+// (defaultLevel). Anything else that isn't a regular file holding a JSON
+// object, in UTF-8, with one of the levels as its "level": failClosed. A
+// link, a pipe, a directory or a socket is not read (a pipe would block
+// the review), as the app shows them: as "all".
 func (r *builtinReview) level() string {
-	raw, err := os.ReadFile(filepath.Join(r.home, "review.json"))
+	path := filepath.Join(r.home, "review.json")
+	info, err := os.Lstat(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return r.defaultLevel() // never configured
 		}
-		return failClosed // present but unreadable
+		return failClosed
+	}
+	if !info.Mode().IsRegular() {
+		return failClosed
+	}
+	f, err := openSetting(path)
+	if err != nil {
+		return failClosed
+	}
+	defer f.Close()
+	if info, err := f.Stat(); err != nil || !info.Mode().IsRegular() {
+		return failClosed
+	}
+	raw, err := io.ReadAll(f)
+	if err != nil || !utf8.Valid(raw) {
+		return failClosed // unreadable, or not UTF-8 (Go's JSON would take it, review.py's not)
 	}
 	var doc map[string]any
 	if json.Unmarshal(raw, &doc) != nil {

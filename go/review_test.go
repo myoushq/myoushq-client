@@ -7,6 +7,7 @@ package myous
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"maps"
 	"os"
 	"os/exec"
@@ -228,12 +229,42 @@ func TestReviewMissingOrCorruptFailsClosed(t *testing.T) {
 			t.Fatalf("%q should fail closed to all, got %q", bad, why)
 		}
 	}
+	// Not UTF-8 (Go's JSON would take it), or NaN (Python's would): all, in both workers.
+	for _, bad := range []string{"{\"level\": \"trust\", \"note\": \"\xff\"}", `{"level": "trust", "x": NaN}`, "\xef\xbb\xbf{}"} {
+		os.WriteFile(review, []byte(bad), 0o600)
+		if r.level() != "all" {
+			t.Fatalf("%q: level %q, want all", bad, r.level())
+		}
+	}
+	// Anything but a regular file: a directory, a link (even to a valid
+	// file), a pipe (reading one would block the review for good).
 	os.Remove(review)
-	os.Mkdir(review, 0o700) // there, but can't be read
+	os.Mkdir(review, 0o700)
 	if r.level() != "all" {
-		t.Fatalf("a review.json that can't be read: level %q, want all", r.level())
+		t.Fatalf("a directory: level %q, want all", r.level())
 	}
 	os.Remove(review)
+	good := filepath.Join(home, "good.json")
+	os.WriteFile(good, []byte(`{"level": "trust"}`), 0o600)
+	if os.Symlink(good, review) == nil {
+		if r.level() != "all" {
+			t.Fatalf("a link: level %q, want all", r.level())
+		}
+		os.Remove(review)
+	}
+	if makeFIFO(review) == nil {
+		done := make(chan string, 1)
+		go func() { done <- r.level() }()
+		select {
+		case lv := <-done:
+			if lv != "all" {
+				t.Fatalf("a pipe: level %q, want all", lv)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("level() blocks on a pipe")
+		}
+		os.Remove(review)
+	}
 	// A valid level is still honoured.
 	setLevel(t, home, "changes")
 	if why := r.decide(context.Background(), req("get", "c", pyKV{"path", "x"})); why != "" {
@@ -479,19 +510,86 @@ func TestReviewRulesAreReviewPys(t *testing.T) {
 	}
 	askPython(t, "print(json.dumps({'SafeFlags': {k: [sorted(x.split()) for x in v] for k, v in r.SAFE_FLAGS.items()}, "+
 		"'Operands': r.OPERANDS}))", nil, &tables)
-	if len(tables.SafeFlags) != len(reviewRules.SafeFlags) {
-		t.Errorf("SafeFlags has %d commands, review.py %d", len(reviewRules.SafeFlags), len(tables.SafeFlags))
+	if mine, py := slices.Sorted(maps.Keys(reviewRules.SafeFlags)), slices.Sorted(maps.Keys(tables.SafeFlags)); !slices.Equal(mine, py) {
+		t.Errorf("SafeFlags has entries for other commands than review.py's:\n go %v\npy %v", mine, py)
 	}
 	for name, rule := range reviewRules.SafeFlags {
 		for i, field := range []string{"flags", "value", "file"} {
 			mine, py := sorted(strings.Fields(rule[i])), tables.SafeFlags[name][i]
-			if len(mine)+len(py) > 0 && !slices.Equal(mine, py) {
+			if py == nil {
+				py = []string{} // json's [] is empty, not nil
+			}
+			if !slices.Equal(mine, py) {
 				t.Errorf("SafeFlags %s %s differ from review.py:\n go %v\npy %v", name, field, mine, py)
 			}
 		}
 	}
 	if !maps.Equal(reviewRules.Operands, tables.Operands) {
 		t.Errorf("Operands differ from review.py:\n go %v\npy %v", reviewRules.Operands, tables.Operands)
+	}
+}
+
+func TestReviewLevelMatchesReviewPy(t *testing.T) {
+	// Every review.json below with every MYOUS_DEFAULT_REVIEW value (nil:
+	// unset), through Go's level() and review.py's, which must agree.
+	files := []struct{ kind, content string }{
+		{"absent", ""}, {"file", `{"level": "trust"}`}, {"file", `{"level": "changes"}`}, {"file", `{"level": "all"}`},
+		{"file", ""}, {"file", "{"}, {"file", "[1, 2]"}, {"file", `{"level": "bogus"}`}, {"file", `{"level": 7}`},
+		{"file", `"changes"`}, {"file", "null"}, {"file", "{\"level\": \"trust\", \"note\": \"\xff\"}"},
+		{"file", `{"level": "trust", "x": NaN}`}, {"file", "\xef\xbb\xbf{\"level\": \"trust\"}"},
+		{"file", " {\"level\": \"changes\"}\n"}, {"file", `{"level": "trust", "level": "all"}`}, {"file", `{"Level": "trust"}`},
+		{"file", `{"level": "Trust"}`}, {"file", `{"level": "changes", "x": "\ud800"}`},
+		{"link", `{"level": "trust"}`}, {"dir", ""}, {"fifo", ""},
+	}
+	defaults := []any{nil, "", "trust", "changes", "all", "bogus", " changes", "TRUST"}
+	r := &builtinReview{}
+	var cases [][2]any
+	var mine []string
+	for i, f := range files {
+		home := filepath.Join(t.TempDir(), fmt.Sprint(i))
+		os.MkdirAll(home, 0o700)
+		review := filepath.Join(home, "review.json")
+		switch f.kind {
+		case "file":
+			os.WriteFile(review, []byte(f.content), 0o600)
+		case "link":
+			os.WriteFile(filepath.Join(home, "good.json"), []byte(f.content), 0o600)
+			if os.Symlink(filepath.Join(home, "good.json"), review) != nil {
+				continue // no symlinks for this user (Windows)
+			}
+		case "dir":
+			os.Mkdir(review, 0o700)
+		case "fifo":
+			if makeFIFO(review) != nil {
+				continue
+			}
+		}
+		r.home = home
+		for _, d := range defaults {
+			if d == nil {
+				os.Unsetenv("MYOUS_DEFAULT_REVIEW")
+			} else {
+				t.Setenv("MYOUS_DEFAULT_REVIEW", d.(string))
+			}
+			cases = append(cases, [2]any{home, d})
+			mine = append(mine, r.level())
+		}
+	}
+	var want []string
+	askPython(t, "import os\nout = []\n"+
+		"for home, d in data:\n"+
+		"    r.REVIEW_FILE, r.LOG_FILE = os.path.join(home, 'review.json'), os.path.join(home, 'worker.log')\n"+
+		"    if d is None: os.environ.pop('MYOUS_DEFAULT_REVIEW', None)\n"+
+		"    else: os.environ['MYOUS_DEFAULT_REVIEW'] = d\n"+
+		"    out.append(r.level())\n"+
+		"print(json.dumps(out))", cases, &want)
+	if len(want) != len(mine) {
+		t.Fatalf("%d answers from review.py for %d cases", len(want), len(mine))
+	}
+	for i, c := range cases {
+		if mine[i] != want[i] {
+			t.Errorf("review.json %s, MYOUS_DEFAULT_REVIEW %v: go %s, review.py %s", c[0], c[1], mine[i], want[i])
+		}
 	}
 }
 

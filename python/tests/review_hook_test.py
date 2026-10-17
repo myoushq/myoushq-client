@@ -187,10 +187,31 @@ class HookTest(unittest.TestCase):
             (self.home / "review.json").write_text(bad)
             code, why = self.run_hook({"op": "get", "id": "b", "path": "x"})
             self.assertEqual((code, why), (1, "the owner didn't answer in time"), repr(bad))
-        (self.home / "review.json").unlink()
-        (self.home / "review.json").mkdir()   # there, but can't be read
+        review = self.home / "review.json"
+        # Not UTF-8 (Go's JSON would take it), or NaN (Python's would): all, in both workers.
+        for bad in [b'{"level": "trust", "note": "\xff"}', b'{"level": "trust", "x": NaN}', b"\xef\xbb\xbf{}"]:
+            review.write_bytes(bad)
+            self.assertEqual(self.run_hook({"op": "get", "id": "b", "path": "x"}), (1, "the owner didn't answer in time"),
+                             repr(bad))
+        # Anything but a regular file: a directory, a link (even to a valid
+        # file), a pipe (reading one would block the review for good).
+        review.unlink()
+        review.mkdir()
         self.assertEqual(self.run_hook({"op": "get", "id": "b", "path": "x"}), (1, "the owner didn't answer in time"))
-        (self.home / "review.json").rmdir()
+        review.rmdir()
+        good = self.home / "good.json"
+        good.write_text('{"level": "trust"}')
+        try:
+            review.symlink_to(good)
+        except OSError:
+            pass   # no symlinks for this user (Windows)
+        else:
+            self.assertEqual(self.run_hook({"op": "get", "id": "b", "path": "x"}), (1, "the owner didn't answer in time"))
+            review.unlink()
+        if hasattr(os, "mkfifo"):
+            os.mkfifo(review)
+            self.assertEqual(self.run_hook({"op": "get", "id": "b", "path": "x"}), (1, "the owner didn't answer in time"))
+            review.unlink()
         # A valid level is still honoured.
         self.level("changes")
         self.assertEqual(self.run_hook({"op": "get", "id": "c", "path": "x"})[0], 0)

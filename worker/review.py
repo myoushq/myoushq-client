@@ -44,6 +44,7 @@ import json
 import os
 import re
 import shlex
+import stat
 import sys
 import time
 
@@ -254,16 +255,37 @@ def default_level() -> str:
     return FAIL_CLOSED
 
 
+def _not_json(name: str):
+    raise ValueError(f"{name} is not JSON")   # NaN and Infinity, which Python's json would take
+
+
+def _read_regular(path: str) -> bytes:
+    """A regular file's bytes, opened without following a link and without
+    waiting on a pipe; anything else raises OSError."""
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+    with os.fdopen(fd, "rb") as f:
+        if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+            raise OSError(f"{path} is not a regular file")
+        return f.read()
+
+
 def level() -> str:
-    """review.json's level. Absent: the default (default_level). Present
-    but unreadable, not JSON, not an object or not a level: FAIL_CLOSED."""
+    """review.json's level. Absent: the default (default_level). Anything
+    else that isn't a regular file holding a JSON object, in UTF-8, with one
+    of LEVELS as its "level": FAIL_CLOSED. A link, a pipe, a directory or a
+    socket is not read (a pipe would block the review), as the app shows
+    them: as "all"."""
     try:
-        with open(REVIEW_FILE) as f:
-            data = json.load(f)
+        if not stat.S_ISREG(os.lstat(REVIEW_FILE).st_mode):
+            return FAIL_CLOSED
     except FileNotFoundError:
         return default_level()  # never configured
+    except OSError:
+        return FAIL_CLOSED
+    try:
+        data = json.loads(_read_regular(REVIEW_FILE).decode("utf-8"), parse_constant=_not_json)
     except (OSError, ValueError):
-        return FAIL_CLOSED  # present but unreadable or not JSON
+        return FAIL_CLOSED  # unreadable, not UTF-8 or not JSON
     lv = data.get("level") if isinstance(data, dict) else None
     return lv if lv in LEVELS else FAIL_CLOSED
 
