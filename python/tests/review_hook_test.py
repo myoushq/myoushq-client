@@ -121,7 +121,7 @@ RUNS = [
     "find . -newer a.txt", "find . -path ./x -prune -o -print", "uniq -c a.txt", "ls -- -weird", "cat -", "date -u +%F",
     "stat -c %s a.txt", "file -b a.txt", "id -un", "free -h", "nproc", "uptime", "hostname", "whoami", "pwd",
     "realpath -e a", "readlink -f a", "which -a ls", "basename -s .txt a.txt", "tr -d x", "df -h .", "ls .hidden",
-    "cat ./sub/f", "grep -c 'x$' f", "find . -name '.*'",
+    "cat ./sub/f", "find . -name '.*'", "grep -P 'a+' f", "grep -rnP x .",
 ]
 # They ask: an unknown or unsafe flag, an operand or a flag's file outside
 # the work directory, an expansion the review can't see, or an operand that
@@ -138,6 +138,9 @@ ASKS = [
     "tail -f /var/log/x", "rg --pre=sh x", "rg -z x", "head -n", "grep -e", "file -z a", "tree -R -H x -o y",
     "diff -l a b", "md5sum -c ../sums", "ls -I x", "stat -f %z /etc", "less -k keys a", "sort -T /tmp a",
     "sort --compress-program=sh a", "du -sh ~", "realpath ..", "find . -L", "grep -r x ..",
+    # bash's $'...' and $"..." quoting (macOS sh expands them; split words can't tell).
+    "cat $'/etc/passwd'", "cat $'\\x2fetc\\x2fpasswd'", "cat $'..\\x2fsecret'", "grep -f $'/etc/passwd' a",
+    "find $'/etc'", 'cat $"/etc/passwd"', "grep -c 'x$' f", 'grep "x$" f',
 ]
 WINDOWS_RUNS = [
     "Get-ChildItem -Recurse | Select-String foo", "gc a.txt | Measure-Object -Line", "dir; Get-Date", "gc a.txt",

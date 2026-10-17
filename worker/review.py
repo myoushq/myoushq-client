@@ -72,7 +72,10 @@ READ_ONLY = {
     "awk", "diff", "tree", "which", "type", "true", "test", "basename", "dirname", "realpath",
     "readlink", "md5sum", "sha256sum", "shasum", "hostname", "nproc", "free", "uptime",
 }
-UNSAFE_TOKENS = (">", "<", "$(", "`", "sed -i", "tee ", "{", "-exec", "-ok", "-delete")
+# $'...' and $"..." are bash's (and macOS sh's) quoting: $'\x2fetc' is
+# /etc there, a path the review can't see in the split words (dash leaves
+# them as they are). So any $ before a quote asks, a regex's 'x$' too.
+UNSAFE_TOKENS = (">", "<", "$(", "`", "sed -i", "tee ", "{", "-exec", "-ok", "-delete", "$'", '$"')
 # A few allowlisted commands still write with the right flag: `sort -o/
 # --output FILE` writes (and overwrites) a file, and GNU find's -fprint,
 # -fprintf, -fprint0 and -fls write one. These are command-specific (a
@@ -140,7 +143,7 @@ SAFE_FLAGS = {
              "-maxdepth -mindepth -mmin -mtime -name -newer -path -perm -printf -regex -regextype -samefile -size "
              "-type -uid -user -wholename -xtype", "-anewer -cnewer -newer -samefile"),
     "free": ("-b -g -h -k -m -t -w --bytes --giga --human --kilo --mega --total --wide", "", ""),
-    "grep": ("-0 -1 -2 -3 -4 -5 -6 -7 -8 -9 -A -B -C -E -F -G -H -I -L -R -a -b -c -e -f -h -i -l -m -n -o -q -r -s "
+    "grep": ("-0 -1 -2 -3 -4 -5 -6 -7 -8 -9 -A -B -C -E -F -G -H -I -L -P -R -a -b -c -e -f -h -i -l -m -n -o -q -r -s "
              "-v -w -x --after-context --basic-regexp --before-context --byte-offset --color --colour --context "
              "--count --dereference-recursive --exclude --exclude-dir --extended-regexp --file --files-with-matches "
              "--files-without-match --fixed-strings --ignore-case --include --invert-match --line-number "

@@ -47,7 +47,11 @@ var reviewRules = struct {
 		"awk", "diff", "tree", "which", "type", "true", "test", "basename", "dirname", "realpath",
 		"readlink", "md5sum", "sha256sum", "shasum", "hostname", "nproc", "free", "uptime",
 	},
-	Unsafe: []string{">", "<", "$(", "`", "sed -i", "tee ", "{", "-exec", "-ok", "-delete"},
+	// $'...' and $"..." are bash's (and macOS sh's) quoting: $'\x2fetc' is
+	// /etc there, a path the review can't see in the split words (dash
+	// leaves them as they are). So any $ before a quote asks, a regex's
+	// 'x$' too.
+	Unsafe: []string{">", "<", "$(", "`", "sed -i", "tee ", "{", "-exec", "-ok", "-delete", "$'", `$"`},
 	// On Windows the worker's shell is PowerShell: its read-only commands,
 	// and what runs code inside an otherwise harmless one ((...), & and
 	// script blocks).
@@ -134,7 +138,7 @@ var reviewRules = struct {
 		},
 		"free": {"-b -g -h -k -m -t -w --bytes --giga --human --kilo --mega --total --wide", "", ""},
 		"grep": {
-			"-0 -1 -2 -3 -4 -5 -6 -7 -8 -9 -A -B -C -E -F -G -H -I -L -R -a -b -c -e -f -h -i -l -m -n -o -q -r " +
+			"-0 -1 -2 -3 -4 -5 -6 -7 -8 -9 -A -B -C -E -F -G -H -I -L -P -R -a -b -c -e -f -h -i -l -m -n -o -q -r " +
 				"-s -v -w -x --after-context --basic-regexp --before-context --byte-offset --color --colour --context " +
 				"--count --dereference-recursive --exclude --exclude-dir --extended-regexp --file " +
 				"--files-with-matches --files-without-match --fixed-strings --ignore-case --include --invert-match " +
