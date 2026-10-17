@@ -128,7 +128,11 @@ publishes.
 ## Dependency updates
 
 - Wait at least 14 days after a dependency release before adopting it,
-  unless it fixes a vulnerability that affects us.
+  unless it fixes a vulnerability that affects us. That means a published
+  advisory or CVE for the version we run, or a fix in a code path we call;
+  look in the project's changelog, its GitHub security advisories and OSV
+  (osv.dev). Hardening with no advisory, and fixes in code we don't call,
+  don't shorten the wait.
 - Read the diff of security-relevant dependencies before bumping:
   `nostr-sdk`, `spake2`, `pycryptodome`, `filippo.io/edwards25519`,
   `golang.org/x/crypto`, `go-nostr`, `nostr-tools`, `@noble/*`, the

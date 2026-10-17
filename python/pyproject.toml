@@ -15,7 +15,7 @@ dependencies = [
     # Macs too, so no install builds it from source.
     "nostr-sdk==0.45.1",
     "spake2==0.9",
-    "pycryptodome==4.0.0",
+    "pycryptodome==3.24.0",
 ]
 
 [project.optional-dependencies]
