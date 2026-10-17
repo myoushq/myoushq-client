@@ -228,8 +228,9 @@ whether it stayed so).
 
 The release workflow no longer builds this app: it builds
 `worker/desktop` (`make-mac.sh --universal --no-dmg --sign …`) and then
-runs this folder's `notarize.sh` and `make-dmg.sh` on it. For this app it
-ran, in this order:
+runs this folder's `notarize.sh` and `make-dmg.sh` on it, and
+`notarize.sh` again on the disk image. For this app it ran, in this
+order:
 
 ```sh
 worker/mac/make-app.sh --no-config --version 0.7.5 --sign "Developer ID Application: <name> (<team>)"
@@ -243,8 +244,13 @@ first and then the app. `notarize.sh` zips the app, submits it with an
 App Store Connect API key, waits, prints Apple's log on rejection, and
 staples the ticket (retrying for up to ten minutes, as the ticket can
 take a while to reach Apple's servers). `make-dmg.sh` makes the image
-with an Applications shortcut and appends the checksum to `SHA256SUMS`
-next to it.
+with an Applications shortcut, signs it with `--sign`, and appends the
+checksum to `SHA256SUMS` next to it. Given the `.dmg`, `notarize.sh`
+submits the image as it is and staples it the same way; the release
+does that after `make-dmg.sh`, checks the image with
+`xcrun stapler validate` and
+`spctl -a -t open --context context:primary-signature`, and writes
+`SHA256SUMS` only then, as stapling changes the image's bytes.
 
 Inputs the workflow needs, as repository secrets:
 

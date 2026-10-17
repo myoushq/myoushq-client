@@ -1,11 +1,14 @@
 #!/bin/sh
-# Notarize and staple a signed "myous.app" with an App Store Connect
-# API key (the kind notarytool takes; no Apple ID password involved).
+# Notarize and staple a signed "myous.app", or the disk image made from
+# it, with an App Store Connect API key (the kind notarytool takes; no
+# Apple ID password involved).
 #   worker/mac/notarize.sh build/myous.app --key-id KEYID --issuer ISSUER_UUID --key AuthKey_KEYID.p8
+#   worker/mac/notarize.sh build/myous-v0.8.2.dmg --key-id ...
 # The app must already be signed with a Developer ID certificate
-# (make-app.sh --sign). Prints Apple's log if notarization fails.
+# (make-app.sh --sign), the image too (make-dmg.sh --sign). Prints
+# Apple's log if notarization fails.
 set -eu
-APP=${1:?usage: notarize.sh APP --key-id ID --issuer ISSUER --key PATH}
+APP=${1:?usage: notarize.sh APP|DMG --key-id ID --issuer ISSUER --key PATH}
 shift
 KEY_ID= ISSUER= KEY=
 while [ $# -gt 0 ]; do
@@ -18,13 +21,19 @@ while [ $# -gt 0 ]; do
 	shift
 done
 [ -n "$KEY_ID" ] && [ -n "$ISSUER" ] && [ -n "$KEY" ] || { echo "need --key-id, --issuer and --key" >&2; exit 2; }
-[ -d "$APP" ] || { echo "no app at $APP" >&2; exit 1; }
-
-# notarytool takes a zip; ditto keeps the bundle's metadata.
-ZIP=$(mktemp -d)/app.zip
-ditto -c -k --keepParent "$APP" "$ZIP"
+# notarytool takes a disk image as it is and an app as a zip; ditto
+# keeps the bundle's metadata.
+case "$APP" in
+*.dmg)
+	[ -f "$APP" ] || { echo "no disk image at $APP" >&2; exit 1; }
+	SUBMIT=$APP ;;
+*)
+	[ -d "$APP" ] || { echo "no app at $APP" >&2; exit 1; }
+	SUBMIT=$(mktemp -d)/app.zip
+	ditto -c -k --keepParent "$APP" "$SUBMIT" ;;
+esac
 OUT=$(mktemp)
-if ! xcrun notarytool submit "$ZIP" --key "$KEY" --key-id "$KEY_ID" --issuer "$ISSUER" --wait --timeout 45m --output-format json > "$OUT"; then
+if ! xcrun notarytool submit "$SUBMIT" --key "$KEY" --key-id "$KEY_ID" --issuer "$ISSUER" --wait --timeout 45m --output-format json > "$OUT"; then
 	cat "$OUT" >&2
 	echo "notarytool submit failed" >&2
 	exit 1
@@ -36,7 +45,7 @@ if [ "$STATUS" != "Accepted" ]; then
 	xcrun notarytool log "$ID" --key "$KEY" --key-id "$KEY_ID" --issuer "$ISSUER" >&2 || true
 	exit 1
 fi
-# Staple the ticket so the app opens without a network check. Right
+# Staple the ticket so it opens without a network check. Right
 # after acceptance the ticket is not always on Apple's servers yet, and
 # the stapler then fails with "The network connection was lost" (error
 # 68), so try for up to ten minutes before giving up.

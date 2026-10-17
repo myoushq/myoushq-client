@@ -174,8 +174,9 @@ app (`desktop/`).
   else is dropped before the hook sees it. The hook (`review.py`) is the
   control point for what those contacts may do: at the container's
   default level, `changes`, it allows reads in the work directory with
-  flags known to only read (and asks about everything else); `all` asks
-  about every request; `trust` allows everything and logs it.
+  flags known to only read (and asks about everything else, a few plain
+  reads included: [docs/worker.md](../docs/worker.md), section 6); `all`
+  asks about every request; `trust` allows everything and logs it.
 - Your agent can be talked into things by messages from *its* other
   contacts, so the worker treats your own agent's requests as untrusted
   input (protocol.md section 8). Tighten `review.py` as soon as the worker

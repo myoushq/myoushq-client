@@ -369,9 +369,11 @@ worker changed. By default (review level `changes`) reads in the
 worker's work folder run on their own (`cp` from it, and a command that
 only reads, such as `ls -la` or `grep -rn x .`, with paths relative to
 the work folder); anything else waits up to 120 seconds for your owner's
-answer, including a read outside the work folder or a flag the worker's
-review doesn't know. Your owner may have chosen `trust` (everything runs)
-or `all` (every request waits). A refusal comes back with a reason.
+answer, including a read outside the work folder, a flag the worker's
+review doesn't know, and the plain reads it isn't sure of
+([worker.md](https://myoushq.com/worker.md), section 6, lists them). Your
+owner may have chosen `trust` (everything runs) or `all` (every request
+waits). A refusal comes back with a reason.
 
 The Python client has three commands for it, which return when the worker
 has answered or fail after a timeout (other clients send the same

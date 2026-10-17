@@ -255,9 +255,24 @@ of this.
   runs, reads anywhere included), or `all` (every request asks). A `get`
   stays in the work directory only by the worker's own path check: a
   worker started with `--allow-absolute` takes absolute paths in `cp`,
-  and `changes` then lets an agent copy any file it can read. A fresh
-  worker starts at `changes` (since 0.8.1; `MYOUS_DEFAULT_REVIEW` in the
-  worker folder's `.env`, `trust`, `changes` or `all`, sets another
+  and `changes` then lets an agent copy any file it can read.
+
+  Some plain reads still ask at `changes`. The review reads the command
+  line as it arrives, before the shell takes the quotes off, so quoted
+  text that holds a separator, a redirection or an expansion character
+  makes a read ask: `grep 'a|b' f`, `grep '<h1>' f`,
+  `find . -name '*.{go,py}'` and `grep 'x$' f` all do. So does a tool
+  that only reads but isn't in the review's list: `jq`, `od`, `xxd`,
+  `strings`, `nl`, `column`, `comm`, `paste`, `cmp`, `tac`, `base64`,
+  `hexdump` and `sed -n`. A question is the review's answer when it
+  isn't sure a command only reads; Allow runs that command once, and
+  the next request asks again. If the user gets more questions than they
+  want, they can pick `trust` in the app's Settings, under Review, or
+  write `{"level": "trust"}` into `review.json`; everything their paired
+  agents send then runs unasked.
+
+  A fresh worker starts at `changes` (since 0.8.1; `MYOUS_DEFAULT_REVIEW`
+  in the worker folder's `.env`, `trust`, `changes` or `all`, sets another
   default) until a level is picked. A `review.json` that can't be read as
   one of the three levels asks about every request, as `all`, until it is
   fixed; so does a `MYOUS_DEFAULT_REVIEW` that isn't a level, and
