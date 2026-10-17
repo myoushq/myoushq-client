@@ -380,12 +380,24 @@ pub fn answer_approval(home: &Path, id: &str, verdict: &str) -> io::Result<()> {
     write_atomic(&dir.join(format!("{id}.answer")), verdict.as_bytes())
 }
 
-/// review.json's level: trust (the default), changes or all.
+/// review.json's level as the workers read it: trust, changes or all.
+/// No file is a worker never given a level, which asks before changes (a
+/// container's default since 0.8.1, and what the app writes without a
+/// container). A file that is there but can't be read (a link or a pipe
+/// included: the app reads only a plain file), isn't JSON, isn't an
+/// object or has no valid level is all, as the workers fail closed: a
+/// truncated or torn file asks about everything rather than running it.
 pub fn review_level(home: &Path) -> String {
-    let v = read_json(&paths::review_file(home)).unwrap_or(Value::Null);
+    const FAIL_CLOSED: &str = "all";
+    let data = match read_file(&paths::review_file(home)) {
+        Ok(data) => data,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return "changes".to_string(),
+        Err(_) => return FAIL_CLOSED.to_string(),
+    };
+    let v: Value = serde_json::from_slice(&data).unwrap_or(Value::Null);
     match v.get("level").and_then(Value::as_str) {
         Some(l @ ("trust" | "changes" | "all")) => l.to_string(),
-        _ => "trust".to_string(),
+        _ => FAIL_CLOSED.to_string(),
     }
 }
 
@@ -425,7 +437,7 @@ mod tests {
         assert_eq!(w.requests[0]["id"], "b");
         assert!(w.config.is_null());
         assert!(w.status.is_null());
-        assert_eq!(w.review, "trust");
+        assert_eq!(w.review, "changes");
         answer_approval(&home, "r-5_x", "allow").unwrap();
         assert_eq!(
             fs::read_to_string(paths::approvals_dir(&home).join("r-5_x.answer")).unwrap(),
@@ -475,7 +487,8 @@ mod tests {
         // reaches the window (or app.json again when the window saves it).
         let w = read_worker(&home);
         assert!(w.config.is_null(), "{}", w.config);
-        assert_eq!(w.review, "trust");
+        // review.json is there but not read (a link): it shows all, failing closed as the workers do.
+        assert_eq!(w.review, "all");
         write_config(&home, &serde_json::json!({"name": "x"})).unwrap();
         set_review_level(&home, "all").unwrap();
         assert!(plain(&paths::config_file(&home)) && plain(&paths::review_file(&home)));
@@ -558,6 +571,50 @@ mod tests {
         // A new name never opens what is there.
         assert!(create_new(&compose).is_err());
         fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// The level shown is the one the workers act on (review.py's and the
+    /// Go worker's `level`): none means a worker never given a level, which
+    /// asks before changes; a file that is there but isn't a valid level
+    /// fails closed to all.
+    #[test]
+    fn review_level_reads_review_json_as_the_workers_do() {
+        let home = std::env::temp_dir().join(format!("myous-review-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&home);
+        assert_eq!(review_level(&home), "changes", "no worker folder");
+        fs::create_dir_all(&home).unwrap();
+        assert_eq!(review_level(&home), "changes", "no review.json");
+        for level in ["trust", "changes", "all"] {
+            set_review_level(&home, level).unwrap();
+            assert_eq!(review_level(&home), level);
+        }
+        let file = paths::review_file(&home);
+        for (data, what) in [
+            ("", "empty"),
+            ("{", "not JSON"),
+            ("trust", "not JSON either"),
+            (r#"["changes"]"#, "a JSON array"),
+            (r#""trust""#, "a JSON string"),
+            ("null", "null"),
+            ("{}", "no level"),
+            (r#"{"level": "bogus"}"#, "a bad level"),
+            (r#"{"level": "Trust"}"#, "a level in other letters"),
+            (r#"{"level": 1}"#, "a number"),
+            (r#"{"level": ["trust"]}"#, "an array"),
+            (r#"{"level": null}"#, "null level"),
+        ] {
+            fs::write(&file, data).unwrap();
+            assert_eq!(review_level(&home), "all", "{what}: {data:?}");
+        }
+        // Not a file: unreadable, so all.
+        fs::remove_file(&file).unwrap();
+        fs::create_dir(&file).unwrap();
+        assert_eq!(review_level(&home), "all", "a folder");
+        fs::remove_dir(&file).unwrap();
+        // Written again, it is that level.
+        set_review_level(&home, "trust").unwrap();
+        assert_eq!(review_level(&home), "trust");
+        fs::remove_dir_all(&home).unwrap();
     }
 
     #[test]
