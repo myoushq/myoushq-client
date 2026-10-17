@@ -40,19 +40,25 @@ class EndToEnd(unittest.TestCase):
         subprocess.run(["go", "build", "-o", str(hub_bin), "."], cwd=HUB_SRC, check=True)
         port = free_port()
         cls.hub_url = f"http://127.0.0.1:{port}"
-        env = dict(os.environ, LISTEN_ADDR=f"127.0.0.1:{port}", DATA_DIR=str(cls.tmp / "hubdata"),
-                   WEB_DIR=str(HUB_SRC / "web"), DOCS_DIR=str(CLIENT_ROOT / "docs"), RELAY_URL=f"ws://127.0.0.1:{port}",
-                   PUBLIC_URL=cls.hub_url, POW_DIFFICULTY="10", RATE_LIMIT_SCALE="100")
+        cls.hub_cmd = [str(hub_bin)]
+        cls.hub_env = dict(os.environ, LISTEN_ADDR=f"127.0.0.1:{port}", DATA_DIR=str(cls.tmp / "hubdata"),
+                           WEB_DIR=str(HUB_SRC / "web"), DOCS_DIR=str(CLIENT_ROOT / "docs"),
+                           RELAY_URL=f"ws://127.0.0.1:{port}", PUBLIC_URL=cls.hub_url, POW_DIFFICULTY="10",
+                           RATE_LIMIT_SCALE="100")
         cls.hub_log = open(cls.tmp / "hub.log", "w")
-        cls.hub = subprocess.Popen([str(hub_bin)], env=env, stdout=cls.hub_log, stderr=cls.hub_log)
+        cls.start_hub()
+        for name in ("alice", "bob", "carol"):
+            cls.run_ok(name, "init", "--alias", name, "--hub", cls.hub_url)
+
+    @classmethod
+    def start_hub(cls):
+        cls.hub = subprocess.Popen(cls.hub_cmd, env=cls.hub_env, stdout=cls.hub_log, stderr=cls.hub_log)
         for _ in range(50):
             try:
                 urllib.request.urlopen(cls.hub_url + "/config.json", timeout=1)
                 break
             except OSError:
                 time.sleep(0.1)
-        for name in ("alice", "bob", "carol"):
-            cls.run_ok(name, "init", "--alias", name, "--hub", cls.hub_url)
 
     @classmethod
     def tearDownClass(cls):
@@ -406,6 +412,29 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual([(e["type"], e["late"]["cmd"], e["stdout"]) for e in entries], [("result", "echo killed", "killed\n")])
         self.run_ok("bob", "inbox")
         self.run_ok("alice", "inbox")
+
+    def test_9z_a_listener_catches_up_after_its_own_reconnect(self):
+        # The hub restarts under a running listener; nostr-sdk reconnects it
+        # and subscribes again ("limit": 0), which brings nothing stored. A
+        # message sent before it is back still reaches the listener.
+        self.run_ok("carol", "ensure")
+        for _ in range(60):
+            if "listener_running  True" in self.run_ok("carol", "status"):
+                break
+            time.sleep(0.5)
+        self.run_ok("carol", "inbox")   # what is waiting, read
+        self.hub.terminate()
+        self.hub.wait()
+        time.sleep(3)
+        self.start_hub()
+        self.run_ok("alice", "send", "carol", "while you were away")
+        texts = []
+        for _ in range(60):
+            texts += [e["text"] for e in json.loads(self.run_ok("carol", "inbox", "--local", "--json"))]
+            if texts:
+                break
+            time.sleep(1)
+        self.assertEqual(texts, ["while you were away"])
 
     def test_6_identity_is_never_replaced(self):
         r = self.run_cli("alice", "init", "--alias", "alice")

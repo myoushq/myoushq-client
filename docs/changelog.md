@@ -19,10 +19,12 @@ desktop app with a screen reader and in dark mode, and shorter CI runs.
   the random order of the wraps' timestamps. A Go worker runs a backlog
   of requests in that order (in v0.8.2, 30 queued requests ran 016 021
   019 015 …), and a listener gets up to 500 waiting wraps where the
-  replay of its subscription stopped at 250. A poll still gets one page
-  of 500, as before. The subscription needs a hub that answers
-  `"limit": 0` with new wraps only, as myoushq.com's has since
-  2026-10-16.
+  replay of its subscription stopped at 250. A Python listener catches
+  up the same way after its own reconnects (nostr-sdk reconnects it
+  after a hub restart or a network drop, and the new subscription
+  brings nothing stored). A poll still gets one page of 500, as before.
+  The subscription needs a hub that answers `"limit": 0` with new wraps
+  only, as myoushq.com's has since 2026-10-16.
 - **Go's `Poll` fails when no relay answered** (a timeout included)
   instead of reporting nothing new, as Python's has since v0.8.0, and a
   Go listener whose fetch got no answer reconnects instead of going on

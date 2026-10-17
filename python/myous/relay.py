@@ -186,10 +186,15 @@ class Connection:
         target = ReqTarget.manual({u: [self._inbox_filter().limit(FETCH_PAGE)] for u in self.relays})
         return await self.client.fetch_events(target, TIMEOUT)
 
+    async def _connects(self) -> int:
+        """How many times the relays have connected (nostr-sdk reconnects by itself)."""
+        return sum(r.stats().success() for r in (await self.client.relays()).values())
+
     async def stream_wraps(self) -> AsyncIterator[list[Event]]:
         """Yield gift wraps in batches: first the stored ones fetch_wraps
         gets (one batch, which handle_wraps puts in the order written),
-        then each new one as it arrives."""
+        then each new one as it arrives, and those stored again after a
+        reconnect."""
         # New events only ("limit": 0; the hub answers no stored ones), and
         # listening before subscribing, so that nothing falls between the
         # subscription and the fetch of what is stored (a wrap in both is
@@ -197,15 +202,23 @@ class Connection:
         target = ReqTarget.manual({u: [self._inbox_filter().limit(0)] for u in self.relays})
         notifications = self.client.notifications()
         await self.client.subscribe(target)
+        connects = await self._connects()
         backlog = await self.fetch_wraps()
         yield backlog
-        # What the fetch got comes through the notifications too: once is enough.
+        # What a fetch got comes through the notifications too: once is enough.
         handed = {e.id().to_hex() for e in backlog}
         while True:
             note = await notifications.next()
             if note is None or note.is_shutdown():
                 return
-            if (note.is_new_event() and note.event.kind().as_u16() == KIND_GIFT_WRAP
+            if await self._connects() > connects:
+                # nostr-sdk reconnected and subscribed again, which ("limit": 0)
+                # brings nothing stored: what came meanwhile is fetched, as at the start.
+                connects = await self._connects()
+                backlog = await self.fetch_wraps()
+                handed.update(e.id().to_hex() for e in backlog)
+                yield backlog
+            elif (note.is_new_event() and note.event.kind().as_u16() == KIND_GIFT_WRAP
                     and note.event.id().to_hex() not in handed):
                 yield [note.event]
 

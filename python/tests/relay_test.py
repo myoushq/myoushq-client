@@ -36,10 +36,12 @@ class FakeRelay:
         self.queries, self.subscriptions = [], []
         self.live: asyncio.Queue | None = None
         self.up = True
+        self.connects = 1   # nostr-sdk's count of successful connections
 
     async def relays(self):
         status = relay.RelayStatus.CONNECTED if self.up else relay.RelayStatus.DISCONNECTED
-        return {"ws://127.0.0.1:9": SimpleNamespace(status=lambda: status)}
+        stats = SimpleNamespace(success=lambda: self.connects)
+        return {"ws://127.0.0.1:9": SimpleNamespace(status=lambda: status, stats=lambda: stats)}
 
     @staticmethod
     def filters(target):
@@ -124,6 +126,27 @@ class FetchWraps(unittest.TestCase):
         batches = asyncio.run(run())
         self.assertEqual(sorted(e.n for e in batches[0]), list(range(300)))
         self.assertEqual([e.n for e in batches[1]], [5000])
+
+    def test_after_a_reconnect_the_stream_fetches_again(self):
+        # nostr-sdk reconnects by itself, and its new subscription ("limit": 0)
+        # brings nothing stored: what came meanwhile is fetched, as one batch.
+        conn = connection(stored(3))
+        note = SimpleNamespace(is_shutdown=lambda: False, is_new_event=lambda: False)
+
+        async def run():
+            stream = conn.stream_wraps()
+            first = await stream.__anext__()
+            conn.client.events.insert(0, FakeEvent(7, 1_760_000_001))   # stored while disconnected
+            conn.client.connects += 1
+            await conn.client.live.put(note)   # the relay's AUTH challenge, say
+            again = await asyncio.wait_for(stream.__anext__(), 5)
+            await conn.client.live.put(None)
+            return first, again
+
+        first, again = asyncio.run(run())
+        self.assertEqual(sorted(e.n for e in first), [0, 1, 2])
+        self.assertEqual(sorted(e.n for e in again), [0, 1, 2, 7])
+        self.assertEqual(len(conn.client.queries), 2)
 
 
 if __name__ == "__main__":
