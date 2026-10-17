@@ -41,7 +41,8 @@ class Encryption(unittest.TestCase):
             def do_GET(self):
                 body = b"x" * (150 if self.path.endswith("/" + "a" * 64) else 50)
                 self.send_response(200)
-                self.send_header("Content-Length", str(len(body)))
+                # "²" passes str.isdigit, but it isn't a number int takes
+                self.send_header("Content-Length", "²" if self.path.endswith("/" + "c" * 64) else str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
 
@@ -58,6 +59,7 @@ class Encryption(unittest.TestCase):
             self.assertEqual(len(client.get("b" * 64)), 50)
             with self.assertRaises(ValueError):
                 client.get("b" * 64, size=51)  # the hub announces a size the message didn't
+            self.assertEqual(len(client.get("c" * 64, size=50)), 50)  # a Content-Length that isn't a number
         finally:
             srv.shutdown()
             srv.server_close()

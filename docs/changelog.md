@@ -37,6 +37,16 @@ saying which plain reads still ask at `changes`.
   isn't 32 bytes or a nonce that isn't 12 bytes is an error now (v0.8.1
   accepted 16- and 24-byte keys), as in the Go, Rust and TypeScript
   clients.
+- **A malformed wrap no longer loses a batch:** a wrap carrying a
+  non-ASCII digit in its `ms` tag, a part's index or count, or a file's
+  size (`²`, which Python's `isdigit` accepts and `int` rejects) made
+  the Python client raise after marking it seen: a poll lost the
+  contact's messages fetched with it, and a listener (the Python
+  worker's too) stopped. Any registered key could send such a wrap.
+  The same `Content-Length` from the hub made `myous fetch` fail with
+  Python's own `int` error. Python reads these numbers as ASCII
+  decimal digits only now, as the protocol says ("decimal"), and a wrap
+  that can't be read is dropped alone, as in the Go client.
 - **The qr lock gains `colorama` on Windows**, which `qrcode` needs
   there; the old lock, made on a Mac, lacked it, so a hashed install
   of the qr extra on Windows would have failed.

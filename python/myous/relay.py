@@ -198,12 +198,14 @@ class Connection:
 
 class Unwrapped:
     """A valid message out of a gift wrap: who sent it, what kind, its
-    content and tags, when it was written, and its part tag if any."""
+    content and tags, when it was written, and its part tag if any. The
+    inbox puts a file message's fields in `file`."""
 
     def __init__(self, sender: str, kind: int, content: str, sent_at: int, ms: int,
                  part: tuple[str, int, int] | None, tags: list[list[str]]):
         self.sender, self.kind, self.content = sender, kind, content
         self.sent_at, self.ms, self.part, self.tags = sent_at, ms, part, tags
+        self.file: dict | None = None
 
 
 def unwrap(keys: Keys, wrap: Event) -> Unwrapped | None:
@@ -224,7 +226,7 @@ def unwrap(keys: Keys, wrap: Event) -> Unwrapped | None:
     part = None
     tags = [tag.to_vec() for tag in rumor.tags()]
     for v in tags:
-        if len(v) >= 2 and v[0] == "ms" and v[1].isdigit():
+        if len(v) >= 2 and v[0] == "ms" and parts.ascii_digits(v[1]):
             ms = int(v[1])
         elif v and v[0] == "part":
             if kind != KIND_CHAT:

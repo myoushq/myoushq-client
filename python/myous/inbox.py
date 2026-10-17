@@ -30,6 +30,7 @@ import copy
 import json
 import os
 import re
+import sys
 import time
 
 from nostr_sdk import Event, Keys
@@ -125,10 +126,10 @@ def handle_wraps(st: Storage, keys: Keys, wraps: list[Event]) -> list[dict]:
     st.put("state", state)
 
     # Wrap timestamps are randomized, so put messages in the order they were written.
-    unwrapped = (relay.unwrap(keys, w) for w in fresh)
+    blob_api = (st.get("hub") or {}).get("blob_api")
+    unwrapped = (_unwrap_or_drop(keys, w, blob_api) for w in fresh)
     messages = sorted((m for m in unwrapped if m and m.sent_at >= now - MAX_MESSAGE_AGE),
                       key=lambda m: (m.sent_at, m.ms, m.part[1] if m.part else 0))
-    blob_api = (st.get("hub") or {}).get("blob_api")
     buffer = st.get("partials", {})
     # A deep copy: parts.add changes an unfinished message's parts in place,
     # which a shallow copy would share, so a part arriving on its own (as a
@@ -141,10 +142,7 @@ def handle_wraps(st: Storage, keys: Keys, wraps: list[Event]) -> list[dict]:
             continue  # not paired, or blocked: drop silently
         base = {"direction": "in", "peer": contact["npub"], "alias": contact["alias"], "sent_at": m.sent_at}
         if m.kind == relay.KIND_FILE:
-            fields = files.parse_file_tags(m.tags, m.content, blob_api)
-            if fields is None:
-                continue  # malformed, or not on our hub: drop it
-            entry = dict(base, type="file", **fields)
+            entry = dict(base, type="file", **m.file)
             entry["text"] = "file: " + describe_file(entry)
             stored.append(record(st, entry))
             continue
@@ -166,6 +164,27 @@ def handle_wraps(st: Storage, keys: Keys, wraps: list[Event]) -> list[dict]:
     if buffer != before:
         st.put("partials", buffer)
     return stored
+
+
+def _unwrap_or_drop(keys: Keys, wrap: Event, blob_api: str | None) -> relay.Unwrapped | None:
+    """relay.unwrap, with a file message's fields (files.parse_file_tags)
+    in `file`, or None if the wrap holds no valid message. A wrap that
+    makes reading it raise is dropped like any other invalid one, with a
+    warning: anyone registered can send us a wrap, and the batch it came
+    in is already marked seen, so an exception here would lose the
+    messages fetched with it (Go's unwrapOrDrop)."""
+    try:
+        m = relay.unwrap(keys, wrap)
+        if m and m.kind == relay.KIND_FILE:
+            m.file = files.parse_file_tags(m.tags, m.content, blob_api)
+            if m.file is None:
+                return None  # malformed, or not on our hub: drop it
+        return m
+    except Exception as e:
+        # The exception's type only: its text may quote what the sender wrote.
+        print(f"warning: dropped a message that couldn't be read (wrap {wrap.id().to_hex()}, "
+              f"{type(e).__name__})", file=sys.stderr)
+        return None
 
 
 def _text_entry(st: Storage, base: dict, text: str, sender: str, now: int) -> dict:

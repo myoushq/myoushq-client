@@ -52,11 +52,18 @@ def new_id() -> str:
     return secrets.token_hex(16)
 
 
+def ascii_digits(s: str) -> bool:
+    """Whether `s` is a number as protocol.md writes the ones in tags
+    ("decimal", "decimal strings"): ASCII digits 0-9 only, no sign or
+    space. str.isdigit alone is True for "²" too, which int rejects."""
+    return s.isascii() and s.isdigit()
+
+
 def parse_tag(values: list[str]) -> tuple[str, int, int] | None:
     """(id, index, total) from a ["part", ...] tag, or None if malformed."""
     if len(values) < 4 or not re.fullmatch(r"[0-9a-f]{1,64}", values[1]):
         return None
-    if not (values[2].isdigit() and values[3].isdigit()):
+    if not (ascii_digits(values[2]) and ascii_digits(values[3])):
         return None
     index, total = int(values[2]), int(values[3])
     if not (2 <= total <= MAX_PARTS and 1 <= index <= total):
