@@ -7,7 +7,7 @@ import { Backend, makeBackend, PreviewBackend, Removal, TrayItem } from "./backe
 import { applyFake } from "./fake.js";
 import { appMenu, buildMenu, MenuActions, moreMenu } from "./menu.js";
 import { Advance, Agent, agentContacts, agentName, classifyContainers, Container, isUrgent, Kind, MAC_BROWSER_LINKS, Model, notifyKinds, RuntimeStep, shortNpub, Staleness, staleChoice, verb, what, Worker } from "./model.js";
-import { attentionCard, browserAdvance, browserCard, BrowserRow, browserRow, checkAdvance, CheckName, checklist, hubLine, installLine, macBrowserHint, macBrowserName, macBrowserQuestion, Row, runtimeCard } from "./setup.js";
+import { attentionCard, browserAdvance, browserCard, BrowserRow, browserRow, checkAdvance, CheckName, checklist, hubLine, installLine, macBrowserHint, macBrowserName, macBrowserQuestion, REVIEW_LEVELS, reviewFact, reviewLevel, reviewMeans, Row, runtimeCard } from "./setup.js";
 import { byteCount, capitalize, clockTime, countdown, dayLabel, defaultDescription, dict, escapeMarkup, isDefaultDescription, newer, num, pairingMessage, plural, renamedDescription, setHostOs, str, timeAgo } from "./text.js";
 
 const INVITE_SECONDS = 900;
@@ -495,17 +495,23 @@ function fillSetup(w: Worker) {
     name.placeholder = info.hostname;
     desc.value = w.config.description || defaultDescription(name.value, direct, !direct || w.config.hostBrowser);
     name.dataset.prev = name.value;
+    // The review level: the worker's (review.json's; "changes" when it has none), the owner's pick from then on.
+    const review = $<HTMLSelectElement>("setup-review");
+    if (!review.options.length) review.append(...REVIEW_LEVELS.map((l) => el("option", { value: l.level, text: l.label })));
+    review.value = reviewLevel(w.review);
   }
+  const level = setupReviewChosen();
+  setText($("setup-review-hint"), reviewMeans(level));
   // Without a container the worker is the one this app carries: nothing to find or install.
   setMarked($("setup-runtime"), direct
-    ? `✓ Runs on ${sys} as you${w.config.browserOff ? " · No worker browser" : ""} · Review: ${REVIEW_FACT[w.review] ?? REVIEW_FACT.changes}`
+    ? `✓ Runs on ${sys} as you${w.config.browserOff ? " · No worker browser" : ""} · Review: ${reviewFact(level)}`
     : m.runtimeState === "ok"
       ? `The worker runs in a container in ${m.runtimeName}, so your agent's commands stay inside it.`
       : "The worker runs in a container, so your agent's commands stay inside it.");
   show($("setup-wbrowser"), direct);
   if (direct) fillBrowserRow($("setup-wbrowser"), w);
   setText($("setup-browser"), direct
-    ? `Without a container, nothing but the review stands between your agent's commands and ${sys}. The review starts at "Ask me before anything that changes things" (Settings).`
+    ? `Without a container, nothing but the review stands between your agent's commands and ${sys}. Choose it below; Settings can change it later.`
     : "Its browser runs in the container, shown through a window in your own browser. Some sites take it for a bot, even when it's you.");
   // A Mac: where its browser runs, asked as myous for Mac asks it (the line above is the question's hint there).
   const askWhere = info.os === "macos" && !direct;
@@ -542,6 +548,11 @@ function fillMacBrowserQuestion(w: Worker) {
   }
   where.onchange = () => setText($("setup-where-hint"), macBrowserHint(m, macBrowserChosen() !== ""));
   setText($("setup-where-hint"), macBrowserHint(m, macBrowserChosen() !== ""));
+}
+
+/** The review level chosen on Set up. */
+function setupReviewChosen(): string {
+  return reviewLevel($<HTMLSelectElement>("setup-review").value);
 }
 
 /** The bundle id chosen on Set up ("" the container, or not a Mac). */
@@ -652,13 +663,6 @@ async function checkBrowser(force = false) {
   render();
 }
 
-/** The review level as a fact on the setup card without a container. */
-const REVIEW_FACT: Record<string, string> = {
-  trust: "everything your agent asks runs",
-  changes: "asks you before anything that changes things",
-  all: "asks you before every request",
-};
-
 let directOpen = false;
 let optionsLoading = false;
 async function loadOptions() {
@@ -761,7 +765,7 @@ function fillRuntime(w: Worker) {
   show(toggle, offerDirect && !unsupported);
   setText(toggle, `${directOpen ? "▾" : "▸"} ${wslOff ? "Continue without containers" : "Run without a container (not recommended)"}`);
   show($("direct-more"), unsupported || (directOpen && offerDirect));
-  setText($("direct-warning"), `Without a container, commands your agent sends run on ${sys} as you, with everything you can reach, and only the review stands in the way (it starts at "Ask me before anything that changes things"). Its browser, if you want one, runs on ${sys} too and needs Python.`
+  setText($("direct-warning"), `Without a container, commands your agent sends run on ${sys} as you, with everything you can reach, and only the review stands in the way (it asks you before anything that changes things, unless you choose otherwise). Its browser, if you want one, runs on ${sys} too and needs Python.`
     + (unsupported ? "" : " Use a container unless you know why you don't want one."));
   const use = $("direct-use");
   setText(use, unsupported || wslOff ? "Continue without containers" : "Run without a container");
@@ -1295,7 +1299,7 @@ async function useImage(w: Worker = m.current) {
 
 /** One worker without a container (⋯ menu), after a warning. */
 async function useDirect(w: Worker = m.current) {
-  if (!(await confirmBox("Run without a container?", `Commands your agent sends will run on ${sys} as you, with everything you can reach, and only the review stands in the way (it starts at "Ask me before anything that changes things"). Its browser, if you want one, runs on ${sys} too and needs Python. A running worker restarts.`, "Run without a container", true))) return;
+  if (!(await confirmBox("Run without a container?", `Commands your agent sends will run on ${sys} as you, with everything you can reach, and only the review stands in the way (it asks you before anything that changes things, unless you choose otherwise). Its browser, if you want one, runs on ${sys} too and needs Python. A running worker restarts.`, "Run without a container", true))) return;
   await goDirect([w]);
   appendLog("mode: no container");
 }
@@ -1520,8 +1524,6 @@ async function checkForUpdates(manual: boolean) {
 
 // --- settings --------------------------------------------------------------------------
 
-const REVIEW: [string, string][] = [["trust", "Trust my agent: everything it asks runs"], ["changes", "Ask me before anything that changes things"], ["all", "Ask me before every request"]];
-
 async function openSettings() {
   // The worker it is for, and the app's settings as they are when it opens (Save takes them as they are then).
   const w = m.current, shown = m.appConfig;
@@ -1538,8 +1540,11 @@ async function openSettings() {
     if (d !== desc.value) desc.value = d;
     prevName = to;
   };
+  // The level as the worker reads it ("all" for a review.json without a valid one), and what it means under it.
   const review = el<HTMLSelectElement>("select");
-  review.append(...REVIEW.map(([v, t]) => el("option", { value: v, text: t, selected: v === w.review })));
+  review.append(...REVIEW_LEVELS.map((l) => el("option", { value: l.level, text: l.label, selected: l.level === reviewLevel(w.review) })));
+  const reviewHint = el("p", { className: "hint", textContent: reviewMeans(review.value) });
+  review.onchange = () => setText(reviewHint, reviewMeans(review.value));
   const check = (label: string, on: boolean, cls = "") => {
     const box = el<HTMLInputElement>("input", { type: "checkbox", checked: on });
     return [el("label", { className: `check ${cls}` }, box, label), box] as const;
@@ -1574,7 +1579,7 @@ async function openSettings() {
     el("p", { className: "hint", textContent: "The name your agent sees. A new name applies at the next start, and the agent is told (it keeps its own name for this computer until it renames)." }),
     el("label", { textContent: "Description" }), desc,
     el("p", { className: "hint", textContent: "How it describes this computer to your agent (its card). Sent at the next start." }),
-    el("label", { textContent: "Review" }), review,
+    el("label", { textContent: "Review" }), review, reviewHint,
     ...(w.config.isDirect ? [browserRowEl] : []),
     ...macRows,
     el("p", { className: "hint", textContent: "Questions arrive as notifications and at the top of the Requests list; an agent waits up to two minutes for your answer." }),
@@ -1745,6 +1750,8 @@ function wire() {
     if (isDefaultDescription(desc.value, name.dataset.prev ?? "", direct)) desc.value = defaultDescription(name.value.trim(), direct, browser);
     name.dataset.prev = name.value.trim();
   };
+  // The sentence under the review's select, and the facts line without a container, follow the choice.
+  $("setup-review").onchange = () => render();
   $("setup-start").onclick = async () => {
     const w = m.current;
     const name = $<HTMLInputElement>("setup-name").value.trim();
@@ -1759,6 +1766,19 @@ function wire() {
       if (id) w.config.browserApp = id;
     }
     await saveConfig(w);
+    // The review level chosen, in a container as without one: the worker reads it from its first request.
+    // Made-up states write nothing, except in a plain browser's preview, whose backend only records.
+    if (!m.fake || be.preview) {
+      const level = setupReviewChosen();
+      try {
+        await be.setReview(w.home, level);
+        w.review = level;
+        appendLog(`review level: ${level}`);
+      } catch (e) {
+        appendLog(`could not set the review level: ${e}`);
+        return void alertBox("Couldn't save the review level", `${e}. The worker didn't start.`);
+      }
+    }
     await start(w);
     void refresh();
   };

@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { applyFake, fakeStates, previewBrowserCheck, previewContainers } from "./fake.js";
 import { appMenu, browserItems, buildMenu, MenuActions, moreMenu } from "./menu.js";
 import { ADVANCE_SHOWS, Check, classifyContainers, Container, isAdvance, isUrgent, Model, Screen, staleChoice, UNKNOWN_AFTER, Worker, WorkerFiles } from "./model.js";
-import { advanceWords, attentionCard, browserAdvance, browserCard, browserRow, checkAdvance, checklist, hubHost, hubLine, installLine, macBrowserHint, macBrowserQuestion, runtimeCard } from "./setup.js";
+import { advanceWords, attentionCard, browserAdvance, browserCard, browserRow, checkAdvance, checklist, hubHost, hubLine, installLine, macBrowserHint, macBrowserQuestion, REVIEW_LEVELS, reviewFact, reviewLevel, reviewMeans, runtimeCard } from "./setup.js";
 import { byteCount, countdown, dayLabel, defaultDescription, escapeMarkup, isDefaultDescription, newer, pairingMessage, plural, renamedDescription, setHostOs, timeAgo } from "./text.js";
 
 const T = 1_791_700_000;
@@ -1145,4 +1145,50 @@ test("a Mac's browser for a container worker: its card, menu item and attention 
   assert.equal(browserCard(l, l.current).label, "Open browser");
   assert.deepEqual(browserItems(l.current, l.macBrowser(l.current)), ["Open browser"]);
   assert.equal(l.current.attention, "");
+});
+
+test("the review level: Set up offers it, one sentence says what each level runs and asks", () => {
+  // The levels in the order Set up and Settings offer them, with the options' words.
+  assert.deepEqual(REVIEW_LEVELS.map((l) => [l.level, l.label]), [
+    ["trust", "Trust my agent: everything it asks runs"],
+    ["changes", "Ask me before anything that changes things"],
+    ["all", "Ask me before every request"],
+  ]);
+  // The sentence under the select: what runs unasked, what asks, and that no answer refuses
+  // (review.py's MYOUS_APPROVAL_WAIT, 120 s).
+  assert.equal(reviewMeans("trust"), "Everything your agent asks runs; nothing asks you first.");
+  assert.equal(reviewMeans("changes"), "Reads inside the work folder run; anything that changes things, reaches outside it or isn't a plain read asks you first, and is refused if you don't answer within two minutes.");
+  assert.equal(reviewMeans("all"), "Every request asks you first, even a plain read, and is refused if you don't answer within two minutes.");
+  for (const l of REVIEW_LEVELS) {
+    // One plain sentence each, in the owner's words.
+    assert.match(l.means, /^[A-Z][^.]*\.$/, l.level);
+    assert.doesNotMatch(l.means, /exec|hook|review\.json|level|container|daemon|approval/i, l.level);
+  }
+  // The facts line on Set up without a container.
+  assert.deepEqual(REVIEW_LEVELS.map((l) => reviewFact(l.level)),
+    ["everything your agent asks runs", "asks you before anything that changes things", "asks you before every request"]);
+  // A level the workers don't know (a review.json without a valid one) is every request asking, as they read it.
+  for (const v of ["", "ask", "Trust", "bogus"]) {
+    assert.equal(reviewLevel(v), "all", v);
+    assert.equal(reviewMeans(v), reviewMeans("all"), v);
+  }
+  // Set up offers the worker's level first: a fresh worker has no review.json, which reads as
+  // "changes", in a container as without one; a worker with one, its level.
+  for (const state of ["setup", "direct"]) {
+    const m = model();
+    applyFake(m, state);
+    evaluate(m);
+    assert.equal(m.current.screen, "setup", state);
+    assert.equal(reviewLevel(m.current.review), "changes", state);
+    assert.match(reviewMeans(m.current.review), /^Reads inside the work folder run;/, state);
+  }
+  const m = model();
+  for (const level of ["trust", "changes", "all"]) {
+    m.workers = [];
+    m.load([{ home: "/h/.myous-worker", folder: ".myous-worker", is_default: true, project: "myous-worker", config: {},
+      status: null, status_modified: 0, requests: [], approvals: [], paused: false, review: level }]);
+    evaluate(m);
+    assert.equal(m.current.screen, "setup");
+    assert.equal(reviewLevel(m.current.review), level);
+  }
 });

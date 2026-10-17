@@ -82,7 +82,13 @@ say Python found, flashes green and says what it found and what comes
 next for 8 s), and the rest of the card is the one thing still needed:
 
 - **Set up** (the form) once the runtime answers, or after 10 s if it
-  doesn't.
+  doesn't: the worker's name, how it describes the computer to the
+  agent, and when it should ask you first (the review level, offered at
+  "Ask me before anything that changes things" unless `review.json` says
+  otherwise, with one sentence under it saying what the level chosen
+  runs and what it asks about, as in Settings). Start writes that level
+  to `review.json`, with a container or without, before the worker
+  starts.
 - **Get a container runtime** when there is none: Docker Engine, Podman and
   Docker Desktop on Linux, Docker Desktop and Rancher Desktop on Windows.
   Where the tool for it is there the app installs it itself (**Install**:
@@ -145,9 +151,10 @@ the app and given 5 s: `/etc/paths` and `/etc/paths.d` through
 path_helper, the profile's Homebrew, pyenv and the like), else
 path_helper's, then the folders of the search path (above) it lacks (the
 app log says which, at each start); on Linux and Windows the search
-path. The review starts at
-"Ask me before anything that changes things". The agents on the
-computer are found and paired the same way.
+path. Set up offers the review at "Ask me before anything that changes
+things" here too, and a worker moved here without a `review.json` gets
+that level. The agents on the computer are found and paired the same
+way.
 
 **The worker's browser without a container** (`browser.rs`) runs on the
 computer. The app looks for Edge then Chrome on Windows (where their
@@ -206,7 +213,10 @@ and nothing needs installing: no Python, no pip. The app starts it as
 `myous-worker worker --alias … --description … --work <folder>/work`
 with `MYOUS_HOME` set to the worker folder; the review rules are built
 into it (the level in `review.json`, `worker.paused`, the questions in
-`approvals/`), the same as `worker/review.py`'s. The worker's own output
+`approvals/`), the same as `worker/review.py`'s, and it gets
+`MYOUS_DEFAULT_REVIEW=changes` (unless the app's environment sets it),
+so a `review.json` deleted while it runs leaves it asking before
+changes, as the window shows it. The worker's own output
 is in `worker.log` (Show worker log, in the ⋯ menu). Stop writes a
 `commands/quit` file in the worker folder (and sends SIGTERM outside
 Windows): the worker ends the command it runs with everything it
@@ -241,7 +251,7 @@ machines; a web view has no such need.
 | `ui/src/fake.ts` | Made-up data for every screen. |
 | `ui/src/text.ts` | The words and numbers: times, sizes, the pairing message, the default description. |
 | `src-tauri/src/lib.rs` | The commands the window calls; the tray; notifications, dialogs, clipboard, open at login. |
-| `src-tauri/src/files.rs`, `paths.rs` | The worker folders and the files in them (`worker.json`, `requests/`, `approvals/`, `app.json`, `review.json`, command files). A container worker's folder is mounted into the container, so an agent's command can put a symbolic link or a named pipe anywhere in it: the app never writes, appends, reads or changes the mode of a file there through one (a file is written under a temporary name and renamed into place, a log opened with `O_NOFOLLOW`, a folder that is a link refused). |
+| `src-tauri/src/files.rs`, `paths.rs` | The worker folders and the files in them (`worker.json`, `requests/`, `approvals/`, `app.json`, `review.json`, command files). The review level is read as the workers read it: no `review.json` is "changes" (a container's default since 0.8.1), one that can't be read or has no valid level is "all". A container worker's folder is mounted into the container, so an agent's command can put a symbolic link or a named pipe anywhere in it: the app never writes, appends, reads or changes the mode of a file there through one (a file is written under a temporary name and renamed into place, a log opened with `O_NOFOLLOW`, a folder that is a link refused). |
 | `ui/src/setup.ts` | The first launch's words: the checklist, the runtime cards, the hub's red line, Needs attention. |
 | `src-tauri/src/engine.rs` | Finding programs (`which`, `search_path`) and starting them with that PATH (`command`). Docker or Podman: the runtime check (ok, missing, not running, no permission, no compose, its own error), `compose up` and `down` with the output streamed to the log, the browser view's port, the worker containers (`inspect`, Docker's and Podman's) and removing the stale ones. |
 | `src-tauri/src/install.rs` | Which runtimes this system can have and whether the app can install each (winget, Homebrew, apt/dnf/pacman through pkexec), starting Docker Engine, compose's package. |
