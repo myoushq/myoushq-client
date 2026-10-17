@@ -122,6 +122,11 @@ publishes.
   .p12, base64), `MAC_CERT_PASSWORD`, `MAC_SIGN_IDENTITY` (the
   certificate's name, "Developer ID Application: Name (TEAMID)"),
   `NOTARY_KEY_ID`, `NOTARY_ISSUER_ID`, `NOTARY_KEY` (the .p8, base64).
+  With them the release run notarizes and staples the disk image as well
+  as the app (the step "notarize and staple the disk image" in
+  `release.yml`) and validates it: the run fails unless `xcrun stapler
+  validate` and `spctl` accept the image, so the download itself passes
+  Gatekeeper, not only the app in it.
   Without them the app is built and ad-hoc signed, and users must
   right-click → Open the first time.
 
@@ -165,8 +170,10 @@ take spake2 0.8 (the same protocol code on the pure-Python `hkdf`).
 everywhere else; the lock carries both, and pip installs the lines whose
 markers match. The 0.9 line is bumped as usual; 0.8 is the last release
 on `hkdf`, so its line stays as it is until the path is removed. CI's
-`python-intel-mac-set` job tests the Intel Mac set, and
-`python/tests/pake_bytes_test.py` and `aead_test.py` check that both
-sets give the same bytes. The path goes when Intel Macs are out of
-support (macOS 26 is the last for them; a TODO in the private
-repository).
+`python-intel-mac-set` job runs the suite on the Intel Mac set, so in CI
+`python/tests/vectors_test.py` and `pake_bytes_test.py` tie the two sets
+together: both jobs check the same recorded bytes. `aead_test.py`'s
+`BothBackends` compares the two backends directly but runs only where
+both libraries are installed, never in CI: a local check, for a venv
+with both. The path goes when Intel Macs are out of support (macOS 26
+is the last for them; a TODO in the private repository).

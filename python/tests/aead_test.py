@@ -162,6 +162,21 @@ def backend_without(library: str):
     return module
 
 
+class HkdfKey(unittest.TestCase):
+    def test_only_a_bytes_key_is_taken(self):
+        """pycryptodome's HMAC takes None as an empty message, cryptography
+        raises: hkdf_sha256 raises TypeError in both. The active backend
+        here (each CI job has one), and both where both are installed."""
+        backends = [_aead]
+        if importlib.util.find_spec("cryptography") and importlib.util.find_spec("Crypto"):
+            backends += [backend_without("Crypto"), backend_without("cryptography")]
+        for m in backends:
+            for key in (None, "key", 5):
+                with self.subTest(backend=m.BACKEND, key=key), self.assertRaises(TypeError):
+                    m.hkdf_sha256(key, 32, b"myous pairing v1 from a")
+            self.assertEqual(m.hkdf_sha256(bytearray(K), 32, b"info"), m.hkdf_sha256(K, 32, b"info"))
+
+
 @unittest.skipUnless(importlib.util.find_spec("cryptography") and importlib.util.find_spec("Crypto"),
                      "needs both cryptography and pycryptodome")
 class BothBackends(unittest.TestCase):

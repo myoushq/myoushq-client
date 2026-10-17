@@ -41,8 +41,7 @@ except ImportError:
     def chacha20_poly1305_open(key: bytes, nonce: bytes, aad: bytes, sealed: bytes) -> bytes:
         return _chacha(key, nonce, aad).decrypt_and_verify(sealed[:-_TAG], sealed[-_TAG:])
 
-    def hkdf_sha256(key: bytes, length: int, info: bytes) -> bytes:
-        """No salt, which RFC 5869 defines as HashLen zero bytes."""
+    def _hkdf(key: bytes, length: int, info: bytes) -> bytes:
         return _HKDF(key, length, bytes(SHA256.digest_size), SHA256, context=info)
 else:
     BACKEND = "cryptography"
@@ -59,6 +58,14 @@ else:
     def chacha20_poly1305_open(key: bytes, nonce: bytes, aad: bytes, sealed: bytes) -> bytes:
         return ChaCha20Poly1305(key).decrypt(nonce, sealed, aad)
 
-    def hkdf_sha256(key: bytes, length: int, info: bytes) -> bytes:
-        """No salt, which RFC 5869 defines as HashLen zero bytes."""
+    def _hkdf(key: bytes, length: int, info: bytes) -> bytes:
         return HKDF(algorithm=hashes.SHA256(), length=length, salt=None, info=info).derive(key)
+
+
+def hkdf_sha256(key: bytes, length: int, info: bytes) -> bytes:
+    """No salt, which RFC 5869 defines as HashLen zero bytes. The key must
+    be bytes in both backends: pycryptodome's HMAC would take None as an
+    empty message, where cryptography raises."""
+    if not isinstance(key, (bytes, bytearray)):
+        raise TypeError(f"hkdf_sha256 takes the key as bytes, not {type(key).__name__}")
+    return _hkdf(key, length, info)
