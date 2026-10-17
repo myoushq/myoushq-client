@@ -243,8 +243,10 @@ of this.
 - **Review level:** Settings, Review, in the apps, or `review.json` in the
   worker folder with `{"level": ...}`: `trust` (the default; everything
   from paired agents runs), `changes` (reads run: `get`, and `exec` of a
-  read-only command such as `ls`, `cat`, `grep`, `find`; anything else
-  asks the user), or `all` (every request asks). The apps show the
+  read-only command such as `ls`, `cat`, `grep`, `find` whose paths stay
+  under the work directory; a read that reaches outside it, like
+  `cat ~/.ssh/id_rsa` or an absolute path, is asked about, as is anything
+  that changes things), or `all` (every request asks). The apps show the
   question with Allow and Refuse; no answer within 120 seconds refuses
   the request with a reason the agent sees. Without an app, the question
   is `approvals/<id>.json` in the worker folder, and writing `allow` or

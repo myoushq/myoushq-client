@@ -68,7 +68,7 @@ func TestReviewAllowlistedCommandsThatWrite(t *testing.T) {
 }
 
 func TestReviewPowerShell(t *testing.T) {
-	for _, ok := range []string{"Get-ChildItem -Recurse | Select-String foo", `gc C:\work\a.txt | Measure-Object -Line`, "dir; Get-Date"} {
+	for _, ok := range []string{"Get-ChildItem -Recurse | Select-String foo", `gc a.txt | Measure-Object -Line`, "dir; Get-Date"} {
 		if !readOnly(ok, true) {
 			t.Errorf("%q should be read-only", ok)
 		}
@@ -77,6 +77,32 @@ func TestReviewPowerShell(t *testing.T) {
 		"Get-Content a > b", "iex 'rm x'", "Invoke-WebRequest http://x"} {
 		if readOnly(bad, true) {
 			t.Errorf("%q isn't read-only", bad)
+		}
+	}
+}
+
+// W3: at "changes" a read-only command is auto-allowed only when every path
+// argument stays under the work directory (the cwd).
+func TestReviewReadsConfinedToWork(t *testing.T) {
+	for _, ok := range []string{"cat a.txt", "grep -r x .", "find . -name '*.py'", "cat ./sub/f", "head -n5 a b c",
+		"cat 'a b.txt'", "diff a.txt b.txt", "wc -l logs/app.log"} {
+		if !readOnly(ok, false) {
+			t.Errorf("%q should be read-only (within work)", ok)
+		}
+	}
+	for _, bad := range []string{"cat /etc/passwd", "cat /home/worker/.myous/key", "grep -r . /home/worker/.myous",
+		"cat ~/.ssh/id_rsa", "find / -name id_rsa", "cat ../key", "cat a/../../key",
+		"cat sub/../../etc/x", "head a.txt /etc/hostname"} {
+		if readOnly(bad, false) {
+			t.Errorf("%q reads outside work, must not be read-only", bad)
+		}
+	}
+	if !readOnly("gc a.txt", true) {
+		t.Error("gc a.txt should be read-only on windows")
+	}
+	for _, bad := range []string{`gc C:\work\a.txt`, `gc \\host\share\x`, `type ..\key`, "gc ~/x"} {
+		if readOnly(bad, true) {
+			t.Errorf("%q reads outside work on windows, must not be read-only", bad)
 		}
 	}
 }
@@ -395,6 +421,10 @@ var reviewCorpus = []string{
 	// next to the same flag letters where they are harmless (kept).
 	"sort -o out in", "sort --output=out in", "sort -oout in", "sort -n in", "grep -o pat f",
 	"find . -fprintf out %p", "find . -fprint out", "find . -fls out", "find . -name x",
+	// W3: path arguments that escape the work directory (cwd).
+	"cat /etc/passwd", "cat ~/x", "cat ../key", "cat a/../../key", "grep -r . /home/w/.myous", "find / -name id_rsa",
+	"cat ./sub/f", "wc -l logs/app.log", "head a.txt /etc/hostname", "cat 'a b.txt'", `type ..\key`, `gc C:\work\a.txt`,
+	`gc \\host\share\x`, "ls ..", "ls a..b", "cat .", "find . -path /etc",
 }
 
 func TestReviewReadOnlyMatchesReviewPy(t *testing.T) {
