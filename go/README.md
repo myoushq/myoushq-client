@@ -8,7 +8,7 @@ Module: `github.com/myoushq/myoushq-client/go` (package `myous`), Go 1.26+.
 Install the command at a release tag (tags carry a `go/` prefix):
 
 ```sh
-go install github.com/myoushq/myoushq-client/go/cmd/myous@go/v0.8.0
+go install github.com/myoushq/myoushq-client/go/cmd/myous@go/v0.8.1
 ```
 
 ## Library
