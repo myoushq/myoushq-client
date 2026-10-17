@@ -134,9 +134,29 @@ publishes.
   (osv.dev). Hardening with no advisory, and fixes in code we don't call,
   don't shorten the wait.
 - Read the diff of security-relevant dependencies before bumping:
-  `nostr-sdk`, `spake2`, `pycryptodome`, `filippo.io/edwards25519`,
+  `nostr-sdk`, `spake2` and its HKDF (`hkdf` on Intel Macs, `cryptography`
+  elsewhere), `pycryptodome`, `filippo.io/edwards25519`,
   `golang.org/x/crypto`, `go-nostr`, `nostr-tools`, `@noble/*`, the
   `spake2`/`curve25519-dalek` crates.
-- Regenerate lock files (`pip-compile --generate-hashes` for the Python
-  locks, `go mod tidy`, `cargo update -p`, `npm install` + `npm shrinkwrap`)
-  and rerun `scripts/audit.sh`.
+- Regenerate lock files (the Python locks as below, `go mod tidy`,
+  `cargo update -p`, `npm install` + `npm shrinkwrap`) and rerun
+  `scripts/audit.sh`, which audits every line of the Python locks
+  whatever machine it runs on.
+- The Python locks are universal (one lock for every platform), made
+  with uv in `python/`:
+  ```sh
+  uv pip compile --universal --generate-hashes --python-version 3.9.2 pyproject.toml -o requirements.lock
+  uv pip compile --universal --generate-hashes --python-version 3.9.2 --extra qr pyproject.toml -o requirements-qr.lock
+  ```
+  3.9.2, not 3.9: cryptography excludes 3.9.0 and 3.9.1, and uv would
+  otherwise pin an older cryptography for them.
+
+**The Intel Mac path.** spake2 0.9 needs `cryptography`, which has no
+Intel Mac wheels since 49, so an Intel Mac would compile it for about ten
+minutes. `pyproject.toml` therefore has two spake2 lines with environment
+markers: 0.8 (the same protocol code on the pure-Python `hkdf`) where
+`sys_platform` is `darwin` and `platform_machine` is `x86_64`, 0.9
+everywhere else; the lock carries both, and pip installs the lines whose
+markers match. Bump the two lines together (CI's `python-intel-mac-set`
+job tests the 0.8 set). The path goes when Intel Macs are out of support
+(macOS 26 is the last for them; a TODO in the private repository).
