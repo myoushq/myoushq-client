@@ -27,8 +27,46 @@ if [ ! -x "$TOOLS/py/bin/pip-audit" ]; then
 	"$PY" -m venv --clear "$TOOLS/py" && "$TOOLS/py/bin/pip" install -q "pip-audit==2.9.0" \
 		|| { echo "audit: couldn't set up pip-audit in $TOOLS/py (Python: $PY)" >&2; exit 1; }
 fi
+# The locks are universal (uv pip compile --universal): lines for some
+# platforms only carry markers, and spake2 has one line per path (RELEASING.md,
+# "The Intel Mac path"). pip-audit skips lines whose markers don't match the
+# machine it runs on and refuses a package twice, so each lock is split into
+# files that hold every line once, markers dropped, and each file is audited.
+# The split fails (and so the audit) on a line it can't read, if it would
+# leave out any line, and on a lock with none.
+SPLIT='
+import pathlib, re, sys
+lock, out = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+text = lock.read_text()
+wanted = sum(1 for line in text.splitlines() if line.strip() and not line[0].isspace() and not line.startswith("#"))
+views, written = [], 0
+for block in re.split(r"\n(?=\S)", text):
+    if not block.strip() or block.startswith("#"):
+        continue
+    m = re.match(r"([A-Za-z0-9_.-]+)==[^\s;\\]+(?: ;[^\\\n]*)? \\\n", block)
+    if not m:
+        sys.exit(f"{lock}: not a pinned line with hashes: {block.splitlines()[0]}")
+    view = next((v for v in views if m.group(1).lower() not in v), None)
+    if view is None:
+        view = {}
+        views.append(view)
+    view[m.group(1).lower()] = re.sub(r"^(\S+) ;[^\\\n]*\\", r"\1 \\", block, count=1)
+    written += 1
+if not wanted or written != wanted:
+    sys.exit(f"{lock}: {wanted} requirement lines, {written} split out")
+out.mkdir(parents=True, exist_ok=True)
+for i, view in enumerate(views):
+    path = out / f"{lock.stem}-{i + 1}.txt"
+    path.write_text("\n".join(view.values()) + "\n")
+    print(path)
+'
+rm -rf "$TOOLS/lock-views"
 for lock in python/requirements.lock python/requirements-qr.lock; do
-	run "pip-audit $lock" "$TOOLS/py/bin/pip-audit" --require-hashes --disable-pip -r "$lock"
+	views=$("$TOOLS/py/bin/python" -c "$SPLIT" "$lock" "$TOOLS/lock-views") \
+		|| { echo "audit: couldn't split $lock" >&2; status=1; continue; }
+	for view in $views; do
+		run "pip-audit $lock ($(basename "$view"))" "$TOOLS/py/bin/pip-audit" --require-hashes --disable-pip -r "$view"
+	done
 done
 
 run "npm audit typescript" sh -c "cd typescript && npm audit --omit=dev"

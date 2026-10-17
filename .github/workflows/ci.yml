@@ -21,9 +21,38 @@ jobs:
       - run: |
           pip install --require-hashes -r python/requirements.lock
           pip install --no-deps python/
+          python -c "from myous import _aead; assert _aead.BACKEND == 'cryptography', _aead.BACKEND"
           python -m unittest discover -s python/tests -p '*_test.py'
       # The Claude Code hook script (its real-client half needs the hub and skips here).
       - run: PYTHON=python bash examples/claude-code/test.sh
+  python-intel-mac-set:
+    # What an Intel Mac installs (RELEASING.md, "The Intel Mac path"):
+    # pycryptodome, and spake2 0.8 on the pure-Python hkdf; no cryptography.
+    # It runs on Linux, so it tests the API and the bytes; the pins and
+    # hashes are the lock's lines for an Intel Mac (no marker, or the Intel
+    # one), markers dropped.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with: { python-version: "3.12" }
+      - run: |
+          python - <<'EOF'
+          import re
+          intel = "platform_machine == 'x86_64' and sys_platform == 'darwin'"
+          keep = []
+          for block in re.split(r"\n(?=[A-Za-z])", open("python/requirements.lock").read()):
+              m = re.match(r"([A-Za-z0-9_.-]+==\S+)(?: ; ([^\\\n]*))? \\\n", block)
+              if m and m.group(2) in (None, intel):
+                  keep.append(m.group(1) + " \\\n" + block.split("\n", 1)[1])
+          open("intel-mac.txt", "w").write("\n".join(keep) + "\n")
+          EOF
+          grep -E '^[a-z]' intel-mac.txt
+          pip install --require-hashes -r intel-mac.txt
+          pip install --no-deps python/
+          python -c "import importlib.util as u, spake2; assert spake2.__version__ == '0.8' and not u.find_spec('cryptography')"
+          python -c "from myous import _aead; assert _aead.BACKEND == 'pycryptodome', _aead.BACKEND"
+          python -m unittest discover -s python/tests -p '*_test.py'
   python-windows:
     # The parts that differ on Windows: the worker's shell (PowerShell),
     # stopping a command with what it started, pid checks, file locks and

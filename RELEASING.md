@@ -128,11 +128,45 @@ publishes.
 ## Dependency updates
 
 - Wait at least 14 days after a dependency release before adopting it,
-  unless it fixes a vulnerability that affects us.
+  unless it fixes a vulnerability that affects us. That means a published
+  advisory or CVE for the version we run, or a security fix (a timing fix
+  included) in a code path we call, whether or not it has an advisory;
+  look in the project's changelog, its GitHub security advisories and OSV
+  (osv.dev). Fixes and hardening in code we don't call, with no advisory
+  for our version, don't shorten the wait.
 - Read the diff of security-relevant dependencies before bumping:
-  `nostr-sdk`, `spake2`, `cryptography`, `filippo.io/edwards25519`,
+  `nostr-sdk`, `cryptography` (and `pycryptodome` on Intel Macs), `spake2`
+  and its HKDF (`hkdf` on Intel Macs), `filippo.io/edwards25519`,
   `golang.org/x/crypto`, `go-nostr`, `nostr-tools`, `@noble/*`, the
   `spake2`/`curve25519-dalek` crates.
-- Regenerate lock files (`pip-compile --generate-hashes` for the Python
-  locks, `go mod tidy`, `cargo update -p`, `npm install` + `npm shrinkwrap`)
-  and rerun `scripts/audit.sh`.
+- Regenerate lock files (the Python locks as below, `go mod tidy`,
+  `cargo update -p`, `npm install` + `npm shrinkwrap`) and rerun
+  `scripts/audit.sh`, which audits every line of the Python locks
+  whatever machine it runs on.
+- The Python locks are universal (one lock for every platform), made
+  with uv in `python/`:
+  ```sh
+  uv pip compile --universal --generate-hashes --python-version 3.9.2 pyproject.toml -o requirements.lock
+  uv pip compile --universal --generate-hashes --python-version 3.9.2 --extra qr pyproject.toml -o requirements-qr.lock
+  ```
+  3.9.2, not 3.9: cryptography excludes 3.9.0 and 3.9.1, and uv would
+  otherwise pin an older cryptography for them.
+
+**The Intel Mac path.** `cryptography` has had no Intel Mac wheels since
+49, so an Intel Mac would compile it for about ten minutes. The ciphers
+and HKDF (`python/myous/_aead.py`) come from `cryptography` wherever it
+is installed, since OpenSSL's AES uses the CPU's constant-time
+instructions on ARM too while pycryptodome's ARM wheels are table-based,
+and from `pycryptodome` on Intel Macs, where its AES-NI and CLMUL code
+is constant-time. spake2 0.9 needs `cryptography` as well, so Intel Macs
+take spake2 0.8 (the same protocol code on the pure-Python `hkdf`).
+`pyproject.toml` gives each pair environment markers: one line where
+`sys_platform` is `darwin` and `platform_machine` is `x86_64`, the other
+everywhere else; the lock carries both, and pip installs the lines whose
+markers match. The 0.9 line is bumped as usual; 0.8 is the last release
+on `hkdf`, so its line stays as it is until the path is removed. CI's
+`python-intel-mac-set` job tests the Intel Mac set, and
+`python/tests/pake_bytes_test.py` and `aead_test.py` check that both
+sets give the same bytes. The path goes when Intel Macs are out of
+support (macOS 26 is the last for them; a TODO in the private
+repository).
