@@ -406,9 +406,9 @@ A request the worker hasn't started within its ttl, and five minutes more
 that workers from 0.8.1 allow for clocks that differ, is answered
 "expired" and never runs. The commands set the ttl to how long they
 wait, so a request that timed out (the worker was off or busy) won't run
-more than five minutes later. A
-timeout exits with status 124 (`exec` and `cp` alike) and says whether
-the worker may still run the request.
+more than five minutes later; if it runs before then, its reply shows in
+`myous inbox`. A timeout exits with status 124 (`exec` and `cp` alike)
+and says how long the worker may still run the request.
 `--ttl SECONDS` (up to a day:
 `myous exec --ttl 3600 "Sam's Mac" -- ...`) leaves one for a worker that
 is off, to run when it is back; the command still returns after its

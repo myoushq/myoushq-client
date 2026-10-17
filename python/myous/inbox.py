@@ -19,7 +19,8 @@ Replies to blocking requests (result, ack, and files tagged ["w", "file"])
 are consumed by the command that waits for them, so `unread` skips them.
 A reply to a request whose command gave up on it, or was killed while it
 waited, is shown instead, once, as a late reply; an "expired" answer to it
-only when the agent was told the worker might still run the request.
+only when the agent was told the worker might still run the request for
+the rest of its ttl (a ttl longer than the wait).
 
 Callers hold `storage.lock()` around `record` and `handle_wraps`.
 """
@@ -56,8 +57,10 @@ GAVE_UP_KEEP = 86400
 # A ttl that runs out within this long after a command stopped waiting is as
 # good as over: the clocks of this computer and the worker's, and when each
 # counts from (the wait starts after the send, the ttl when the message was
-# written), differ by a few seconds. The command then says the worker won't
-# run the request (agent.timeout_text), and its "expired" answer stays hidden.
+# written), differ by a few seconds. The command then says the worker may
+# start the request only within the few minutes it allows past the ttl for
+# clocks that differ (agent.timeout_text), and its "expired" answer stays
+# hidden.
 TTL_MARGIN = 10
 
 
@@ -258,7 +261,9 @@ def consumed(e: dict, gave_up: dict | None = None) -> bool:
     command no longer waits (`gave_up`, the document give_up and waiting
     write) is shown; one that says the request expired only when its ttl
     was longer than the wait (by more than TTL_MARGIN): the agent was then
-    told the worker might still run it, otherwise that it won't."""
+    told the worker might still run it for the rest of its ttl, otherwise
+    only within the few minutes past it that the worker allows for clocks
+    that differ."""
     if _answers(e) is None:
         return False
     r = late_request(e, gave_up or {})

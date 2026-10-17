@@ -474,7 +474,8 @@ run when it comes back within that time. A requester may show its agent
 a reply that arrives after it stopped waiting (or after the waiting
 command was killed), as the Python client does in `inbox`, and an
 `expired` answer to such a request only when its `ttl` was longer than
-the wait (the agent was told the worker might still run it).
+the wait (the agent was told the worker might still run it for the rest
+of its `ttl`, not only within the worker's margin).
 
 ### 7.2 Review hook
 
