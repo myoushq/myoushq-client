@@ -17,7 +17,8 @@ type writeCounter struct {
 	*FileStorage
 	mu      sync.Mutex
 	puts    map[string]int
-	appends int // calls that append to the history
+	appends int // calls of AppendHistory
+	reads   int // calls of ReadHistory
 }
 
 func (c *writeCounter) Put(name string, v any) error {
@@ -32,9 +33,9 @@ func (c *writeCounter) AppendHistory(e Entry) error {
 	return c.FileStorage.AppendHistory(e)
 }
 
-func (c *writeCounter) AppendHistoryMany(entries []Entry) error {
-	c.appends++
-	return c.FileStorage.AppendHistoryMany(entries)
+func (c *writeCounter) ReadHistory() ([]Entry, error) {
+	c.reads++
+	return c.FileStorage.ReadHistory()
 }
 
 // wrapsFrom are n gift wraps of text messages from a new sender to
@@ -55,8 +56,10 @@ func wrapsFrom(t testing.TB, recipient string, n int) ([]*nostr.Event, string) {
 	return wraps, pk
 }
 
-// A batch of messages is stored with one history append and one state
-// update (plus the one that marks the wraps handled), numbered in order.
+// A batch of messages is stored with one state update (plus the one that
+// marks the wraps handled), numbered in order; a FileStorage appends it
+// with one write (appendHistory), and a storage that embeds one and
+// overrides AppendHistory has its own method called for each entry.
 func TestHandleWrapsStoresABatchAtOnce(t *testing.T) {
 	fs, err := NewFileStorage(filepath.Join(t.TempDir(), "h"))
 	if err != nil {
@@ -74,7 +77,7 @@ func TestHandleWrapsStoresABatchAtOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 30 || st.appends != 1 || st.puts["state"] != 2 {
+	if len(got) != 30 || st.appends != 30 || st.puts["state"] != 2 {
 		t.Fatalf("%d stored with %d appends and %d state writes", len(got), st.appends, st.puts["state"])
 	}
 	history, _ := fs.ReadHistory()

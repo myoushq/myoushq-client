@@ -43,17 +43,13 @@ type Storage interface {
 	ReadHistory() ([]Entry, error)
 }
 
-// HistoryAppender is optional. Implement it if appending several entries
-// at once is cheaper than one at a time (one write, one sync): a poll or a
-// listener's backlog stores its messages with one call.
-type HistoryAppender interface {
-	AppendHistoryMany(entries []Entry) error
-}
-
-// appendHistory is AppendHistoryMany, or AppendHistory for each entry.
+// appendHistory stores entries in order: with one write and one sync on a
+// FileStorage itself, else with AppendHistory for each. Only the type
+// itself, not a storage that embeds it: one that overrides AppendHistory
+// must have it called.
 func appendHistory(st Storage, entries []Entry) error {
-	if a, ok := st.(HistoryAppender); ok {
-		return a.AppendHistoryMany(entries)
+	if fs, ok := st.(*FileStorage); ok {
+		return fs.appendHistoryMany(entries)
 	}
 	for _, e := range entries {
 		if err := st.AppendHistory(e); err != nil {
@@ -70,20 +66,14 @@ type Locker interface {
 	Lock(name string, wait bool) (unlock func(), ok bool, err error)
 }
 
-// HistoryTail is optional. Implement it if reading the whole history is
-// expensive (it only grows): ReadHistorySince returns the entries whose
-// Seq is seq or more, oldest first, as ReadHistory filtered would. Entries
-// are appended in Seq order (under the "state" lock), so the newest are
-// at the end. Listen and Unread use it to look at what is new.
-type HistoryTail interface {
-	ReadHistorySince(seq int) ([]Entry, error)
-}
-
-// historySince is ReadHistorySince, or ReadHistory filtered for a storage
-// without it.
+// historySince is the entries whose Seq is seq or more, oldest first:
+// read from the end on a FileStorage itself (readHistorySince), else
+// ReadHistory filtered (as appendHistory, a storage that embeds
+// FileStorage gets its own ReadHistory called). Listen and Unread use it
+// to look at what is new.
 func historySince(st Storage, seq int) ([]Entry, error) {
-	if t, ok := st.(HistoryTail); ok {
-		return t.ReadHistorySince(seq)
+	if fs, ok := st.(*FileStorage); ok {
+		return fs.readHistorySince(seq)
 	}
 	history, err := st.ReadHistory()
 	if err != nil {
@@ -203,11 +193,11 @@ func (s *FileStorage) Names(prefix string) ([]string, error) {
 }
 
 func (s *FileStorage) AppendHistory(e Entry) error {
-	return s.AppendHistoryMany([]Entry{e})
+	return s.appendHistoryMany([]Entry{e})
 }
 
-// AppendHistoryMany appends entries with one write and one sync.
-func (s *FileStorage) AppendHistoryMany(entries []Entry) error {
+// appendHistoryMany appends entries with one write and one sync.
+func (s *FileStorage) appendHistoryMany(entries []Entry) error {
 	var lines []byte
 	for _, e := range entries {
 		b, err := json.Marshal(e)
@@ -329,16 +319,16 @@ func mendHistoryTail(path string) error {
 	return err
 }
 
-// historyChunk is how much of messages.jsonl ReadHistorySince reads at a
+// historyChunk is how much of messages.jsonl readHistorySince reads at a
 // time, from the end.
 var historyChunk = 64 << 10
 
-// ReadHistorySince reads messages.jsonl backwards, from the end, and stops
+// readHistorySince reads messages.jsonl backwards, from the end, and stops
 // at the first entry older than seq: what is new costs the same however
 // long the history has grown (ReadHistory decodes all of it). Lines are as
 // ReadHistory takes them: blank ones skipped, CRLF endings (Python on
 // Windows) and a last line without its newline taken too.
-func (s *FileStorage) ReadHistorySince(seq int) ([]Entry, error) {
+func (s *FileStorage) readHistorySince(seq int) ([]Entry, error) {
 	f, err := os.Open(s.Path("messages.jsonl"))
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil

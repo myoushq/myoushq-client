@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-// ReadHistorySince is ReadHistory filtered, for every seq, on a history
+// readHistorySince is ReadHistory filtered, for every seq, on a history
 // with what both clients write: Go's lines, Python's (sorted keys, CRLF
 // on Windows), blank lines, a last line without its newline, and lines
 // longer than what it reads at a time.
@@ -47,7 +47,7 @@ func TestReadHistorySinceIsReadHistoryFiltered(t *testing.T) {
 					want = append(want, e)
 				}
 			}
-			got, err := st.ReadHistorySince(seq)
+			got, err := st.readHistorySince(seq)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -58,21 +58,42 @@ func TestReadHistorySinceIsReadHistoryFiltered(t *testing.T) {
 	}
 	// No history yet: nothing, no error.
 	os.Remove(st.Path("messages.jsonl"))
-	if got, err := st.ReadHistorySince(1); err != nil || len(got) != 0 {
+	if got, err := st.readHistorySince(1); err != nil || len(got) != 0 {
 		t.Fatalf("no file: %v, %v", got, err)
 	}
 	// A line that doesn't decode is an error, as for ReadHistory, when it
 	// is among the lines asked for.
 	os.WriteFile(st.Path("messages.jsonl"), []byte(lines[0]+"\nnot json\n"+lines[5]+"\n"), 0o600)
-	if _, err := st.ReadHistorySince(1); err == nil {
+	if _, err := st.readHistorySince(1); err == nil {
 		t.Fatal("no error for a bad line")
 	}
-	if got, err := st.ReadHistorySince(5); err != nil || len(got) != 0 {
+	if got, err := st.readHistorySince(5); err != nil || len(got) != 0 {
 		t.Fatalf("since 5: %v, %v", got, err)
 	}
 }
 
-// What is new reads the same through ReadHistorySince and through a
+// A storage that embeds FileStorage and overrides ReadHistory or
+// AppendHistory has its own methods called, not FileStorage's faster
+// ones promoted past them.
+func TestAnEmbeddingStorageKeepsItsOwnHistoryMethods(t *testing.T) {
+	fs, err := NewFileStorage(filepath.Join(t.TempDir(), "h"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := &writeCounter{FileStorage: fs, puts: map[string]int{}}
+	if _, err := recordMany(st, []Entry{{Text: "a"}, {Text: "b"}}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := historySince(st, 2)
+	if err != nil || len(got) != 1 || got[0].Text != "b" {
+		t.Fatalf("since 2: %+v, %v", got, err)
+	}
+	if st.appends != 2 || st.reads != 1 {
+		t.Fatalf("AppendHistory called %d times, ReadHistory %d", st.appends, st.reads)
+	}
+}
+
+// What is new reads the same through readHistorySince and through a
 // storage that only has ReadHistory.
 func TestEntriesSinceAndUnreadWithAndWithoutTail(t *testing.T) {
 	fs, err := NewFileStorage(filepath.Join(t.TempDir(), "h"))
@@ -175,12 +196,12 @@ func TestHistoryTornTail(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		since, err := st.ReadHistorySince(1)
+		since, err := st.readHistorySince(1)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if !reflect.DeepEqual(all, since) {
-			t.Fatalf("ReadHistory %+v, ReadHistorySince %+v", all, since)
+			t.Fatalf("ReadHistory %+v, readHistorySince %+v", all, since)
 		}
 		var s []string
 		for _, e := range all {
