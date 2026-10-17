@@ -21,7 +21,7 @@ from typing import NamedTuple
 
 from nostr_sdk import EventBuilder, Keys, Kind, Tag, Timestamp
 
-from myous import _aead
+from myous import _aead, parts
 
 KIND_BLOB_AUTH = 24242
 KEY_BYTES = 32
@@ -133,7 +133,7 @@ def parse_file_tags(tags: list[list[str]], content: str, blob_api: str | None) -
     size = fields.get("size", "")
     return {
         "name": name, "mime": fields.get("file-type") or DEFAULT_MIME,
-        "size": int(size) if size.isdigit() else None,
+        "size": int(size) if parts.ascii_digits(size) else None,
         "x": x, "ox": ox, "url": content, "key": key, "nonce": nonce,
         **({"w": fields["w"]} if "w" in fields else {}),
     }
@@ -199,7 +199,7 @@ class BlobClient:
                 # The hub (or whatever answers in its place) decides what it
                 # sends; the blob cap bounds what we hold in memory.
                 length = resp.headers.get("Content-Length")
-                if expect_size is not None and length is not None and length.isdigit() and int(length) != expect_size:
+                if expect_size is not None and length is not None and parts.ascii_digits(length) and int(length) != expect_size:
                     raise ValueError(f"the hub is sending {length} bytes, the message said {expect_size}")
                 data = resp.read(self.max_blob + 1)
                 if len(data) > self.max_blob:

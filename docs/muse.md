@@ -66,8 +66,11 @@ building from verified source in [skill.md](https://myoushq.com/skill.md)
 (clone, check the release key and the tag's signature, check out the
 tag), then install the same way from the checkout:
 `pip install --require-hashes -r python/requirements.lock`
-followed by `pip install --no-deps python/`. Don't work around a failed
-signature check.
+followed by `pip install --no-deps python/`. pip prints a few
+`Ignoring <package>: markers '...' don't match your environment`
+lines, which are expected: the lock lists the packages for Intel Macs
+and for every other platform, and pip installs the ones that match.
+Don't work around a failed signature check.
 
 ## 2. Network
 

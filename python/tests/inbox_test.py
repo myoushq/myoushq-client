@@ -15,7 +15,7 @@ from unittest import mock
 
 from nostr_sdk import EventBuilder, Keys, Kind, Tag, nip59_make_gift_wrap
 
-from myous import cli, contacts, files, inbox, processes, relay, vm
+from myous import cli, contacts, files, inbox, parts, processes, relay, vm
 from myous.agent import Agent
 from myous.muse import watcher
 from myous.storage import FileStorage, Storage
@@ -143,6 +143,61 @@ class Inbox(unittest.TestCase):
             wrap(self.peer, self.me, 1, "wrong kind", []),
         )
         self.assertEqual(stored, [])
+
+    # "²".isdigit() is True and int("²") raises (code review 2026-10-17):
+    # a wrap with such a number made handle_wraps raise after the whole
+    # batch was marked seen, so every message in it was lost. The next two
+    # tests run as the client is, then with str.isdigit back in place of
+    # parts.ascii_digits, so that reading the wrap raises: it is dropped
+    # alone then, with a warning.
+    def test_a_strangers_wrap_with_a_digit_int_rejects_loses_no_message(self):
+        for digits in (parts.ascii_digits, str.isdigit):
+            with self.subTest(digits=digits.__name__), mock.patch.object(parts, "ascii_digits", digits), \
+                    contextlib.redirect_stderr(io.StringIO()) as err:
+                texts = [f"message {i}" for i in range(5)]
+                batch = [wrap(self.peer, self.me, relay.KIND_CHAT, t, []) for t in texts]
+                batch.insert(3, wrap(self.stranger, self.me, relay.KIND_CHAT, "x", [["ms", "²"]]))
+                batch.insert(1, wrap(self.peer, self.me, relay.KIND_CHAT, "y", [["part", "ab", "²", "2"]]))
+                self.assertEqual(sorted(e["text"] for e in self.handle(*batch)), texts)
+                self.assertEqual(err.getvalue().count("warning: dropped a message that couldn't be read"),
+                                 2 if digits is str.isdigit else 0)
+                self.assertNotIn("invalid literal", err.getvalue())  # the type only, never what the sender wrote
+        # An ms of 5000 digits raises in int, with ascii_digits as it is,
+        # where Python limits integer strings to 4300 digits (3.11, and
+        # 3.10.7 and 3.9.14 on); older patch releases read it. Either way
+        # no message of the contact's is lost.
+        with self.subTest(ms="5000 digits"), contextlib.redirect_stderr(io.StringIO()):
+            texts = [f"message {i}" for i in range(5)]
+            batch = [wrap(self.peer, self.me, relay.KIND_CHAT, t, []) for t in texts]
+            batch.insert(2, wrap(self.stranger, self.me, relay.KIND_CHAT, "x", [["ms", "1" * 5000]]))
+            self.assertEqual(sorted(e["text"] for e in self.handle(*batch)), texts)
+
+    def test_a_file_whose_size_int_rejects_loses_no_message(self):
+        enc = files.encrypt(b"payload")
+        tags = [["size", "²"] if t[0] == "size" else t for t in files.file_tags(enc, "doc.txt", "text/plain")]
+        for digits in (parts.ascii_digits, str.isdigit):
+            with self.subTest(digits=digits.__name__), mock.patch.object(parts, "ascii_digits", digits), \
+                    contextlib.redirect_stderr(io.StringIO()) as err:
+                stored = self.handle(
+                    wrap(self.peer, self.me, relay.KIND_CHAT, "before", []),
+                    wrap(self.peer, self.me, relay.KIND_FILE, f"{BLOB_API}/{enc.x}", tags),
+                    wrap(self.peer, self.me, relay.KIND_CHAT, "after", []),
+                )
+                got = sorted((e["type"], e["text"], e.get("size")) for e in stored)
+                if digits is str.isdigit:
+                    self.assertEqual(got, [("message", "after", None), ("message", "before", None)])
+                    self.assertIn("warning: dropped a message that couldn't be read", err.getvalue())
+                else:
+                    # Not a number: the size is unknown, as for any other size that isn't one.
+                    self.assertEqual(got, [("file", "file: doc.txt", None), ("message", "after", None),
+                                           ("message", "before", None)])
+                    self.assertEqual(err.getvalue(), "")
+
+    def test_ascii_digits(self):
+        for s in ("0", "42", "1700000000123"):
+            self.assertTrue(parts.ascii_digits(s), s)
+        for s in ("²", "\u0661", "", "1a", "-1", " 1", "１"):
+            self.assertFalse(parts.ascii_digits(s), s)
 
     def test_reply_fields_cannot_override_the_entry(self):
         other = self.stranger.public_key().to_hex()

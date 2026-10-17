@@ -313,7 +313,8 @@ python3 screens.py /tmp/screens --os macos                                      
 worker and then the app (`--sign "Developer ID Application: …"` for the
 hardened runtime and a timestamp, else ad hoc), and packs the disk image
 with `worker/mac/make-dmg.sh`; with `--key-id`, `--issuer` and `--key` it
-also notarizes with `worker/mac/notarize.sh`. The release builds it
+also notarizes and staples the app and then the disk image with
+`worker/mac/notarize.sh`, as the release does. The release builds it
 universal and signed (`.github/workflows/release.yml`, the `mac-app`
 job). Inside the app the program is `Contents/MacOS/myous-desktop` (not
 on PATH, so it never stands in for the client's `myous`), with

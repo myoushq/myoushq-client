@@ -11,8 +11,8 @@
 #   --sign       Developer ID, hardened runtime and a timestamp, the worker
 #                inside first, as worker/mac/make-app.sh signs; otherwise an
 #                ad-hoc signature, enough to run it here.
-#   --key-id/--issuer/--key  notarize and staple (worker/mac/notarize.sh);
-#                needs --sign.
+#   --key-id/--issuer/--key  notarize and staple the app and the disk image
+#                (worker/mac/notarize.sh); needs --sign.
 # Tauri's own signing is skipped (--no-sign): it would look in the
 # keychain for an identity, and the app is signed here instead, the same
 # way for both apps.
@@ -129,6 +129,15 @@ if [ "$DMG" = 1 ]; then
 		../mac/make-dmg.sh "$APP" "build/myous-$VERSION.dmg" --sign "$SIGN"
 	else
 		../mac/make-dmg.sh "$APP" "build/myous-$VERSION.dmg"
+	fi
+	if [ -n "$KEY_ID" ]; then
+		# The image gets its own ticket, as in release.yml; stapling changes
+		# its bytes, so its line in SHA256SUMS is written again.
+		../mac/notarize.sh "build/myous-$VERSION.dmg" --key-id "$KEY_ID" --issuer "$ISSUER" --key "$KEY"
+		xcrun stapler validate "build/myous-$VERSION.dmg"
+		awk -v f="myous-$VERSION.dmg" '$2 != f' build/SHA256SUMS > build/SHA256SUMS.new
+		(cd build && shasum -a 256 "myous-$VERSION.dmg") >> build/SHA256SUMS.new
+		mv build/SHA256SUMS.new build/SHA256SUMS
 	fi
 fi
 lipo -archs "$APP/Contents/MacOS/myous-desktop" | sed "s/^/myous.app ($TARGET): /"
