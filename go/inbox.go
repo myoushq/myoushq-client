@@ -101,8 +101,10 @@ func record(st Storage, e Entry) (Entry, error) {
 }
 
 // recordMany appends entries to the history, numbered in order: one
-// append and one update of the state for all of them (appendHistory).
-// Callers hold the "state" lock.
+// update of the state and one append for all of them (appendHistory).
+// The next seq is written first: a failure in between loses the entries
+// rather than giving their seqs again to the next ones. Callers hold the
+// "state" lock.
 func recordMany(st Storage, entries []Entry) ([]Entry, error) {
 	if len(entries) == 0 {
 		return nil, nil
@@ -120,11 +122,14 @@ func recordMany(st Storage, entries []Entry) ([]Entry, error) {
 		e.Seq, e.At = s.NextSeq+i, now
 		stored[i] = e
 	}
+	s.NextSeq += len(stored)
+	if err := st.Put("state", s); err != nil {
+		return nil, err
+	}
 	if err := appendHistory(st, stored); err != nil {
 		return nil, err
 	}
-	s.NextSeq += len(stored)
-	return stored, st.Put("state", s)
+	return stored, nil
 }
 
 // handleWraps stores messages from approved contacts and drops everything

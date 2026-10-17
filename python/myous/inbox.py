@@ -87,16 +87,18 @@ def record(st: Storage, entry: dict) -> dict:
 
 
 def record_many(st: Storage, entries: list[dict]) -> list[dict]:
-    """Store entries in the history, numbered in order: one append and one
-    update of the state for all of them."""
+    """Store entries in the history, numbered in order: one update of the
+    state and one append for all of them. The next seq is written first: a
+    failure in between loses the entries rather than giving their seqs
+    again to the next ones."""
     if not entries:
         return []
     state = st.get("state", {})
     first, now = state.get("next_seq", 1), int(time.time())
     entries = [dict(e, seq=first + i, at=now) for i, e in enumerate(entries)]
-    st.append_history_many(entries)
     state["next_seq"] = first + len(entries)
     st.put("state", state)
+    st.append_history_many(entries)
     return entries
 
 

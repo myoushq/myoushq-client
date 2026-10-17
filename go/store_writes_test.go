@@ -2,11 +2,13 @@ package myous
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 
 	"github.com/nbd-wtf/go-nostr"
@@ -93,6 +95,64 @@ func TestHandleWrapsStoresABatchAtOnce(t *testing.T) {
 	st.appends, st.puts = 0, map[string]int{}
 	if got, err := handleWraps(st, sk, wraps); err != nil || len(got) != 0 || st.appends != 0 || len(st.puts) != 0 {
 		t.Fatalf("seen again: %d stored, %d appends, %v", len(got), st.appends, st.puts)
+	}
+}
+
+// stateFull fails the given write of the state (counting from 1), as a
+// full disk would.
+type stateFull struct {
+	*FileStorage
+	writes, failAt int
+}
+
+func (s *stateFull) Put(name string, v any) error {
+	if name == "state" {
+		s.writes++
+		if s.writes == s.failAt {
+			return syscall.ENOSPC
+		}
+	}
+	return s.FileStorage.Put(name, v)
+}
+
+// The next seq is written before the entries: when that write fails, the
+// batch is lost rather than its seqs given again to the next batch, which
+// hid one of the two from Unread.
+func TestAFailedStateWriteGivesNoSeqTwice(t *testing.T) {
+	fs, err := NewFileStorage(filepath.Join(t.TempDir(), "h"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sk := nostr.GeneratePrivateKey()
+	pk, _ := nostr.GetPublicKey(sk)
+	lost, sender := wrapsFrom(t, pk, 5)
+	if _, err := addContact(fs, sender, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	st := &stateFull{FileStorage: fs, failAt: 2} // the first marks the wraps handled
+	if _, err := handleWraps(st, sk, lost); !errors.Is(err, syscall.ENOSPC) {
+		t.Fatalf("handleWraps: %v", err)
+	}
+	kept, other := wrapsFrom(t, pk, 5)
+	if _, err := addContact(fs, other, "bob"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := handleWraps(st, sk, kept); err != nil {
+		t.Fatal(err)
+	}
+	history, err := fs.ReadHistory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	seqs := map[int]bool{}
+	for _, e := range history {
+		if seqs[e.Seq] || e.Alias != "bob" {
+			t.Fatalf("history: %+v", history)
+		}
+		seqs[e.Seq] = true
+	}
+	if s, _ := loadState(fs); len(history) != 5 || s.NextSeq != history[4].Seq+1 {
+		t.Fatalf("%d entries, next seq %d", len(history), s.NextSeq)
 	}
 }
 
