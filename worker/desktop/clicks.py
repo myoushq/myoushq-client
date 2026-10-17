@@ -469,6 +469,28 @@ def main() -> int:
         writes = started_with("directStart")
         check(writes[:1] == [["setReview", [home, "trust"]]] and writes[1][0] == "directStart",
               f"Set up without a container: Start writes the level chosen, then starts the worker {writes[:2]}")
+        # A switch between a container and none fills Set up again: the level chosen stays.
+        def more(entry: str) -> None:
+            page.click("#more")
+            page.click(f"#more-menu button:has-text({json.dumps(entry, ensure_ascii=False)})")
+
+        go("setup")
+        page.select_option("#setup-review", "all")
+        more("Run without a container…")
+        page.click("#dlg button:has-text('Run without a container')")
+        page.wait_for_function("document.querySelector('#setup-runtime').innerText.includes('as you')")
+        chosen = page.input_value("#setup-review")
+        check(chosen == "all" and "Review: asks you before every request" in text("#setup-runtime")
+              and text("#setup-review-hint").startswith("Every request asks you first"),
+              f"Set up, then without a container: the level chosen stays {chosen}")
+        page.select_option("#setup-review", "trust")
+        more("Use the published image")
+        page.wait_for_function("!document.querySelector('#setup-runtime').innerText.includes('as you')")
+        chosen = page.input_value("#setup-review")
+        page.click("#setup-start")
+        page.wait_for_function("window.myous.backend.calls.some(c => c[0] === 'composeRun')")
+        check(chosen == "trust" and started_with("composeRun")[:1] == [["setReview", [home, "trust"]]],
+              f"and back in a container: still the level chosen, and Start writes it {chosen}")
         # Running with its browser on the Mac: Show browser; Settings has the choice and "hidden".
         go("macbrowser", "macos")
         check(text("#browser-open") == "Show browser" and "uses Google Chrome on this Mac" in text("#browser-text"),
