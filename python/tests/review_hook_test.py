@@ -79,6 +79,77 @@ class ReadOnlyTest(unittest.TestCase):
         for bad in ["gc C:\\work\\a.txt", "gc \\\\host\\share\\x", "type ..\\key", "gc ~/x"]:
             self.assertFalse(r.read_only(bad, windows=True), bad)
 
+    def test_flags_are_known_safe(self):
+        # At "changes" a read-only command runs unasked only with flags known
+        # safe for it (SAFE_FLAGS), operands OPERANDS allows, and paths in
+        # the work directory; anything else asks.
+        r = load(Path(tempfile.mkdtemp()))
+        for ok in RUNS:
+            self.assertTrue(r.read_only(ok, windows=False), ok)
+        for bad in ASKS:
+            self.assertFalse(r.read_only(bad, windows=False), bad)
+
+    def test_flags_on_windows(self):
+        # PowerShell's cmdlets keep their parameters (paths confined, also in
+        # -Path:x, a comma list or another drive); the POSIX names and the
+        # Windows programs take the strict rule.
+        r = load(Path(tempfile.mkdtemp()))
+        for ok in WINDOWS_RUNS:
+            self.assertTrue(r.read_only(ok, windows=True), ok)
+        for bad in WINDOWS_ASKS:
+            self.assertFalse(r.read_only(bad, windows=True), bad)
+
+    def test_the_flag_table(self):
+        r = load(Path(tempfile.mkdtemp()))
+        for name, (flags, valued, files) in r.SAFE_FLAGS.items():
+            flags, valued, files = set(flags.split()), set(valued.split()), set(files.split())
+            self.assertIn(name, r.READ_ONLY)
+            self.assertLessEqual(valued, flags, name)    # a value flag is a safe flag
+            self.assertLessEqual(files, valued, name)    # a file flag takes a value
+            self.assertTrue(all(f.startswith("-") and f not in ("-", "--") for f in flags), name)
+        self.assertLessEqual(set(r.OPERANDS), r.READ_ONLY)
+        self.assertLessEqual(set(r.WINDOWS_PROGRAMS), r.READ_ONLY_POWERSHELL)
+
+
+# Read-only commands with safe flags, in the work directory: they run.
+RUNS = [
+    "ls -la", "grep -rn x .", "find . -name '*.go' -type f", "head -n 20 a.txt", "wc -l logs/app.log", "sort -rn a.txt",
+    "cut -d: -f1 a.txt", "date +%s", "uname -a", "du -sh .", "tree -L 2", "diff -u a b", "head -20 a.txt",
+    "head -n5 a b c", "tail -n +5 a.txt", "grep -A3 x f", "grep -A 3 x f", "grep --context=2 x f", "grep -e -x f",
+    "grep --include='*.go' -r x .", "rg -n --type py foo", "rg -g '!vendor' -tgo x", "less -p b f", "sort -t: -k2,2n f",
+    "awk -F: 'NR==1' a.txt", "test -f x && cat x", "test x -nt y", "echo hi", "md5sum -c sums.txt",
+    "find . -newer a.txt", "find . -path ./x -prune -o -print", "uniq -c a.txt", "ls -- -weird", "cat -", "date -u +%F",
+    "stat -c %s a.txt", "file -b a.txt", "id -un", "free -h", "nproc", "uptime", "hostname", "whoami", "pwd",
+    "realpath -e a", "readlink -f a", "which -a ls", "basename -s .txt a.txt", "tr -d x", "df -h .", "ls .hidden",
+    "cat ./sub/f", "grep -c 'x$' f", "find . -name '.*'",
+]
+# They ask: an unknown or unsafe flag, an operand or a flag's file outside
+# the work directory, an expansion the review can't see, or an operand that
+# isn't what the command allows.
+ASKS = [
+    "sort -no x.txt", "sort --out=x a", "tree -o out.txt .", "less -o out a", "rg --pre sh x",
+    "awk 'system(\"id\")' a", "date -s now", "file -C -m magic", "hostname box", "ls --unknown",
+    "grep -f /etc/passwd a", "cat /etc/passwd", "find / -name id_rsa", "cat ~/.ssh/id_rsa", "cat ../key",
+    "sort -o out in", "sort --output=out in", "find . -fprint out", "ls --color /etc", "grep -C /etc/passwd x",
+    "cat $HOME/.ssh/id_rsa", "echo $AWS_SECRET_ACCESS_KEY", "date +$SECRET", "cat .*/x", "ls .*",
+    "cat -- -/../../etc/passwd", "uniq a.txt out.txt", "date 0101", "less +!id a", "more +5 a", "cut -d/ ../x",
+    "find . -newer ../x", "diff --from-file=/etc/x a", "awk 'getline' a", "awk '@load \"x\"' a",
+    "awk 'ENVIRON[\"K\"]' a", "awk -f prog a", "printf -v x y", "whoami --help", "true -x", "date --set=x",
+    "tail -f /var/log/x", "rg --pre=sh x", "rg -z x", "head -n", "grep -e", "file -z a", "tree -R -H x -o y",
+    "diff -l a b", "md5sum -c ../sums", "ls -I x", "stat -f %z /etc", "less -k keys a", "sort -T /tmp a",
+    "sort --compress-program=sh a", "du -sh ~", "realpath ..", "find . -L", "grep -r x ..",
+]
+WINDOWS_RUNS = [
+    "Get-ChildItem -Recurse | Select-String foo", "gc a.txt | Measure-Object -Line", "dir; Get-Date", "gc a.txt",
+    "ipconfig", "systeminfo", "where.exe python", "findstr foo a.txt", "ls -la", "type a.txt", "gci -Path sub",
+    "gc -Path:a.txt", "cat a.txt",
+]
+WINDOWS_ASKS = [
+    "gc env:AWS_SECRET_ACCESS_KEY", "gci HKCU:\\Software", "gc a.txt,C:\\x", "gc -Path:C:\\x\\y", "gc -Path C:\\x",
+    "ipconfig /all", "findstr /s x *", "findstr -g:x a", "ls -Recurse", "cat -Raw a.txt", "cat \"-o\" x",
+    "rg x \"--\" --pre=sh", "sort -o x a", "gc $env:USERPROFILE\\.ssh\\id_rsa", "gc ..\\key", "gc .*\\x",
+]
+
 
 class HookTest(unittest.TestCase):
     def setUp(self):
