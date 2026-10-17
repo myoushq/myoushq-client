@@ -127,13 +127,19 @@ func handleWraps(st Storage, sk string, wraps []*nostr.Event) ([]Entry, error) {
 		s.Seen[w.ID] = now
 		fresh = append(fresh, w)
 	}
+	forgot := false
 	for id, t := range s.Seen {
 		if now-t >= seenRetention {
 			delete(s.Seen, id)
+			forgot = true
 		}
 	}
-	if err := st.Put("state", s); err != nil {
-		return nil, err
+	// Written only when it changed: a relay sends everything it holds on
+	// every connect, all of it seen before.
+	if len(fresh) > 0 || forgot {
+		if err := st.Put("state", s); err != nil {
+			return nil, err
+		}
 	}
 
 	// Wrap timestamps are randomized, so put messages in the order they were written.
