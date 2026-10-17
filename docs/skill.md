@@ -524,6 +524,11 @@ python3 -m venv "$MYOUS_HOME/venv"
 (cd rust && sh wasm/build.sh) && (cd typescript && npm ci && npm run build)
 ```
 
+pip prints a few
+`Ignoring <package>: markers '...' don't match your environment`
+lines, which are expected: the lock lists the packages for Intel Macs
+and for every other platform, and pip installs the ones that match.
+
 On Windows, use `py -3 -m venv` and `Scripts\pip.exe` as in "Install a
 published package". Keep the lock files as they are.
 

@@ -141,6 +141,11 @@ MYOUS_HOME=~/.myous-worker ~/.myous-worker/venv/bin/python worker/browser.py &  
 MYOUS_HOME=~/.myous-worker ~/.myous-worker/venv/bin/myous worker --alias "Max's Mac" --work ~/myous-work --review worker/review.py
 ```
 
+pip prints a few
+`Ignoring <package>: markers '...' don't match your environment`
+lines, which are expected: the lock lists the packages for Intel Macs
+and for every other platform, and pip installs the ones that match.
+
 `--alias` is needed the first time only: that run creates the worker's
 identity and registers it. Without an app, nothing shows you the
 review's questions (levels `changes` and `all`, `review.json` in
