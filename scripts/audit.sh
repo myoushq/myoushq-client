@@ -2,7 +2,9 @@
 # Check the clients' dependencies against known-vulnerability databases.
 # Exits non-zero if any check finds something.
 # Tools (pinned): govulncheck via `go run`; pip-audit and cargo-audit are
-# installed on first use (pip-audit into /tmp/myous-audit-tools).
+# installed on first use (pip-audit into /tmp/myous-audit-tools, cargo-audit
+# into cargo's bin; the workflows cache it under CARGO_AUDIT_VERSION, so
+# bump the version here and the cache follows).
 set -u
 cd "$(dirname "$0")/.."
 TOOLS=/tmp/myous-audit-tools
@@ -73,8 +75,10 @@ run "npm audit typescript" sh -c "cd typescript && npm audit --omit=dev"
 run "npm audit desktop" sh -c "cd worker/desktop && npm audit"
 
 CARGO=${CARGO:-$HOME/.cargo/bin/cargo}
-if [ ! -x "$HOME/.cargo/bin/cargo-audit" ]; then
-	"$CARGO" install --locked cargo-audit >/dev/null 2>&1
+CARGO_AUDIT_VERSION=0.22.2
+if ! "$HOME/.cargo/bin/cargo-audit" --version 2>/dev/null | grep -qx "cargo-audit $CARGO_AUDIT_VERSION"; then
+	"$CARGO" install --locked --force cargo-audit --version "$CARGO_AUDIT_VERSION" >/dev/null 2>&1 \
+		|| { echo "audit: couldn't install cargo-audit $CARGO_AUDIT_VERSION" >&2; exit 1; }
 fi
 run "cargo audit rust" sh -c "cd rust && $CARGO audit"
 # Two allowed warnings here (not vulnerabilities): proc-macro-error is
