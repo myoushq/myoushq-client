@@ -135,8 +135,8 @@ publishes.
   (osv.dev). Fixes and hardening in code we don't call, with no advisory
   for our version, don't shorten the wait.
 - Read the diff of security-relevant dependencies before bumping:
-  `nostr-sdk`, `spake2` and its HKDF (`hkdf` on Intel Macs, `cryptography`
-  elsewhere), `pycryptodome`, `filippo.io/edwards25519`,
+  `nostr-sdk`, `cryptography` (and `pycryptodome` on Intel Macs), `spake2`
+  and its HKDF (`hkdf` on Intel Macs), `filippo.io/edwards25519`,
   `golang.org/x/crypto`, `go-nostr`, `nostr-tools`, `@noble/*`, the
   `spake2`/`curve25519-dalek` crates.
 - Regenerate lock files (the Python locks as below, `go mod tidy`,
@@ -152,15 +152,21 @@ publishes.
   3.9.2, not 3.9: cryptography excludes 3.9.0 and 3.9.1, and uv would
   otherwise pin an older cryptography for them.
 
-**The Intel Mac path.** spake2 0.9 needs `cryptography`, which has no
-Intel Mac wheels since 49, so an Intel Mac would compile it for about ten
-minutes. `pyproject.toml` therefore has two spake2 lines with environment
-markers: 0.8 (the same protocol code on the pure-Python `hkdf`) where
-`sys_platform` is `darwin` and `platform_machine` is `x86_64`, 0.9
+**The Intel Mac path.** `cryptography` has had no Intel Mac wheels since
+49, so an Intel Mac would compile it for about ten minutes. The ciphers
+and HKDF (`python/myous/_aead.py`) come from `cryptography` wherever it
+is installed, since OpenSSL's AES uses the CPU's constant-time
+instructions on ARM too while pycryptodome's ARM wheels are table-based,
+and from `pycryptodome` on Intel Macs, where its AES-NI and CLMUL code
+is constant-time. spake2 0.9 needs `cryptography` as well, so Intel Macs
+take spake2 0.8 (the same protocol code on the pure-Python `hkdf`).
+`pyproject.toml` gives each pair environment markers: one line where
+`sys_platform` is `darwin` and `platform_machine` is `x86_64`, the other
 everywhere else; the lock carries both, and pip installs the lines whose
 markers match. The 0.9 line is bumped as usual; 0.8 is the last release
 on `hkdf`, so its line stays as it is until the path is removed. CI's
-`python-intel-mac-set` job tests the 0.8 set, and
-`python/tests/pake_bytes_test.py` checks that both give the same bytes.
-The path goes when Intel Macs are out of support (macOS 26 is the last
-for them; a TODO in the private repository).
+`python-intel-mac-set` job tests the Intel Mac set, and
+`python/tests/pake_bytes_test.py` and `aead_test.py` check that both
+sets give the same bytes. The path goes when Intel Macs are out of
+support (macOS 26 is the last for them; a TODO in the private
+repository).

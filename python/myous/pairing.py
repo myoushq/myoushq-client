@@ -26,13 +26,10 @@ import secrets
 import time
 import urllib.parse
 
-from Crypto.Cipher import ChaCha20_Poly1305
-from Crypto.Hash import SHA256
-from Crypto.Protocol.KDF import HKDF
 from nostr_sdk import Event, Keys, PublicKey
 from spake2 import SPAKE2_A, SPAKE2_B
 
-from myous import contacts, inbox
+from myous import _aead, contacts, inbox
 from myous.hub import Hub, HubError
 from myous.storage import Storage
 
@@ -102,10 +99,8 @@ def _pake_finish(role: str, state: bytes, peer_message: bytes) -> bytes:
 
 
 def derive(key: bytes, info: str, length: int = 32) -> bytes:
-    """HKDF-SHA256 with no salt, which RFC 5869 defines as a salt of
-    HashLen zero bytes (spelled out here rather than left to the library)."""
-    return HKDF(key, length, bytes(SHA256.digest_size), SHA256,
-                context=f"myous pairing v{VERSION} {info}".encode())
+    """HKDF-SHA256, no salt."""
+    return _aead.hkdf_sha256(key, length, f"myous pairing v{VERSION} {info}".encode())
 
 
 def verify_code(key: bytes) -> str:
@@ -116,30 +111,29 @@ def verify_code(key: bytes) -> str:
 NONCE_LEN, TAG_LEN = 12, 16  # ChaCha20-Poly1305 as in RFC 8439
 
 
-def _aead(key: bytes, nonce: bytes, nameplate: str):
-    """ChaCha20-Poly1305 with the nameplate as associated data. Only the
-    RFC 8439 nonce: pycryptodome would take 8 or 24 bytes as other variants."""
+def _check_nonce(nonce: bytes) -> None:
+    """Only the RFC 8439 nonce: pycryptodome would take 8 or 24 bytes as
+    other ChaCha20 variants."""
     if len(nonce) != NONCE_LEN:
         raise ValueError(f"nonce must be {NONCE_LEN} bytes")
-    cipher = ChaCha20_Poly1305.new(key=key, nonce=nonce)
-    cipher.update(nameplate.encode())
-    return cipher
 
 
 def seal(key: bytes, role: str, nameplate: str, payload: dict, nonce: bytes | None = None) -> dict:
+    """ChaCha20-Poly1305 with the nameplate as associated data."""
     nonce = nonce or os.urandom(NONCE_LEN)
-    ciphertext, tag = _aead(derive(key, f"from {role}"), nonce, nameplate).encrypt_and_digest(
-        json.dumps(payload, sort_keys=True).encode())
-    return {"t": "payload", "v": VERSION, "n": _b64(nonce), "c": _b64(ciphertext + tag)}
+    _check_nonce(nonce)
+    sealed = _aead.chacha20_poly1305_seal(derive(key, f"from {role}"), nonce, nameplate.encode(),
+                                          json.dumps(payload, sort_keys=True).encode())
+    return {"t": "payload", "v": VERSION, "n": _b64(nonce), "c": _b64(sealed)}
 
 
 def unseal(key: bytes, peer_role: str, nameplate: str, msg: dict) -> dict:
     try:
         nonce, data = _unb64(msg["n"]), _unb64(msg["c"])
+        _check_nonce(nonce)
         if len(data) < TAG_LEN:
             raise ValueError("too short")
-        plain = _aead(derive(key, f"from {peer_role}"), nonce, nameplate).decrypt_and_verify(
-            data[:-TAG_LEN], data[-TAG_LEN:])
+        plain = _aead.chacha20_poly1305_open(derive(key, f"from {peer_role}"), nonce, nameplate.encode(), data)
         payload = json.loads(plain)
         if not valid_pubkey(payload["pubkey"]):
             raise ValueError("not a key")

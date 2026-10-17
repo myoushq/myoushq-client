@@ -21,14 +21,16 @@ jobs:
       - run: |
           pip install --require-hashes -r python/requirements.lock
           pip install --no-deps python/
+          python -c "from myous import _aead; assert _aead.BACKEND == 'cryptography', _aead.BACKEND"
           python -m unittest discover -s python/tests -p '*_test.py'
       # The Claude Code hook script (its real-client half needs the hub and skips here).
       - run: PYTHON=python bash examples/claude-code/test.sh
   python-intel-mac-set:
     # What an Intel Mac installs (RELEASING.md, "The Intel Mac path"):
-    # spake2 0.8 on the pure-Python hkdf, no cryptography. It runs on Linux,
-    # so it tests the API and the bytes; the pins and hashes are the lock's
-    # lines for an Intel Mac (no marker, or the Intel one), markers dropped.
+    # pycryptodome, and spake2 0.8 on the pure-Python hkdf; no cryptography.
+    # It runs on Linux, so it tests the API and the bytes; the pins and
+    # hashes are the lock's lines for an Intel Mac (no marker, or the Intel
+    # one), markers dropped.
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -49,6 +51,7 @@ jobs:
           pip install --require-hashes -r intel-mac.txt
           pip install --no-deps python/
           python -c "import importlib.util as u, spake2; assert spake2.__version__ == '0.8' and not u.find_spec('cryptography')"
+          python -c "from myous import _aead; assert _aead.BACKEND == 'pycryptodome', _aead.BACKEND"
           python -m unittest discover -s python/tests -p '*_test.py'
   python-windows:
     # The parts that differ on Windows: the worker's shell (PowerShell),

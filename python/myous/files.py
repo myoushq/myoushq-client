@@ -19,8 +19,9 @@ import urllib.error
 import urllib.request
 from typing import NamedTuple
 
-from Crypto.Cipher import AES
 from nostr_sdk import EventBuilder, Keys, Kind, Tag, Timestamp
+
+from myous import _aead
 
 KIND_BLOB_AUTH = 24242
 KEY_BYTES = 32
@@ -54,8 +55,7 @@ def encrypt(plaintext: bytes, key: bytes | None = None, nonce: bytes | None = No
     nonce = nonce or secrets.token_bytes(NONCE_BYTES)
     if len(key) != KEY_BYTES or len(nonce) != NONCE_BYTES:
         raise ValueError("key must be 32 bytes and nonce 12 bytes")
-    sealed, tag = AES.new(key, AES.MODE_GCM, nonce=nonce, mac_len=TAG_BYTES).encrypt_and_digest(plaintext)
-    ciphertext = sealed + tag
+    ciphertext = _aead.aes_gcm_seal(key, nonce, plaintext)
     return Encrypted(key, nonce, ciphertext, sha256(ciphertext), sha256(plaintext))
 
 
@@ -65,12 +65,11 @@ def decrypt(ciphertext: bytes, key: bytes, nonce: bytes, x: str | None = None, o
     if x is not None and sha256(ciphertext) != x:
         raise ValueError("the downloaded blob doesn't match the hash in the message")
     try:
-        # Only the sizes this protocol uses (pycryptodome would take other
-        # nonce lengths), and a ciphertext at least as long as its tag.
+        # Only the sizes this protocol uses (both libraries take other key
+        # and nonce lengths), and a ciphertext at least as long as its tag.
         if len(key) != KEY_BYTES or len(nonce) != NONCE_BYTES or len(ciphertext) < TAG_BYTES:
             raise ValueError("bad sizes")
-        cipher = AES.new(key, AES.MODE_GCM, nonce=nonce, mac_len=TAG_BYTES)
-        plaintext = cipher.decrypt_and_verify(ciphertext[:-TAG_BYTES], ciphertext[-TAG_BYTES:])
+        plaintext = _aead.aes_gcm_open(key, nonce, ciphertext)
     except Exception:
         raise ValueError("the file could not be decrypted (wrong key, or the blob was altered)") from None
     if ox is not None and sha256(plaintext) != ox:

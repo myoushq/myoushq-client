@@ -11,17 +11,22 @@ license = {text = "MIT"}
 dependencies = [
     # Exact pins: these handle keys and crypto. Exact transitive pins with
     # hashes are in requirements.lock (see RELEASING.md, "Dependency
-    # updates"). pycryptodome, not cryptography: it ships wheels for Intel
-    # Macs too, so no install builds it from source.
+    # updates"). Intel Macs get lines of their own (RELEASING.md, "The
+    # Intel Mac path").
     "nostr-sdk==0.45.1",
-    "pycryptodome==3.24.0",
-    # spake2 0.9 needs cryptography, which has no Intel Mac wheels since 49
-    # (a ten-minute compile there). On Intel Macs, 0.8: the same protocol
-    # code on the pure-Python hkdf package (messages and keys byte-identical,
-    # checked 2026-10-17, tests/pake_bytes_test.py). The 0.9 line is bumped
-    # as usual; 0.8 is the last release on hkdf, so its line stays as it is
-    # until the Intel Mac path goes, when Intel Macs are out of support
-    # (macOS 26 is the last for them).
+    # The ciphers and HKDF (myous/_aead.py) come from cryptography, whose
+    # OpenSSL uses the CPU's constant-time AES instructions on ARM as on x86.
+    # Intel Macs have had no cryptography wheels since 49 (a ten-minute
+    # compile), so they take pycryptodome, whose AES-NI and CLMUL code is
+    # constant-time there.
+    "cryptography==50.0.2; sys_platform != 'darwin' or platform_machine != 'x86_64'",
+    "pycryptodome==3.24.0; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+    # spake2 0.9 needs cryptography too. On Intel Macs, 0.8: the same
+    # protocol code on the pure-Python hkdf package (messages and keys
+    # byte-identical, checked 2026-10-17, tests/pake_bytes_test.py). The 0.9
+    # line is bumped as usual; 0.8 is the last release on hkdf, so its line
+    # stays as it is until the Intel Mac path goes, when Intel Macs are out
+    # of support (macOS 26 is the last for them).
     "spake2==0.9; sys_platform != 'darwin' or platform_machine != 'x86_64'",
     "spake2==0.8; sys_platform == 'darwin' and platform_machine == 'x86_64'",
 ]
