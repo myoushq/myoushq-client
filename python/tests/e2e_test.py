@@ -242,7 +242,7 @@ class EndToEnd(unittest.TestCase):
             p = subprocess.Popen(cmd + ["worker", "--work", str(work), "--alias", agent],
                                  env=env, stdout=log, stderr=subprocess.STDOUT)
         status = self.tmp / agent / "worker.json"
-        for _ in range(100):
+        for _ in range(300):   # up to 30 s: a busy machine starts Python slowly
             if status.exists() and json.loads(status.read_text()).get("pid") == p.pid:
                 time.sleep(1.5)  # let it connect
                 return p

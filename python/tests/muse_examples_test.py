@@ -91,12 +91,13 @@ class MuseExamples(unittest.TestCase):
     def start_watcher(self, agent: str, *args: str, how: str = "module") -> subprocess.Popen:
         p = self.example(agent, "watcher.py", *args, how=how)
         pidfile = self.tmp / agent / "watcher.pid"
-        for _ in range(100):
+        for _ in range(300):   # up to 30 s: a busy machine starts Python slowly
             if pidfile.exists() and pidfile.read_text().strip() == str(p.pid):
                 time.sleep(1.5)  # let it connect
                 return p
             time.sleep(0.1)
-        self.fail(f"watcher didn't start: {self.finish(p, 5)}")
+        p.kill()   # a watcher left running makes the next ones exit "busy"
+        self.fail(f"watcher didn't start: {self.finish(p, 30)}")
 
     def test_1_inviter_watcher_wakes_on_pairing(self):
         invite = json.loads(self.myous("alice", "invite", "--json"))
