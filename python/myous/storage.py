@@ -23,6 +23,7 @@ import abc
 import contextlib
 import json
 import os
+import secrets
 import stat
 import sys
 import time
@@ -65,6 +66,12 @@ class Storage(abc.ABC):
     @abc.abstractmethod
     def append_history(self, entry: dict) -> None:
         """Append one record to the message history."""
+
+    def append_history_many(self, entries: list[dict]) -> None:
+        """Append several records at once; a store that can makes it one
+        write. This default appends them one by one."""
+        for entry in entries:
+            self.append_history(entry)
 
     @abc.abstractmethod
     def read_history(self) -> list[dict]:
@@ -194,13 +201,18 @@ class FileStorage(Storage):
         return [f"{directory}/{n}" if directory else n for n in found]
 
     def append_history(self, entry: dict) -> None:
-        line = (json.dumps(entry, sort_keys=True) + "\n").encode()
+        self.append_history_many([entry])
+
+    def append_history_many(self, entries: list[dict]) -> None:
+        if not entries:
+            return
+        lines = "".join(json.dumps(e, sort_keys=True) + "\n" for e in entries).encode()
         flags = os.O_RDWR | os.O_CREAT | os.O_APPEND | getattr(os, "O_BINARY", 0)
         fd = os.open(self.path("messages.jsonl"), flags, 0o600)
         try:
             _mend_tail(fd)
-            while line:
-                line = line[os.write(fd, line):]
+            while lines:
+                lines = lines[os.write(fd, lines):]
             os.fsync(fd)
         finally:
             os.close(fd)
@@ -291,15 +303,23 @@ class FileStorage(Storage):
 
     @staticmethod
     def write_private(p: Path, text: str) -> None:
-        """Atomic write, readable only by this user."""
+        """Atomic write, readable only by this user. The temporary file is
+        this write's own: two processes writing the same document (the
+        hub's settings, refreshed by whichever command finds them stale)
+        must not share one, or one's rename fails and the other's content
+        lands torn in the document."""
         p.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        tmp = p.with_name(p.name + ".tmp")
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w") as f:
-            f.write(text)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, p)
+        tmp = p.with_name(f"{p.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
+        try:
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w") as f:
+                f.write(text)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, p)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
 
 
 def _torn(last_line: str | bytes) -> bool:
