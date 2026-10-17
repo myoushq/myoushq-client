@@ -488,8 +488,10 @@ The reference hook (`worker/review.py`, which the container runs and the
 Go worker applies without a hook of its own) refuses while a pause file
 exists, then follows the owner's review level: `changes`, the container's
 default since 0.8.1, allows reads in the worker's work directory (a
-`get`, and an `exec` of a read-only command whose flags are all known
-safe) and asks the owner about anything else; `all` asks about every
+`get`, which the worker's own path check keeps there unless it was
+started to take absolute paths, and an `exec` of a read-only command
+whose flags are all known safe) and asks the owner about anything else;
+`all` asks about every
 request; `trust` allows everything from approved contacts. The worker
 logs every request. Tightening is a matter of editing that hook. The
 `id` follows the rule in 7.1, so a hook can name files after it: the

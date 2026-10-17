@@ -660,7 +660,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--work", default=os.environ.get("MYOUS_WORK", "work"), help="work directory (default ./work or $MYOUS_WORK)")
     p.add_argument("--review", metavar="CMD", help="review hook: a command that reads the request as JSON and exits 0 to allow")
     p.add_argument("--pause-file", help="refuse requests while this file exists (default $MYOUS_HOME/worker.paused)")
-    p.add_argument("--allow-absolute", action="store_true", help="allow absolute paths in cp requests")
+    p.add_argument("--allow-absolute", action="store_true", help="allow absolute paths in cp requests (the changes review level then lets cp read any file)")
     p.add_argument("--note", action="append", default=[], help="a line to add to the worker's help text (repeatable)")
     p.add_argument("--hub", help=f"hub URL (default {DEFAULT_HUB})")
 

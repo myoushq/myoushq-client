@@ -51,7 +51,8 @@ records, log and pause file: `~/.myous-worker`
    `docker` group, or compose. Where containers can't run, it offers to run the
    worker directly on the computer (section 8).
 3. The user names the worker (the name their agents will see), says in a
-   sentence what it is (its card, section 3), and presses "Start the
+   sentence what it is (its card, section 3), picks the review level
+   (section 6; `changes` is offered first), and presses "Start the
    worker". The first start downloads the image (about 2 GB).
 4. Continue at section 4.
 
@@ -251,7 +252,10 @@ of this.
   that reaches outside the work directory, like `cat ~/.ssh/id_rsa` or
   an absolute path, a flag the review doesn't know, like `sort -o`, and
   anything that changes things), `trust` (everything from paired agents
-  runs, reads anywhere included), or `all` (every request asks). A fresh
+  runs, reads anywhere included), or `all` (every request asks). A `get`
+  stays in the work directory only by the worker's own path check: a
+  worker started with `--allow-absolute` takes absolute paths in `cp`,
+  and `changes` then lets an agent copy any file it can read. A fresh
   worker starts at `changes` (since 0.8.1; `MYOUS_DEFAULT_REVIEW` in the
   worker folder's `.env`, `trust`, `changes` or `all`, sets another
   default) until a level is picked. A `review.json` that can't be read as
@@ -319,13 +323,16 @@ window. Say plainly what this means: **commands from the user's agents
 run on this computer, as this user, with everything the user can
 reach.** That includes the worker's own files: at `trust` a command can
 read the worker's key and its history, which holds the key of every file
-it received; at `changes`, where the app starts it, a read outside the
-work folder asks first, and anything that changes things does too. That
+it received; at `changes`, the level the app offers first, a read
+outside the work folder asks first, and anything that changes things
+does too. That
 is why the container is the default. Only do this if the user
 understands that, and keep the review at `changes` or `all`.
 
-With an app, the user chooses "Run without a container"; the app then
-starts the review level at `changes`. The worker it runs is the Go
+With an app, the user chooses "Run without a container" and picks the
+review level on Set up, `changes` first; until one is saved the worker
+runs at `changes` (the app starts it with `MYOUS_DEFAULT_REVIEW=changes`).
+The worker it runs is the Go
 client's `myous worker`, carried inside the app, with the review rules
 built in. The worker needs no Python; its browser does (3.10+, for
 Playwright), and the app installs Playwright into an environment of its

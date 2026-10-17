@@ -76,8 +76,10 @@ a worker without a container, so that needs no Python.
 
 The review: with no `--review`, the worker applies `worker/review.py`'s
 rules itself (the pause file, the level in `review.json` or, without one,
-`MYOUS_DEFAULT_REVIEW`, else `trust`; questions to the owner in
-`approvals/`, `MYOUS_APPROVAL_WAIT`); `--review CMD` runs a hook
+`MYOUS_DEFAULT_REVIEW`, else `trust`; a `review.json` that isn't a
+regular file holding a level, or a `MYOUS_DEFAULT_REVIEW` that isn't a
+level, is `all`; questions to the owner in `approvals/`,
+`MYOUS_APPROVAL_WAIT`); `--review CMD` runs a hook
 of your own instead, with the request as JSON on stdin (exit 0 allows, the
 first line of stderr is the reason). Commands run in `/bin/sh` in a
 session of their own, or in PowerShell on Windows, and a timeout, the

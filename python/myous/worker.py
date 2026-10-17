@@ -4,11 +4,13 @@ paired with the owner's other agents, which push files, pull files and run
 commands on it with `myous cp` and `myous exec`.
 
 The worker does what it's asked, one request at a time, after its review
-hook allows it; a request it only gets to after its ttl (the requester
-stopped waiting) is answered "expired" and never runs. The default hook
-allows everything from approved contacts, refuses while the pause file
-exists, and logs every request; tightening is a matter of giving
-`myous worker --review` a command of your own.
+hook allows it; a request it only gets to after its ttl and the margin
+past it for clocks that differ (CLOCK_SKEW_ALLOWANCE: the requester
+stopped waiting) is answered "expired" and never runs. Without a hook the
+worker allows everything from approved contacts, refuses while the pause
+file exists, and logs every request; tightening is a matter of giving
+`myous worker --review` a command of your own, such as worker/review.py
+(the container's, with its review levels).
 """
 from __future__ import annotations
 

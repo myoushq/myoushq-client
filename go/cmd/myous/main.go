@@ -101,7 +101,7 @@ func run(ctx context.Context, cmd string, args []string) error {
 	work := fs.String("work", defaultWork, "worker: work directory; $MYOUS_WORK, when set, is the default")
 	review := fs.String("review", "", "worker: review hook: a command that reads the request as JSON and exits 0 to allow")
 	pauseFile := fs.String("pause-file", "", "worker: refuse requests while this file exists (default $MYOUS_HOME/worker.paused)")
-	allowAbsolute := fs.Bool("allow-absolute", false, "worker: allow absolute paths in cp requests")
+	allowAbsolute := fs.Bool("allow-absolute", false, "worker: allow absolute paths in cp requests (the changes review level then lets cp read any file)")
 	var notes noteList
 	fs.Var(&notes, "note", "worker: a line to add to the worker's help text (repeatable)")
 	pos, err := parseInterleaved(fs, args)
