@@ -5,8 +5,50 @@ the hub (`latest_release` in `/config.json`); the reference clients put an
 "update" item in the inbox. Get it, verify its signature and build it as
 in [skill.md](https://myoushq.com/skill.md).
 
-## Unreleased
+## v0.8.1
 
+The worker asks first. 2026-10-16. A worker now starts at the `changes`
+review level, and `changes` means what its name says: a plain read
+inside the work folder runs, everything else asks the owner. The
+decisions are the owner's of 2026-10-16 on the worker safety proposal.
+
+- **A fresh worker starts at `changes`**, as direct mode already did:
+  reads run, anything that changes things asks. The container's
+  `entrypoint.sh` sets `MYOUS_DEFAULT_REVIEW=changes`, `.env` can set
+  another (`compose.yml` passes it through), and a `review.json`
+  written by an app or by hand wins. **Upgrading:** a container that
+  never had `review.json` flips from `trust` to `changes` on its first
+  start from this image; the apps write `changes` into the file for a
+  worker without one, so the window and the worker agree; pick "Trust
+  my agent" in Settings to keep the old behaviour (worker.md §7).
+- **`changes` is confined.** A read-only command runs unasked only when
+  every flag it carries is one known to only read or format, every path
+  stays in the work folder, and nothing redirects, substitutes, expands
+  or runs code; anything else asks. So `cat /etc/passwd`,
+  `cat ~/.ssh/id_rsa`, `cat ../key`, `cat $HOME/x`, `sort -no`,
+  `tree -o`, `less -o`, `rg --pre`, `date -s`, `file -C`, `hostname
+  NAME` and `awk 'system(...)'` ask, where before some ran. The rule is
+  one table of safe flags per command, the same in both workers (the
+  Go↔Python parity tests compare the tables and 345 commands). A
+  `review.json` that is present but can't be read as a level (not JSON,
+  a bad level, not a regular file) asks about everything (`all`) rather
+  than running everything; an invalid `MYOUS_DEFAULT_REVIEW` does the
+  same, with a worker.log line.
+- **Clock differences no longer expire every request.** Both workers
+  allow 300 seconds past a request's ttl (`MYOUS_CLOCK_ALLOWANCE`, 0
+  turns it off); where a request still expires, the error names the
+  margin. The cost: a request the agent gave up on may still start
+  within about 5 minutes, so the Python client's timeout text no longer
+  says the worker won't start it; it says the worker may still, and
+  that the reply then shows in `myous inbox`. A v0.8.0 client's text
+  still says "it won't start this request any more", which is no
+  longer true against this worker.
+- **The apps:** Set up asks which review level the owner wants
+  ("When should it ask you first?", `changes` offered first) with one
+  sentence per level, for the container and direct mode alike, and
+  Settings shows the sentence under its select; the window shows a
+  `review.json` it can't read as `all` and no file as `changes`; the
+  worker run without a container gets the `changes` default too.
 - **The apps' icon and menu bar icon: the mark's four dots are now
   rings**, like the pads of a printed circuit board, with the navy (or
   the tray's state colour) showing through, and the mu's stroke stops at

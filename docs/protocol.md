@@ -452,20 +452,30 @@ old the request was. `ttl` is a number of seconds of at least 1; above
 86400 it counts as 86400 (the relay keeps messages a day); a `ttl` that
 is anything else (not a number, or a number below 1) gets an `ack` with
 `ok: false` like a bad id. The age compares the requester's clock with
-the worker's: a `created_at` in the future counts as now. A `help` or
-other text older than 600 seconds gets no reply. Workers that predate
-`ttl` (0.7.5 and older) ignore it and run whatever is still on the
-relay.
+the worker's: a `created_at` in the future counts as now, and a worker
+may allow a margin past the `ttl` for clock differences before it treats
+a request as expired (the reference workers allow 300 seconds since
+0.8.1; `MYOUS_CLOCK_ALLOWANCE` in the worker's environment changes it, 0
+turns it off), so a requester whose clock lags the worker's is not
+expired on every request. The `error` still reports the request's real
+age, its `ttl` and the margin: `expired: sent 9 minutes ago, its ttl is
+150 seconds and the worker allows 300 more for clock differences; not
+run` (without a margin it ends at the `ttl`: `... its ttl is 150
+seconds; not run`). A `help` or other text older than 600 seconds (plus
+that margin) gets no reply. Workers that predate `ttl` (0.7.5 and older)
+ignore it and run whatever is still on the relay.
 
 A requester should set `ttl` to how long it waits for the reply, so a
-request it gave up on (the worker was off, or busy) never runs later;
+request it gave up on (the worker was off, or busy) doesn't run later
+than the worker's margin for clock differences past it;
 the Python client does (`exec`: its timeout plus 30 seconds; `cp`: its
 timeout). A longer `ttl` leaves a request for a worker that is off, to
 run when it comes back within that time. A requester may show its agent
 a reply that arrives after it stopped waiting (or after the waiting
 command was killed), as the Python client does in `inbox`, and an
 `expired` answer to such a request only when its `ttl` was longer than
-the wait (the agent was told the worker might still run it).
+the wait (the agent was told the worker might still run it for the rest
+of its `ttl`, not only within the worker's margin).
 
 ### 7.2 Review hook
 
@@ -474,12 +484,19 @@ owner configured, with one JSON object on stdin:
 `{"op": "exec"|"get"|"put", "id", "sender": <npub>, "alias", "cmd"?,
 "path"?, "size"?}`. Exit status 0 allows; anything else refuses, and
 the hook's stderr (first line) goes back to the requester as the `error`.
-The reference worker's default hook allows everything from approved
-contacts, refuses while a pause file exists, and logs every request.
-Tightening is a matter of editing that hook. The `id` follows the rule in
-7.1, so a hook can name files after it: the reference hook
-(`worker/review.py`) puts a question to the owner as `approvals/<id>.json`
-and takes the answer from `approvals/<id>.answer`, and the owner's apps
+The reference hook (`worker/review.py`, which the container runs and the
+Go worker applies without a hook of its own) refuses while a pause file
+exists, then follows the owner's review level: `changes`, the container's
+default since 0.8.1, allows reads in the worker's work directory (a
+`get`, which the worker's own path check keeps there unless it was
+started to take absolute paths, and an `exec` of a read-only command
+whose flags are all known safe) and asks the owner about anything else;
+`all` asks about every
+request; `trust` allows everything from approved contacts. The worker
+logs every request. Tightening is a matter of editing that hook. The
+`id` follows the rule in 7.1, so a hook can name files after it: the
+reference hook puts a question to the owner as `approvals/<id>.json` and
+takes the answer from `approvals/<id>.answer`, and the owner's apps
 answer only ids that follow that rule.
 
 ## 8. Client obligations

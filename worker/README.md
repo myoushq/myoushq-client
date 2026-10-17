@@ -15,7 +15,7 @@ What's here:
 | `entrypoint.sh` | starts the display, the browser, then `myous worker` |
 | `browser.py` | keeps a Chromium with a persistent profile running, reachable on port 9222 |
 | `forward.py` | with the browser on the host (`MYOUS_BROWSER=host`), relays port 9222 in the container to it |
-| `review.py` | the review hook: honours the pause file, then the review level in `review.json` (`trust`: everything runs; `changes`: reads run, the rest asks the owner; `all`: everything asks) by writing a question to `approvals/` and waiting for the answer the desktop app writes |
+| `review.py` | the review hook: honours the pause file, then the review level in `review.json` (`changes`, the container's default: reads in the work directory with known-safe flags run, the rest asks the owner; `trust`: everything runs; `all`: everything asks; without `review.json`, `$MYOUS_DEFAULT_REVIEW`, which `entrypoint.sh` sets to `changes`; a `review.json` it can't read: `all`) by writing a question to `approvals/` and waiting for the answer the desktop app writes |
 | `desktop/` | myous for Mac, Linux and Windows, the owner's app (see `desktop/README.md`) |
 | `mac/` | the earlier Objective-C myous for Mac, superseded by `desktop/` and no longer released (`mac/README.md`); its `notarize.sh`, `make-dmg.sh` and `compose-image.yml` are still used |
 | `build-worker.sh` | builds the Go worker the myous apps carry (`myous-worker`) for running without a container |
@@ -147,7 +147,8 @@ review's questions (levels `changes` and `all`, `review.json` in
 `~/.myous-worker`): answer one by writing `allow` or `refuse` into
 `~/.myous-worker/approvals/<id>.answer`, next to the request in
 `<id>.json`, within 120 seconds; unanswered, it is refused. Or keep the
-level at `trust` and pause the worker (`touch
+level at `trust` (the level here while there is no `review.json` and no
+`MYOUS_DEFAULT_REVIEW`) and pause the worker (`touch
 ~/.myous-worker/worker.paused`) whenever it shouldn't run anything.
 
 On Windows, use `venv\Scripts\` instead of `venv/bin/`; commands run in
@@ -171,9 +172,10 @@ app (`desktop/`).
 
 - Only approved contacts' messages reach the worker at all; everything
   else is dropped before the hook sees it. The hook (`review.py`) is the
-  control point for what those contacts may do: at the default level,
-  `trust`, it allows everything and logs it; `changes` and `all` ask the
-  owner.
+  control point for what those contacts may do: at the container's
+  default level, `changes`, it allows reads in the work directory with
+  flags known to only read (and asks about everything else); `all` asks
+  about every request; `trust` allows everything and logs it.
 - Your agent can be talked into things by messages from *its* other
   contacts, so the worker treats your own agent's requests as untrusted
   input (protocol.md section 8). Tighten `review.py` as soon as the worker

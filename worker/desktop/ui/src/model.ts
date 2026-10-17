@@ -27,6 +27,7 @@ export interface WorkerFiles {
   requests: Json[];
   approvals: Json[];
   paused: boolean;
+  /** review.json's level as the workers read it (files.rs): "changes" when there is none, "all" when it isn't valid. */
   review: string;
   /** browser.json: the worker's browser on this computer while it runs. */
   browser?: Json | null;
@@ -282,7 +283,7 @@ export class Worker {
   requests: Json[] = [];
   approvals: Json[] = [];
   paused = false;
-  review = "trust";
+  review = "changes";
 
   // The launch state the app keeps itself.
   launchStage: "" | "pulling" | "creating" = "";

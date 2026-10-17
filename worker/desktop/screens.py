@@ -28,8 +28,10 @@ STATES = ["checking", "couldntcheck", "setup", "hubdown", "noruntime", "installi
           "workers"]
 
 # Dialogs drawn as screens: (name, state, the made-up containers kept (None: all), the menu entry
-# that opens it). Remove stale containers with one container of each kind (two workers), and with none.
-DIALOGS = [("stale", "workers", None, "m:Remove stale containers…"), ("stale-none", "running", [], "m:Remove stale containers…")]
+# that opens it). Remove stale containers with one container of each kind (two workers), and with
+# none; Settings.
+DIALOGS = [("stale", "workers", None, "m:Remove stale containers…"), ("stale-none", "running", [], "m:Remove stale containers…"),
+           ("settings", "running", None, "m:Settings…")]
 
 
 def main() -> int:

@@ -15,10 +15,11 @@ agent (Muse, Claude Code, ...) can send commands and files to, end-to-end
 encrypted through myoushq.com, with no ports opened to the internet. It
 has its own browser that you log into once, so your agent can look things
 up as you. You see every request it runs, and you can pause it any time.
-By default it runs everything your paired agents ask without asking you;
-to be asked first, set its review level to 'changes' (it asks before
-anything that changes things) or 'all' (it asks before every request), in
-the app's Settings under Review."
+By default it asks you before anything that changes things (review level
+'changes'): reads in its work folder run on their own, anything else
+waits for you to allow it. In the app's Settings, under Review, you can
+let it run everything your paired agents ask ('trust') or have it ask
+before every request ('all')."
 
 There are three ways to run it:
 
@@ -50,7 +51,8 @@ records, log and pause file: `~/.myous-worker`
    `docker` group, or compose. Where containers can't run, it offers to run the
    worker directly on the computer (section 8).
 3. The user names the worker (the name their agents will see), says in a
-   sentence what it is (its card, section 3), and presses "Start the
+   sentence what it is (its card, section 3), picks the review level
+   (section 6; `changes` is offered first), and presses "Start the
    worker". The first start downloads the image (about 2 GB).
 4. Continue at section 4.
 
@@ -232,7 +234,8 @@ paired contacts, the last request and when, and the worker's `version`;
 while it can't reach the relay, `relay_down_since` (Unix time; it keeps
 retrying, and keeps `worker.json` fresh meanwhile).
 The log of every request, allowed, refused or expired (sent longer ago
-than its agent waits for the answer, so not run), is `worker.log` in the
+than its agent waits for the answer, and five minutes more the worker
+allows for clocks that differ, so not run), is `worker.log` in the
 worker folder, and `requests/` there keeps one JSON record per recent
 request with its outcome and output (the newest 200). The apps show all
 of this.
@@ -241,14 +244,28 @@ of this.
   until the file is removed (the apps' Pause does this). The user can do
   this any time.
 - **Review level:** Settings, Review, in the apps, or `review.json` in the
-  worker folder with `{"level": ...}`: `trust` (the default; everything
-  from paired agents runs), `changes` (reads run: `get`, and `exec` of a
-  read-only command such as `ls`, `cat`, `grep`, `find`; anything else
-  asks the user), or `all` (every request asks). The apps show the
-  question with Allow and Refuse; no answer within 120 seconds refuses
-  the request with a reason the agent sees. Without an app, the question
-  is `approvals/<id>.json` in the worker folder, and writing `allow` or
-  `refuse` into `approvals/<id>.answer` answers it.
+  worker folder with `{"level": ...}`: `changes` (the default; reads run
+  unasked: `get`, and `exec` of a read-only command such as `ls -la`,
+  `cat`, `grep -rn`, `find . -name` whose paths stay in the work
+  directory and whose flags are all ones known only to read or format,
+  the list in `worker/review.py`; anything else is asked about: a read
+  that reaches outside the work directory, like `cat ~/.ssh/id_rsa` or
+  an absolute path, a flag the review doesn't know, like `sort -o`, and
+  anything that changes things), `trust` (everything from paired agents
+  runs, reads anywhere included), or `all` (every request asks). A `get`
+  stays in the work directory only by the worker's own path check: a
+  worker started with `--allow-absolute` takes absolute paths in `cp`,
+  and `changes` then lets an agent copy any file it can read. A fresh
+  worker starts at `changes` (since 0.8.1; `MYOUS_DEFAULT_REVIEW` in the
+  worker folder's `.env`, `trust`, `changes` or `all`, sets another
+  default) until a level is picked. A `review.json` that can't be read as
+  one of the three levels asks about every request, as `all`, until it is
+  fixed; so does a `MYOUS_DEFAULT_REVIEW` that isn't a level, and
+  `worker.log` says why. The apps show the question with Allow and
+  Refuse; no answer within 120 seconds refuses the request with a reason
+  the agent sees. Without an app, the question is `approvals/<id>.json`
+  in the worker folder, and writing `allow` or `refuse` into
+  `approvals/<id>.answer` answers it.
 - **Stop:** `docker compose -p myous-worker down` (keeps identity, logins
   and files). A command the worker is running is ended, and the agent
   that sent it gets the answer "stopped by the owner (the worker is
@@ -256,8 +273,9 @@ of this.
   don't run. Start it again with the `up -d` command from section 3.
   Requests sent while it was stopped wait on the relay; when it starts,
   it runs those still within their ttl (by default, as long as the agent
-  waited for the answer) and answers the others "expired" without
-  running them.
+  waited for the answer) or the five minutes after it that the worker
+  allows for clocks that differ, and answers the others "expired"
+  without running them.
 - **Restart on reboot:** the container is set to restart with Docker;
   the runtime must start at login (Docker Desktop's setting; for Docker
   Engine, `sudo systemctl enable docker`).
@@ -288,6 +306,14 @@ When the hub announces a new release (an `update` item):
 
 Identity, contacts, logins and files are kept.
 
+**From 0.8.1 a worker starts at the `changes` review level.** One that
+never had a level picked (no `review.json` in the worker folder) ran
+everything its paired agents asked (`trust`); from 0.8.1 on it asks the
+user before anything that changes things, and before reads outside its
+work folder (section 6). To keep the old behaviour, pick Trust in the
+app's Settings, under Review, or write `{"level": "trust"}` to
+`review.json` in the worker folder.
+
 ## 8. Direct mode (no container)
 
 For users who prefer no container, or computers where containers can't
@@ -295,13 +321,18 @@ run (Windows without WSL 2, such as a cloud desktop), the same worker
 runs as a process on the computer, with its browser as an ordinary
 window. Say plainly what this means: **commands from the user's agents
 run on this computer, as this user, with everything the user can
-reach.** That includes the worker's own environment: an allowed command
-can read the worker's key and its history, which holds the key of every
-file it received. That is why the container is the default. Only do this
-if the user understands that, and keep the review strict.
+reach.** That includes the worker's own files: at `trust` a command can
+read the worker's key and its history, which holds the key of every file
+it received; at `changes`, the level the app offers first, a read
+outside the work folder asks first, and anything that changes things
+does too. That
+is why the container is the default. Only do this if the user
+understands that, and keep the review at `changes` or `all`.
 
-With an app, the user chooses "Run without a container"; the app then
-starts the review level at `changes`. The worker it runs is the Go
+With an app, the user chooses "Run without a container" and picks the
+review level on Set up, `changes` first; until one is saved the worker
+runs at `changes` (the app starts it with `MYOUS_DEFAULT_REVIEW=changes`).
+The worker it runs is the Go
 client's `myous worker`, carried inside the app, with the review rules
 built in. The worker needs no Python; its browser does (3.10+, for
 Playwright), and the app installs Playwright into an environment of its

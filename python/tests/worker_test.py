@@ -79,6 +79,10 @@ class WorkerFixture(unittest.TestCase):
         self.st = FileStorage(self.home)
         self.agent = FakeAgent()
         self.devnull = open(os.devnull, "w")
+        env = mock.patch.dict(os.environ)   # the worker's allowance for clock differences is its default here
+        env.start()
+        self.addCleanup(env.stop)
+        os.environ.pop("MYOUS_CLOCK_ALLOWANCE", None)
         self.w = worker.Worker(self.agent, self.st, self.work, notes=["Browser: http://localhost:9222"], out=self.devnull)
 
     def tearDown(self):
@@ -554,6 +558,9 @@ class ExpiryTest(WorkerFixture):
         # Anything that reaches the review fails the request (and the test).
         self.reviewed = mock.Mock(side_effect=AssertionError("reviewed"))
         self.w.review = self.reviewed
+        # These tests check the ttl boundary exactly, so switch off the
+        # clock-skew allowance (its own test covers it).
+        self.w.skew_allowance = 0
 
     def exec_(self, age=None, **fields):
         req = dict({"myous": "exec", "id": RID, "cmd": "touch ran"}, **fields)
@@ -613,6 +620,48 @@ class ExpiryTest(WorkerFixture):
         self.run_(self.w.handle(self.exec_(age=60, ttl=60)))   # expired only when older than its ttl
         self.assertEqual(self.replies()[-1]["exit"], 0)
         self.assertTrue((self.work / "ran").exists())
+
+    def test_a_clock_skew_allowance_past_the_ttl(self):
+        # A requester whose clock is behind the worker's makes a request look
+        # older than it is. With the allowance (its default), the worker runs
+        # a request up to that margin past its ttl; past the margin it still
+        # expires, and the error reports the real age.
+        self.w.skew_allowance = worker.CLOCK_SKEW_ALLOWANCE
+        self.w.review = lambda *a, **k: None
+        at_edge = worker.CLOCK_SKEW_ALLOWANCE + 150  # ttl 150 + the whole allowance
+        self.run_(self.w.handle(self.exec_(age=at_edge, ttl=150)))
+        self.assertEqual(self.replies()[-1]["exit"], 0)
+        self.assertTrue((self.work / "ran").exists())
+        (self.work / "ran").unlink()
+        # One second past the margin: expired (and the review is never
+        # reached), and the error names the margin.
+        self.w.review = self.reviewed
+        past = worker.CLOCK_SKEW_ALLOWANCE + 151
+        self.run_(self.w.handle(self.exec_(age=past, ttl=150)))
+        want = ("expired: sent 7 minutes ago, its ttl is 150 seconds and the worker allows 300 more "
+                "for clock differences; not run")
+        self.assertEqual(self.replies()[-1]["error"], want)
+        self.assertEqual(worker.expired_text(past, 150, worker.CLOCK_SKEW_ALLOWANCE), want)
+        rec = json.loads((self.home / "requests" / f"{RID}.json").read_text())
+        self.assertEqual((rec["decision"], rec["reason"]), ("expired", want))
+        self.assertFalse((self.work / "ran").exists())
+        self.reviewed.assert_not_called()
+        self.assertEqual(worker.expired_text(2, 1, 60),
+                         "expired: sent 2 seconds ago, its ttl is 1 second and the worker allows 60 more for clock differences; not run")
+
+    def test_the_allowance_from_the_environment(self):
+        # $MYOUS_CLOCK_ALLOWANCE: whole seconds, at most a day; anything else
+        # is the default (as the Go worker's clockAllowance).
+        for v, want in (("", 300), ("0", 0), (" 60 ", 60), ("0300", 300), ("abc", 300), ("-5", 300), ("+5", 300),
+                        ("1.5", 300), ("1e3", 300), ("86400", 86400), ("999999", 86400), ("99999999999999999999999", 86400)):
+            with mock.patch.dict(os.environ, {"MYOUS_CLOCK_ALLOWANCE": v}):
+                self.assertEqual(worker.clock_allowance(), want, repr(v))
+        # The worker takes it when it starts (the fixture's has none set).
+        self.assertEqual(worker.Worker(self.agent, self.st, self.work, out=self.devnull).skew_allowance,
+                         worker.CLOCK_SKEW_ALLOWANCE)
+        with mock.patch.dict(os.environ, {"MYOUS_CLOCK_ALLOWANCE": "0"}):
+            w = worker.Worker(self.agent, self.st, self.work, out=self.devnull)
+        self.assertEqual(w.skew_allowance, 0)
 
     def test_without_a_ttl_600_seconds(self):
         self.run_(self.w.handle(self.exec_(age=601)))

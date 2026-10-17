@@ -683,18 +683,22 @@ def new_request_id() -> str:
 
 
 def timeout_text(wait: float, expires: float | None) -> str:
-    """What a request that got no reply in time says: whether the worker
-    may still run it (its ttl hasn't run out), and that a late reply shows
-    in the inbox (inbox.give_up)."""
+    """What a request that got no reply in time says: how long the worker
+    may still start it (its ttl, and the 5 minutes past it that workers
+    from 0.8.1 allow by default for clocks that differ,
+    worker.CLOCK_SKEW_ALLOWANCE; an owner can change it), and that a late
+    reply shows in the inbox (inbox.give_up)."""
     text = f"no reply from the worker within {int(wait)} seconds"
     if expires is None:
         return text
     left = expires - time.time()
     if left <= inbox.TTL_MARGIN:
-        return text + ("; it won't start this request any more (it is off or busy), "
-                       "but if it already has, its reply will show in `myous inbox`")
+        return text + ("; it is off or busy, and may still start this request within about 5 minutes (its usual "
+                       "allowance past the ttl for clocks that differ), not after; if it does, or already has, "
+                       "its reply will show in `myous inbox`")
     return (text + f"; it may still run this request in the next {_duration(left)} "
-            f"(its ttl; until {time.strftime('%H:%M', time.localtime(expires))} this computer's time), "
+            f"(its ttl; until {time.strftime('%H:%M', time.localtime(expires))} this computer's time) "
+            "and about 5 minutes more (its usual allowance for clocks that differ), "
             "and its reply will show in `myous inbox` when it comes")
 
 

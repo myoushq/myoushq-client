@@ -3,6 +3,7 @@
 package myous
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -24,3 +25,6 @@ func TestWindowsCommandNotFoundHint(t *testing.T) {
 		t.Fatalf("%v", r)
 	}
 }
+
+// makeFIFO: no named pipes in a Windows folder.
+func makeFIFO(path string) error { return errors.New("no FIFOs on Windows") }

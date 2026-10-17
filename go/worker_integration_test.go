@@ -37,7 +37,9 @@ func TestGoWorkerWithPythonAgent(t *testing.T) {
 		t.Helper()
 		w = exec.Command(e.goCLI, "worker", "--alias", "go-wrk", "--hub", e.hubURL, "--work", work,
 			"--description", "a test worker", "--note", "Browser: none")
-		w.Env = append(os.Environ(), "MYOUS_HOME="+home)
+		// No allowance for clock differences: the stale request below is
+		// seconds past its ttl, and must expire.
+		w.Env = append(os.Environ(), "MYOUS_HOME="+home, "MYOUS_CLOCK_ALLOWANCE=0")
 		w.Stdout, w.Stderr = log, log
 		if err := w.Start(); err != nil {
 			t.Fatal(err)

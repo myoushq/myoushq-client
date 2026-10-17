@@ -204,3 +204,6 @@ func TestWorkerSIGTERMEndsTheCommandAndExits(t *testing.T) {
 		})
 	}
 }
+
+// makeFIFO makes a named pipe at path (review.json's level must not block on one).
+func makeFIFO(path string) error { return syscall.Mkfifo(path, 0o600) }

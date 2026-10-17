@@ -197,7 +197,7 @@ export class PreviewBackend implements Backend {
     const mac = info.os === "macos", name = mac ? "Max's Mac" : "Max's PC";
     this.files = [{ home: mac ? "/Users/max/.myous-worker" : "/home/max/.myous-worker", folder: ".myous-worker", is_default: true,
       project: "myous-worker", config: { name }, status: { phase: "running", alias: name, contacts: 1 }, status_modified: 0,
-      requests: [], approvals: [], paused: false, review: "trust" }];
+      requests: [], approvals: [], paused: false, review: "changes" }];
   }
   private rec<T>(name: string, args: unknown[], value: T): Promise<T> {
     this.calls.push([name, args]);
@@ -223,7 +223,12 @@ export class PreviewBackend implements Backend {
   sendCommand(...a: [string, string]) { return this.rec("sendCommand", a, undefined); }
   setPaused(...a: [string, boolean]) { return this.rec("setPaused", a, undefined); }
   answerApproval(...a: [string, string, string]) { return this.rec("answerApproval", a, undefined); }
-  setReview(...a: [string, string]) { return this.rec("setReview", a, undefined); }
+  /** Recorded, and the worker's level is the one written (review.json), as the next read gives it. */
+  setReview(...a: [string, string]) {
+    const f = this.files.find((x) => x.home === a[0]);
+    if (f) f.review = a[1];
+    return this.rec("setReview", a, undefined);
+  }
   newWorker() { return this.rec("newWorker", [], "/home/max/.myous-worker-3"); }
   removeWorker(...a: [string]) { return this.rec("removeWorker", a, undefined); }
   /** What the runtime check answers (a test sets it). */

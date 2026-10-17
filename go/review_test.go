@@ -7,6 +7,8 @@ package myous
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -68,7 +70,7 @@ func TestReviewAllowlistedCommandsThatWrite(t *testing.T) {
 }
 
 func TestReviewPowerShell(t *testing.T) {
-	for _, ok := range []string{"Get-ChildItem -Recurse | Select-String foo", `gc C:\work\a.txt | Measure-Object -Line`, "dir; Get-Date"} {
+	for _, ok := range []string{"Get-ChildItem -Recurse | Select-String foo", `gc a.txt | Measure-Object -Line`, "dir; Get-Date"} {
 		if !readOnly(ok, true) {
 			t.Errorf("%q should be read-only", ok)
 		}
@@ -81,7 +83,100 @@ func TestReviewPowerShell(t *testing.T) {
 	}
 }
 
+// W3: at "changes" a read-only command is auto-allowed only when every path
+// argument stays under the work directory (the cwd).
+func TestReviewReadsConfinedToWork(t *testing.T) {
+	for _, ok := range []string{"cat a.txt", "grep -r x .", "find . -name '*.py'", "cat ./sub/f", "head -n5 a b c",
+		"cat 'a b.txt'", "diff a.txt b.txt", "wc -l logs/app.log"} {
+		if !readOnly(ok, false) {
+			t.Errorf("%q should be read-only (within work)", ok)
+		}
+	}
+	for _, bad := range []string{"cat /etc/passwd", "cat /home/worker/.myous/key", "grep -r . /home/worker/.myous",
+		"cat ~/.ssh/id_rsa", "find / -name id_rsa", "cat ../key", "cat a/../../key",
+		"cat sub/../../etc/x", "head a.txt /etc/hostname"} {
+		if readOnly(bad, false) {
+			t.Errorf("%q reads outside work, must not be read-only", bad)
+		}
+	}
+	if !readOnly("gc a.txt", true) {
+		t.Error("gc a.txt should be read-only on windows")
+	}
+	for _, bad := range []string{`gc C:\work\a.txt`, `gc \\host\share\x`, `type ..\key`, "gc ~/x"} {
+		if readOnly(bad, true) {
+			t.Errorf("%q reads outside work on windows, must not be read-only", bad)
+		}
+	}
+}
+
+func TestReviewFlagsAreKnownSafe(t *testing.T) {
+	// At "changes" a read-only command runs unasked only with flags known
+	// safe for it (SafeFlags), operands Operands allows, and paths in the
+	// work directory; anything else asks.
+	for _, ok := range reviewRuns {
+		if !readOnly(ok, false) {
+			t.Errorf("%q should be read-only", ok)
+		}
+	}
+	for _, bad := range reviewAsks {
+		if readOnly(bad, false) {
+			t.Errorf("%q should ask", bad)
+		}
+	}
+}
+
+func TestReviewFlagsOnWindows(t *testing.T) {
+	// PowerShell's cmdlets keep their parameters (paths confined, also in
+	// -Path:x, a comma list or another drive); the POSIX names and the
+	// Windows programs take the strict rule.
+	for _, ok := range windowsRuns {
+		if !readOnly(ok, true) {
+			t.Errorf("%q should be read-only on Windows", ok)
+		}
+	}
+	for _, bad := range windowsAsks {
+		if readOnly(bad, true) {
+			t.Errorf("%q should ask on Windows", bad)
+		}
+	}
+}
+
+func TestReviewFlagTable(t *testing.T) {
+	for name, rule := range reviewRules.SafeFlags {
+		flags, valued, files := strings.Fields(rule[0]), strings.Fields(rule[1]), strings.Fields(rule[2])
+		if !slices.Contains(reviewRules.ReadOnly, name) {
+			t.Errorf("%s has flags but isn't read-only", name)
+		}
+		for _, f := range flags {
+			if !strings.HasPrefix(f, "-") || f == "-" || f == "--" {
+				t.Errorf("%s: %q isn't a flag", name, f)
+			}
+		}
+		for _, f := range valued {
+			if !slices.Contains(flags, f) {
+				t.Errorf("%s: %s takes a value but isn't a safe flag", name, f)
+			}
+		}
+		for _, f := range files {
+			if !slices.Contains(valued, f) {
+				t.Errorf("%s: %s names a file but takes no value", name, f)
+			}
+		}
+	}
+	for name := range reviewRules.Operands {
+		if !slices.Contains(reviewRules.ReadOnly, name) {
+			t.Errorf("%s has an operand rule but isn't read-only", name)
+		}
+	}
+	for _, name := range reviewRules.WindowsPrograms {
+		if !slices.Contains(reviewRules.ReadOnlyPowerShell, name) {
+			t.Errorf("%s isn't in ReadOnlyPowerShell", name)
+		}
+	}
+}
+
 func reviewFor(t *testing.T) (*builtinReview, string) {
+	t.Setenv("MYOUS_DEFAULT_REVIEW", "") // no review.json is trust here, unless a test sets one
 	home := t.TempDir()
 	return &builtinReview{home: home, pauseFile: filepath.Join(home, "worker.paused"), wait: 3 * time.Second,
 		limit: reviewTimeout}, home
@@ -105,6 +200,125 @@ func TestReviewTrustAllowsAndPauseRefuses(t *testing.T) {
 	os.WriteFile(filepath.Join(home, "worker.paused"), nil, 0o600)
 	if why := r.decide(context.Background(), req("exec", "a", pyKV{"cmd", "ls"})); why != "the worker is paused by its owner" {
 		t.Fatal(why)
+	}
+}
+
+func TestReviewMissingOrCorruptFailsClosed(t *testing.T) {
+	r, home := reviewFor(t)
+	r.wait = 300 * time.Millisecond // the "all" cases wait for nobody; keep the test quick
+	review := filepath.Join(home, "review.json")
+	// Absent: never configured, so the default (trust without
+	// MYOUS_DEFAULT_REVIEW) - a change runs.
+	if why := r.decide(context.Background(), req("exec", "a", pyKV{"cmd", "rm -rf x"})); why != "" {
+		t.Fatalf("absent review.json should be trust, got %q", why)
+	}
+	if r.level() != "trust" {
+		t.Fatalf("absent review.json: level %q, want trust", r.level())
+	}
+	// Present but unreadable, not JSON, or an invalid level: fail closed to
+	// "all", so even a read is asked about (W2 truncated review.json to drop
+	// the worker to trust; this closes that escalation). A default doesn't
+	// change that: the file is there.
+	t.Setenv("MYOUS_DEFAULT_REVIEW", "trust")
+	for _, bad := range []string{"", "{", "not json", "[1, 2, 3]", `{"level": "bogus"}`, `{"level": 7}`, `"changes"`, "null"} {
+		os.WriteFile(review, []byte(bad), 0o600)
+		if r.level() != "all" {
+			t.Fatalf("%q: level %q, want all", bad, r.level())
+		}
+		if why := r.decide(context.Background(), req("get", "b", pyKV{"path", "x"})); why != "the owner didn't answer in time" {
+			t.Fatalf("%q should fail closed to all, got %q", bad, why)
+		}
+	}
+	// Not UTF-8 (Go's JSON would take it), or NaN (Python's would): all, in both workers.
+	for _, bad := range []string{"{\"level\": \"trust\", \"note\": \"\xff\"}", `{"level": "trust", "x": NaN}`, "\xef\xbb\xbf{}"} {
+		os.WriteFile(review, []byte(bad), 0o600)
+		if r.level() != "all" {
+			t.Fatalf("%q: level %q, want all", bad, r.level())
+		}
+	}
+	// Anything but a regular file: a directory, a link (even to a valid
+	// file), a pipe (reading one would block the review for good).
+	os.Remove(review)
+	os.Mkdir(review, 0o700)
+	if r.level() != "all" {
+		t.Fatalf("a directory: level %q, want all", r.level())
+	}
+	os.Remove(review)
+	good := filepath.Join(home, "good.json")
+	os.WriteFile(good, []byte(`{"level": "trust"}`), 0o600)
+	if os.Symlink(good, review) == nil {
+		if r.level() != "all" {
+			t.Fatalf("a link: level %q, want all", r.level())
+		}
+		os.Remove(review)
+	}
+	if makeFIFO(review) == nil {
+		done := make(chan string, 1)
+		go func() { done <- r.level() }()
+		select {
+		case lv := <-done:
+			if lv != "all" {
+				t.Fatalf("a pipe: level %q, want all", lv)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("level() blocks on a pipe")
+		}
+		os.Remove(review)
+	}
+	// A valid level is still honoured.
+	setLevel(t, home, "changes")
+	if why := r.decide(context.Background(), req("get", "c", pyKV{"path", "x"})); why != "" {
+		t.Fatalf("changes level should allow a read, got %q", why)
+	}
+}
+
+func TestReviewDefaultLevelForAnUnconfiguredWorker(t *testing.T) {
+	r, home := reviewFor(t)
+	r.wait = 300 * time.Millisecond // the "changes" case waits for nobody
+	log := filepath.Join(home, "worker.log")
+	// No review.json: the level is $MYOUS_DEFAULT_REVIEW (the container sets
+	// "changes"), else "trust".
+	t.Setenv("MYOUS_DEFAULT_REVIEW", "changes")
+	if why := r.decide(context.Background(), req("exec", "a", pyKV{"cmd", "ls -la"})); why != "" {
+		t.Fatalf("a read should run at changes: %q", why)
+	}
+	if why := r.decide(context.Background(), req("exec", "b", pyKV{"cmd", "touch x"})); why != "the owner didn't answer in time" {
+		t.Fatalf("a change should ask at changes: %q", why)
+	}
+	if exists(log) {
+		t.Fatal("a valid default wrote to worker.log")
+	}
+	// Unset or empty: trust, a change runs.
+	t.Setenv("MYOUS_DEFAULT_REVIEW", "")
+	if why := r.decide(context.Background(), req("exec", "c", pyKV{"cmd", "rm -rf x"})); why != "" {
+		t.Fatalf("empty should be trust: %q", why)
+	}
+	os.Unsetenv("MYOUS_DEFAULT_REVIEW")
+	if why := r.decide(context.Background(), req("exec", "d", pyKV{"cmd", "rm -rf x"})); why != "" {
+		t.Fatalf("unset should be trust: %q", why)
+	}
+	// Set but not a level: an unreadable safety setting asks about
+	// everything, even a read, and worker.log says why.
+	for _, v := range []string{"bogus", "Trust", " changes"} {
+		t.Setenv("MYOUS_DEFAULT_REVIEW", v)
+		if why := r.decide(context.Background(), req("get", "f", pyKV{"path", "x"})); why != "the owner didn't answer in time" {
+			t.Fatalf("%q should fail closed to all: %q", v, why)
+		}
+		raw, _ := os.ReadFile(log)
+		lines := pySplitLines(pyStrip(string(raw)))
+		var line map[string]any
+		if len(lines) == 0 || json.Unmarshal([]byte(lines[len(lines)-1]), &line) != nil {
+			t.Fatalf("worker.log: %q", raw)
+		}
+		if line["op"] != "review" || line["value"] != v || !strings.Contains(line["error"].(string), "MYOUS_DEFAULT_REVIEW isn't trust, changes or all") {
+			t.Fatalf("worker.log line: %v", line)
+		}
+	}
+	// A written review.json still wins over the default.
+	t.Setenv("MYOUS_DEFAULT_REVIEW", "changes")
+	setLevel(t, home, "trust")
+	if why := r.decide(context.Background(), req("exec", "e", pyKV{"cmd", "rm -rf x"})); why != "" {
+		t.Fatalf("review.json trust should win over the default: %q", why)
 	}
 }
 
@@ -276,20 +490,159 @@ func askPython(t *testing.T, code string, input any, out any) {
 func TestReviewRulesAreReviewPys(t *testing.T) {
 	var lists map[string][]string
 	askPython(t, "print(json.dumps({'ReadOnly': sorted(r.READ_ONLY), 'Unsafe': list(r.UNSAFE_TOKENS), "+
-		"'ReadOnlyPowerShell': sorted(r.READ_ONLY_POWERSHELL), 'UnsafePowerShell': list(r.UNSAFE_POWERSHELL)}))", nil, &lists)
+		"'ReadOnlyPowerShell': sorted(r.READ_ONLY_POWERSHELL), 'UnsafePowerShell': list(r.UNSAFE_POWERSHELL), "+
+		"'WindowsPrograms': list(r.WINDOWS_PROGRAMS), 'AwkUnsafe': list(r.AWK_UNSAFE), 'Expansion': [r.EXPANSION.pattern]}))", nil, &lists)
 	sorted := func(s []string) []string { s = slices.Clone(s); slices.Sort(s); return s }
 	for name, mine := range map[string][]string{
 		"ReadOnly": sorted(reviewRules.ReadOnly), "Unsafe": reviewRules.Unsafe,
 		"ReadOnlyPowerShell": sorted(reviewRules.ReadOnlyPowerShell), "UnsafePowerShell": reviewRules.UnsafePowerShell,
+		"WindowsPrograms": reviewRules.WindowsPrograms, "AwkUnsafe": reviewRules.AwkUnsafe,
+		"Expansion": {reviewRules.Expansion},
 	} {
 		if !slices.Equal(mine, lists[name]) {
 			t.Errorf("%s differs from review.py:\n go %v\npy %v", name, mine, lists[name])
 		}
 	}
+	// SAFE_FLAGS (each command's three lists, as sets) and OPERANDS.
+	var tables struct {
+		SafeFlags map[string][3][]string
+		Operands  map[string]string
+	}
+	askPython(t, "print(json.dumps({'SafeFlags': {k: [sorted(x.split()) for x in v] for k, v in r.SAFE_FLAGS.items()}, "+
+		"'Operands': r.OPERANDS}))", nil, &tables)
+	if mine, py := slices.Sorted(maps.Keys(reviewRules.SafeFlags)), slices.Sorted(maps.Keys(tables.SafeFlags)); !slices.Equal(mine, py) {
+		t.Errorf("SafeFlags has entries for other commands than review.py's:\n go %v\npy %v", mine, py)
+	}
+	for name, rule := range reviewRules.SafeFlags {
+		for i, field := range []string{"flags", "value", "file"} {
+			mine, py := sorted(strings.Fields(rule[i])), tables.SafeFlags[name][i]
+			if py == nil {
+				py = []string{} // json's [] is empty, not nil
+			}
+			if !slices.Equal(mine, py) {
+				t.Errorf("SafeFlags %s %s differ from review.py:\n go %v\npy %v", name, field, mine, py)
+			}
+		}
+	}
+	if !maps.Equal(reviewRules.Operands, tables.Operands) {
+		t.Errorf("Operands differ from review.py:\n go %v\npy %v", reviewRules.Operands, tables.Operands)
+	}
 }
 
-// Commands for comparing the Go rules (and Python's shlex) with review.py.
-var reviewCorpus = []string{
+func TestReviewLevelMatchesReviewPy(t *testing.T) {
+	// Every review.json below with every MYOUS_DEFAULT_REVIEW value (nil:
+	// unset), through Go's level() and review.py's, which must agree.
+	files := []struct{ kind, content string }{
+		{"absent", ""}, {"file", `{"level": "trust"}`}, {"file", `{"level": "changes"}`}, {"file", `{"level": "all"}`},
+		{"file", ""}, {"file", "{"}, {"file", "[1, 2]"}, {"file", `{"level": "bogus"}`}, {"file", `{"level": 7}`},
+		{"file", `"changes"`}, {"file", "null"}, {"file", "{\"level\": \"trust\", \"note\": \"\xff\"}"},
+		{"file", `{"level": "trust", "x": NaN}`}, {"file", "\xef\xbb\xbf{\"level\": \"trust\"}"},
+		{"file", " {\"level\": \"changes\"}\n"}, {"file", `{"level": "trust", "level": "all"}`}, {"file", `{"Level": "trust"}`},
+		{"file", `{"level": "Trust"}`}, {"file", `{"level": "changes", "x": "\ud800"}`},
+		{"link", `{"level": "trust"}`}, {"dir", ""}, {"fifo", ""},
+	}
+	defaults := []any{nil, "", "trust", "changes", "all", "bogus", " changes", "TRUST"}
+	r := &builtinReview{}
+	var cases [][2]any
+	var mine []string
+	for i, f := range files {
+		home := filepath.Join(t.TempDir(), fmt.Sprint(i))
+		os.MkdirAll(home, 0o700)
+		review := filepath.Join(home, "review.json")
+		switch f.kind {
+		case "file":
+			os.WriteFile(review, []byte(f.content), 0o600)
+		case "link":
+			os.WriteFile(filepath.Join(home, "good.json"), []byte(f.content), 0o600)
+			if os.Symlink(filepath.Join(home, "good.json"), review) != nil {
+				continue // no symlinks for this user (Windows)
+			}
+		case "dir":
+			os.Mkdir(review, 0o700)
+		case "fifo":
+			if makeFIFO(review) != nil {
+				continue
+			}
+		}
+		r.home = home
+		for _, d := range defaults {
+			if d == nil {
+				os.Unsetenv("MYOUS_DEFAULT_REVIEW")
+			} else {
+				t.Setenv("MYOUS_DEFAULT_REVIEW", d.(string))
+			}
+			cases = append(cases, [2]any{home, d})
+			mine = append(mine, r.level())
+		}
+	}
+	var want []string
+	askPython(t, "import os\nout = []\n"+
+		"for home, d in data:\n"+
+		"    r.REVIEW_FILE, r.LOG_FILE = os.path.join(home, 'review.json'), os.path.join(home, 'worker.log')\n"+
+		"    if d is None: os.environ.pop('MYOUS_DEFAULT_REVIEW', None)\n"+
+		"    else: os.environ['MYOUS_DEFAULT_REVIEW'] = d\n"+
+		"    out.append(r.level())\n"+
+		"print(json.dumps(out))", cases, &want)
+	if len(want) != len(mine) {
+		t.Fatalf("%d answers from review.py for %d cases", len(want), len(mine))
+	}
+	for i, c := range cases {
+		if mine[i] != want[i] {
+			t.Errorf("review.json %s, MYOUS_DEFAULT_REVIEW %v: go %s, review.py %s", c[0], c[1], mine[i], want[i])
+		}
+	}
+}
+
+// Read-only commands with safe flags, in the work directory: they run
+// (review_hook_test.py's RUNS).
+var reviewRuns = []string{
+	"ls -la", "grep -rn x .", "find . -name '*.go' -type f", "head -n 20 a.txt", "wc -l logs/app.log",
+	"sort -rn a.txt", "cut -d: -f1 a.txt", "date +%s", "uname -a", "du -sh .", "tree -L 2", "diff -u a b",
+	"head -20 a.txt", "head -n5 a b c", "tail -n +5 a.txt", "grep -A3 x f", "grep -A 3 x f", "grep --context=2 x f",
+	"grep -e -x f", "grep --include='*.go' -r x .", "rg -n --type py foo", "rg -g '!vendor' -tgo x", "less -p b f",
+	"sort -t: -k2,2n f", "awk -F: 'NR==1' a.txt", "test -f x && cat x", "test x -nt y", "echo hi",
+	"md5sum -c sums.txt", "find . -newer a.txt", "find . -path ./x -prune -o -print", "uniq -c a.txt",
+	"ls -- -weird", "cat -", "date -u +%F", "stat -c %s a.txt", "file -b a.txt", "id -un", "free -h", "nproc",
+	"uptime", "hostname", "whoami", "pwd", "realpath -e a", "readlink -f a", "which -a ls", "basename -s .txt a.txt",
+	"tr -d x", "df -h .", "ls .hidden", "cat ./sub/f", "find . -name '.*'", "grep -P 'a+' f", "grep -rnP x .",
+}
+
+// They ask: an unknown or unsafe flag, an operand or a flag's file outside
+// the work directory, an expansion the review can't see, or an operand that
+// isn't what the command allows (ASKS).
+var reviewAsks = []string{
+	"sort -no x.txt", "sort --out=x a", "tree -o out.txt .", "less -o out a", "rg --pre sh x",
+	`awk 'system("id")' a`, "date -s now", "file -C -m magic", "hostname box", "ls --unknown",
+	"grep -f /etc/passwd a", "cat /etc/passwd", "find / -name id_rsa", "cat ~/.ssh/id_rsa", "cat ../key",
+	"sort -o out in", "sort --output=out in", "find . -fprint out", "ls --color /etc", "grep -C /etc/passwd x",
+	"cat $HOME/.ssh/id_rsa", "echo $AWS_SECRET_ACCESS_KEY", "date +$SECRET", "cat .*/x", "ls .*",
+	"cat -- -/../../etc/passwd", "uniq a.txt out.txt", "date 0101", "less +!id a", "more +5 a", "cut -d/ ../x",
+	"find . -newer ../x", "diff --from-file=/etc/x a", "awk 'getline' a", `awk '@load "x"' a`,
+	`awk 'ENVIRON["K"]' a`, "awk -f prog a", "printf -v x y", "whoami --help", "true -x", "date --set=x",
+	"tail -f /var/log/x", "rg --pre=sh x", "rg -z x", "head -n", "grep -e", "file -z a", "tree -R -H x -o y",
+	"diff -l a b", "md5sum -c ../sums", "ls -I x", "stat -f %z /etc", "less -k keys a", "sort -T /tmp a",
+	"sort --compress-program=sh a", "du -sh ~", "realpath ..", "find . -L", "grep -r x ..",
+	// bash's $'...' and $"..." quoting (macOS sh expands them; split words can't tell).
+	"cat $'/etc/passwd'", `cat $'\x2fetc\x2fpasswd'`, `cat $'..\x2fsecret'`, "grep -f $'/etc/passwd' a",
+	"find $'/etc'", `cat $"/etc/passwd"`, "grep -c 'x$' f", `grep "x$" f`,
+}
+
+// On Windows (WINDOWS_RUNS, WINDOWS_ASKS).
+var windowsRuns = []string{
+	"Get-ChildItem -Recurse | Select-String foo", "gc a.txt | Measure-Object -Line", "dir; Get-Date", "gc a.txt",
+	"ipconfig", "systeminfo", "where.exe python", "findstr foo a.txt", "ls -la", "type a.txt", "gci -Path sub",
+	"gc -Path:a.txt", "cat a.txt",
+}
+
+var windowsAsks = []string{
+	"gc env:AWS_SECRET_ACCESS_KEY", `gci HKCU:\Software`, `gc a.txt,C:\x`, `gc -Path:C:\x\y`, `gc -Path C:\x`,
+	"ipconfig /all", "findstr /s x *", "findstr -g:x a", "ls -Recurse", "cat -Raw a.txt", `cat "-o" x`,
+	`rg x "--" --pre=sh`, "sort -o x a", `gc $env:USERPROFILE\.ssh\id_rsa`, `gc ..\key`, `gc .*\x`,
+}
+
+// Commands for comparing the Go rules (and Python's shlex) with review.py:
+// these, the lists above, and the flag parser's corners.
+var reviewCorpus = slices.Concat([]string{
 	"ls -la", "cat a.txt | grep x | wc -l", "find . -name '*.py' && echo done", "pwd", "rm -rf x", "cat a > b",
 	"echo $(whoami)", "ls; python3 x.py", "sed -i s/a/b/ f", "cat `ls`", "curl http://x", "find . -exec rm {} ;",
 	"find . -delete", `awk 'BEGIN{system("rm x")}'`, "Get-ChildItem -Recurse | Select-String foo",
@@ -305,7 +658,29 @@ var reviewCorpus = []string{
 	// next to the same flag letters where they are harmless (kept).
 	"sort -o out in", "sort --output=out in", "sort -oout in", "sort -n in", "grep -o pat f",
 	"find . -fprintf out %p", "find . -fprint out", "find . -fls out", "find . -name x",
-}
+	// W3: path arguments that escape the work directory (cwd).
+	"cat /etc/passwd", "cat ~/x", "cat ../key", "cat a/../../key", "grep -r . /home/w/.myous", "find / -name id_rsa",
+	"cat ./sub/f", "wc -l logs/app.log", "head a.txt /etc/hostname", "cat 'a b.txt'", `type ..\key`, `gc C:\work\a.txt`,
+	`gc \\host\share\x`, "ls ..", "ls a..b", "cat .", "find . -path /etc",
+}, reviewRuns, reviewAsks, windowsRuns, windowsAsks, []string{
+	// The flag parser's corners.
+	"cut -d", "sort -k", "grep --file=../x a", "grep --file ../x a", "grep --file x a", "grep --include x",
+	"rg -f../x y", "rg -fx y", "rg --file=x y", "date -r ../f", "date -r1700000000", "date -r", "test", "awk",
+	"awk -F", "awk -F: -- 'NR==1' a", "awk -- 'system(1)'", "find . -name", "find . -newer", "uniq", "uniq a",
+	"uniq -- a b", "hostname -", "hostname --", "date +%s +%F", "date -- 0101", "less - +x", "less -- +x",
+	"ls -é", "cut -dé -f1 a", "grep -eé x", "ls -lé", "ls -l -- /etc", "ls - -", "ls -- --", "cat -- -", "ls -1aL",
+	"head -n-5 a", "tail -c+5 a", "grep -m1 x f", "grep -rnA2 x .", "grep -rnf x .", "grep -rnf/etc/x .",
+	"sort -k2 -t, a", "sort --key=2 --field-separator=, a", "ls --color=always", "ls --all=x", "diff -U3 a b",
+	"diff -U 3 a b", "tree -I node_modules -L2", "tree -L", "rg -tpy -g'*.go' x", "rg --type=py x", "test ! -f x",
+	"test -f x -a -d y", "test -nt", "find . ( -name a -o -name b ) -print", "find . -name x -delete",
+	"find . -type f -exec cat {} +", "awk 'NR>1' a", "awk '/a/' a", "echo $1", "echo $?", "echo $", "echo 'a$'",
+	"echo a$b", "ls ~", "ls a~", "cat .", "cat ..x", "cat x/..", "cat x/../y", "cat .?/x", "cat .[a]x",
+	"cat ./.*", "cat sub/.*/x", "ls *.go", "ls */x", "ls [ab]",
+	// Windows: quotes, PowerShell's parameters and drives, comma lists.
+	`gc "a.txt"`, `gc 'C:\x'`, `cat '-o' x`, `gc -Path:"C:\x"`, `"ls" -la`, `ls "--"`, `ls '-'`, "gc a,b",
+	`gc a,..\b`, `gc "a,C:\x"`, `findstr "/s" x`, `cat ""`, `gc ""`, "gc a:b", "gci Env:", `gc \x`, `gc .\a`,
+	`gci -Filter *.go`, `select-string -Path a.txt -Pattern x`, `sls -Path:..\x x`, `gc a,"b,C:\x"`,
+})
 
 func TestReviewReadOnlyMatchesReviewPy(t *testing.T) {
 	var want struct{ Posix, Windows []bool }

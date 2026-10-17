@@ -13,7 +13,7 @@ export const fakeStates = ["checking", "couldntcheck", "setup", "hubdown", "noru
 
 function files(home: string, extra: Partial<WorkerFiles> = {}): WorkerFiles {
   return { home, folder: home.split(/[\\/]/).pop()!, is_default: !/-\d+$/.test(home), project: "myous-worker", config: {},
-    status: null, status_modified: 0, requests: [], approvals: [], paused: false, review: "trust", ...extra };
+    status: null, status_modified: 0, requests: [], approvals: [], paused: false, review: "changes", ...extra };
 }
 
 export function applyFake(m: Model, state: string, home = "/home/max/.myous-worker") {

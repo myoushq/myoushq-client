@@ -4,11 +4,13 @@ paired with the owner's other agents, which push files, pull files and run
 commands on it with `myous cp` and `myous exec`.
 
 The worker does what it's asked, one request at a time, after its review
-hook allows it; a request it only gets to after its ttl (the requester
-stopped waiting) is answered "expired" and never runs. The default hook
-allows everything from approved contacts, refuses while the pause file
-exists, and logs every request; tightening is a matter of giving
-`myous worker --review` a command of your own.
+hook allows it; a request it only gets to after its ttl and the margin
+past it for clocks that differ (CLOCK_SKEW_ALLOWANCE: the requester
+stopped waiting) is answered "expired" and never runs. Without a hook the
+worker allows everything from approved contacts, refuses while the pause
+file exists, and logs every request; tightening is a matter of giving
+`myous worker --review` a command of your own, such as worker/review.py
+(the container's, with its review levels).
 """
 from __future__ import annotations
 
@@ -49,6 +51,13 @@ REQUESTS_KEEP = 200  # request records kept in <home>/requests for the owner's a
 DEFAULT_TTL = 600   # seconds, for a request without a ttl; also how long a `help` is worth answering
 MAX_TTL = 86400     # a longer ttl counts as this: the relay keeps messages a day
 BAD_TTL = "bad request: the ttl must be a number of seconds, at least 1"
+# A requester whose clock runs behind the worker's makes a request look
+# older than it is, so a worker with a stricter clock would call every
+# request expired. The worker allows this margin past the ttl before it
+# treats a request as expired (the error still reports the real age, and
+# names the margin). The owner can change it with $MYOUS_CLOCK_ALLOWANCE
+# (clock_allowance); 0 is the old behaviour (no allowance).
+CLOCK_SKEW_ALLOWANCE = 300
 # On Windows the shell is PowerShell: agents used to the container's Linux
 # workers are told so in the help, the pairing message and a failed command.
 WINDOWS_HELP = ("This worker runs on Windows: commands are PowerShell, not Linux shell commands "
@@ -102,8 +111,18 @@ def age_of(e: dict) -> int | None:
     return max(0, math.floor(time.time() - sent))
 
 
-def expired_text(age: int, ttl: int) -> str:
-    """The error of an expired request's ack. The Go worker says the same."""
+def clock_allowance() -> int:
+    """The margin past a request's ttl for clock differences:
+    $MYOUS_CLOCK_ALLOWANCE (whole seconds, at most MAX_TTL), else
+    CLOCK_SKEW_ALLOWANCE. The Go worker reads it the same."""
+    v = os.environ.get("MYOUS_CLOCK_ALLOWANCE", "").strip()
+    return min(int(v), MAX_TTL) if re.fullmatch(r"[0-9]+", v) else CLOCK_SKEW_ALLOWANCE
+
+
+def expired_text(age: int, ttl: int, allowance: int = 0) -> str:
+    """The error of an expired request's ack: how old it is, its ttl, and
+    the worker's allowance for clock differences when it has one. The Go
+    worker says the same."""
     if age < 120:
         ago = f"{age} seconds"
     elif age < 7200:
@@ -111,7 +130,8 @@ def expired_text(age: int, ttl: int) -> str:
     else:
         ago = f"{age // 3600} hours"
     unit = "second" if ttl == 1 else "seconds"
-    return f"expired: sent {ago} ago, its ttl is {ttl} {unit}; not run"
+    margin = f" and the worker allows {allowance} more for clock differences" if allowance else ""
+    return f"expired: sent {ago} ago, its ttl is {ttl} {unit}{margin}; not run"
 
 
 class Worker:
@@ -131,6 +151,7 @@ class Worker:
         self.commands_dir = self.home / "commands" if self.home else None
         self.requests_dir = self.home / "requests" if self.home else None
         self.allow_absolute = allow_absolute
+        self.skew_allowance = clock_allowance()  # grace past the ttl for clock skew
         self.notes = notes or []
         self.out = out
         self.started = int(time.time())
@@ -530,9 +551,9 @@ class Worker:
             await self.refuse(e, rid, BAD_TTL)
             return True
         age = age_of(e)
-        if age is None or age <= seconds:
+        if age is None or age <= seconds + self.skew_allowance:
             return False
-        why = expired_text(age, seconds)
+        why = expired_text(age, seconds, self.skew_allowance)
         now = int(time.time())
         request = {"op": op, "id": rid, "sender": e.get("peer"), "alias": e.get("alias"), **fields}
         self.log(dict(request, decision="expired", reason=why))
@@ -610,7 +631,7 @@ class Worker:
 
     async def send_help(self, e: dict) -> None:
         age = age_of(e)
-        if age is not None and age > DEFAULT_TTL:
+        if age is not None and age > DEFAULT_TTL + self.skew_allowance:
             return   # sent while the worker was off: no one is waiting for the answer
         last = self.help_sent.get(e["peer"], 0)
         if time.time() - last < HELP_INTERVAL:

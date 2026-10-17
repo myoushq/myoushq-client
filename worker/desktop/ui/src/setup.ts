@@ -302,6 +302,35 @@ export function macBrowserHint(m: Model, onMac: boolean): string {
     : "A Chromium inside the container, shown through a window in your browser. Some sites take it for a bot, even when it's you.";
 }
 
+// --- the review level ---------------------------------------------------------
+
+/** The review's levels as Set up and Settings offer them (review.json's `level`): the option's
+ * words, the sentence under the select that says what runs unasked and what asks (the wait is the
+ * review's, MYOUS_APPROVAL_WAIT, 120 s), and the words in the facts line without a container. */
+export const REVIEW_LEVELS: { level: string; label: string; means: string; fact: string }[] = [
+  { level: "trust", label: "Trust my agent: everything it asks runs",
+    means: "Everything your agent asks runs; nothing asks you first.",
+    fact: "everything your agent asks runs" },
+  { level: "changes", label: "Ask me before anything that changes things",
+    means: "Reads inside the work folder run; anything that changes things, reaches outside it or isn't a plain read asks you first, and is refused if you don't answer within two minutes.",
+    fact: "asks you before anything that changes things" },
+  { level: "all", label: "Ask me before every request",
+    means: "Every request asks you first, even a plain read, and is refused if you don't answer within two minutes.",
+    fact: "asks you before every request" },
+];
+
+/** A level the review knows; anything else is "all", as the workers read a review.json without a
+ * valid level (the app reads one with none as "changes", files.rs's `review_level`). */
+export function reviewLevel(level: string): string {
+  return REVIEW_LEVELS.some((l) => l.level === level) ? level : "all";
+}
+
+const reviewEntry = (level: string) => REVIEW_LEVELS.find((l) => l.level === reviewLevel(level))!;
+/** The sentence under the review select (Set up and Settings) for a level. */
+export const reviewMeans = (level: string) => reviewEntry(level).means;
+/** The level in the facts line on Set up without a container ("Review: …"). */
+export const reviewFact = (level: string) => reviewEntry(level).fact;
+
 // --- a row that moved on ------------------------------------------------------
 
 const BROWSER_STEPS = ["nobrowser", "nopython", "novenv", "noplaywright", "ready"];

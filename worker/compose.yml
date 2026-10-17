@@ -37,6 +37,11 @@ services:
       # "container" (the browser above) or "host" (a browser on this
       # machine, forwarded; see entrypoint.sh and forward.py).
       MYOUS_BROWSER: ${MYOUS_BROWSER:-container}
+      # The review level of a worker that has none set yet (no review.json
+      # in the worker folder): empty means "changes" (reads run, anything
+      # else asks the owner); "trust" runs everything, "all" asks about
+      # everything. A level picked in the app writes review.json and wins.
+      MYOUS_DEFAULT_REVIEW: ${MYOUS_DEFAULT_REVIEW:-}
       # The owner's timezone and language, so the browser's clock and
       # Accept-Language match the address it browses from.
       TZ: ${MYOUS_TZ:-UTC}
