@@ -59,6 +59,24 @@ func TestHandleWrapsWritesTheStateOnlyWhenItChanged(t *testing.T) {
 	}
 }
 
+// listenInTest runs a.Listen until the test ends, then cancels it and
+// waits for it to return: a Listen left running closes its connection
+// during a later test, where go-nostr's known close race is reported.
+func listenInTest(t *testing.T, a *Agent, onNew func([]Entry)) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- a.Listen(ctx, onNew, nil, 20*time.Second) }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(20 * time.Second):
+			t.Error("Listen didn't return after its context ended")
+		}
+	})
+}
+
 // Messages sent while an agent wasn't listening come out of Listen in the
 // order they were written (the relay sends them in the random order of
 // the wraps' timestamps); a worker runs such a backlog in order.
@@ -81,12 +99,10 @@ func TestListenHandsOverABacklogInOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	var mu sync.Mutex
 	var got []string
 	all := make(chan struct{})
-	go agent.Listen(ctx, func(entries []Entry) {
+	listenInTest(t, agent, func(entries []Entry) {
 		mu.Lock()
 		defer mu.Unlock()
 		for _, x := range entries {
@@ -97,11 +113,12 @@ func TestListenHandsOverABacklogInOrder(t *testing.T) {
 		if len(got) == n {
 			close(all)
 		}
-	}, nil, 20*time.Second)
+	})
 	select {
 	case <-all:
 	case <-time.After(30 * time.Second):
 		mu.Lock()
+		defer mu.Unlock()
 		t.Fatalf("got %d of %d: %v", len(got), n, got)
 	}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
@@ -197,23 +214,22 @@ func TestListenAndPollGetAPageOfStoredWraps(t *testing.T) {
 	want = sendN("go-listener", many)
 	lst, _ := NewFileStorage(filepath.Join(e.dir, "go-listener"))
 	listener, _ := New(lst, "")
-	lctx, cancel := context.WithCancel(ctx)
-	defer cancel()
 	var mu sync.Mutex
 	var heard []string
 	all := make(chan struct{})
-	go listener.Listen(lctx, func(entries []Entry) {
+	listenInTest(t, listener, func(entries []Entry) {
 		mu.Lock()
 		defer mu.Unlock()
 		heard = append(heard, texts(entries)...)
 		if len(heard) == len(want) {
 			close(all)
 		}
-	}, nil, 20*time.Second)
+	})
 	select {
 	case <-all:
 	case <-time.After(60 * time.Second):
 		mu.Lock()
+		defer mu.Unlock()
 		t.Fatalf("listen: %d of %d", len(heard), len(want))
 	}
 	mu.Lock()
