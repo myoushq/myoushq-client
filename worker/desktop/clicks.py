@@ -330,6 +330,24 @@ def main() -> int:
         saved = page.evaluate("window.myous.backend.files[0].config")
         check(kept == "My laptop, for the builds." and saved.get("name") == "Max's old laptop" and saved.get("description") == "My laptop, for the builds.",
               f"Settings: a description the owner wrote stays as written through a new name {saved}")
+        # Settings: the review's sentence under its select, following the choice; Save writes the level.
+        emit("tray", "m:Settings…")
+        page.wait_for_selector("#dlg[open]")
+        review = "#dlg select:has(option[value=changes])"
+
+        def under_review() -> str:
+            return page.eval_on_selector(review, "s => s.nextElementSibling.textContent")
+
+        shown = (page.input_value(review), under_review())
+        page.select_option(review, "all")
+        check(shown[0] == "changes" and shown[1].startswith("Reads inside the work folder run;")
+              and under_review().startswith("Every request asks you first"),
+              f"Settings: the review's sentence under its select, following the choice {shown}")
+        page.click("#dlg button:has-text('Save')")
+        page.wait_for_selector("#dlg", state="hidden")
+        page.wait_for_timeout(300)
+        check(["setReview", [home, "all"]] in calls() and page.evaluate("window.myous.backend.files[0].review") == "all",
+              "Settings: Save writes the level chosen")
 
         # The window as it runs, with two workers (the first just paired, the second running).
         def two_workers(os_name: str, first: str = "{}", second: str = "{}") -> list[str]:
@@ -417,6 +435,40 @@ def main() -> int:
         check(env_of_start().get("MYOUS_BROWSER") == "container"
               and not {"macBrowserEnsure", "browserStop", "macBrowsers"} & set(names()),
               "Linux: MYOUS_BROWSER=container, nothing of the Mac's")
+        # Set up asks when the worker should ask you first: "changes" offered first, in a container as
+        # without one, with the sentence for the level chosen under it; Start writes the level chosen
+        # before the worker starts.
+        def started_with(op: str) -> list:
+            return [c for c in calls() if c[0] in ("setReview", op)]
+
+        go("setup")
+        check(page.eval_on_selector_all("#setup-review option", "os => os.map(o => o.value)") == ["trust", "changes", "all"]
+              and page.input_value("#setup-review") == "changes"
+              and text("#setup-review-hint").startswith("Reads inside the work folder run;"),
+              "Set up: the review offers ask-before-changes first, its sentence under it")
+        page.select_option("#setup-review", "trust")
+        trust_hint = text("#setup-review-hint")
+        page.select_option("#setup-review", "all")
+        check(trust_hint == "Everything your agent asks runs; nothing asks you first."
+              and text("#setup-review-hint").startswith("Every request asks you first"), "Set up: the sentence follows the level chosen")
+        page.click("#setup-start")
+        page.wait_for_function("window.myous.backend.calls.some(c => c[0] === 'composeRun')")
+        writes = started_with("composeRun")
+        check(writes[:1] == [["setReview", [home, "all"]]] and writes[1][0] == "composeRun",
+              f"Set up in a container: Start writes the level chosen, then starts the container {writes[:2]}")
+        go("direct")
+        check(page.input_value("#setup-review") == "changes" and "Review: asks you before anything that changes things" in text("#setup-runtime")
+              and "Choose it below" in text("#setup-browser") and "starts at" not in text("#setup-browser"),
+              "Set up without a container: ask-before-changes first, the facts say so")
+        page.select_option("#setup-review", "trust")
+        check("Review: everything your agent asks runs" in text("#setup-runtime")
+              and text("#setup-review-hint") == "Everything your agent asks runs; nothing asks you first.",
+              "without a container: the facts and the sentence follow the level chosen")
+        page.click("#setup-start")
+        page.wait_for_selector("#card-starting:not([hidden])")
+        writes = started_with("directStart")
+        check(writes[:1] == [["setReview", [home, "trust"]]] and writes[1][0] == "directStart",
+              f"Set up without a container: Start writes the level chosen, then starts the worker {writes[:2]}")
         # Running with its browser on the Mac: Show browser; Settings has the choice and "hidden".
         go("macbrowser", "macos")
         check(text("#browser-open") == "Show browser" and "uses Google Chrome on this Mac" in text("#browser-text"),
