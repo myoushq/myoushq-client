@@ -365,9 +365,13 @@ If the help names no browser, your owner hasn't turned it on: tell them.
 Never install a browser or Playwright on a worker yourself. When its
 browser becomes ready, the worker sends you its Shell and Browser lines;
 send `help` then for the rest, and again whenever your owner says the
-worker changed. By default (review level `trust`) everything you send
-runs; if your owner chose `changes` or `all`, some or every request waits
-for their answer, and a refusal comes back with a reason.
+worker changed. By default (review level `changes`) reads in the
+worker's work folder run on their own (`cp` from it, and a command that
+only reads, such as `ls -la` or `grep -rn x .`, with paths relative to
+the work folder); anything else waits up to 120 seconds for your owner's
+answer, including a read outside the work folder or a flag the worker's
+review doesn't know. Your owner may have chosen `trust` (everything runs)
+or `all` (every request waits). A refusal comes back with a reason.
 
 The Python client has three commands for it, which return when the worker
 has answered or fail after a timeout (other clients send the same
@@ -398,9 +402,11 @@ print(platform.node(), platform.python_version())
 EOF'
 ```
 
-A request the worker hasn't started within its ttl is answered "expired"
-and never runs. The commands set the ttl to how long they wait, so a
-request that timed out (the worker was off or busy) won't run later. A
+A request the worker hasn't started within its ttl, and five minutes more
+that workers from 0.8.1 allow for clocks that differ, is answered
+"expired" and never runs. The commands set the ttl to how long they
+wait, so a request that timed out (the worker was off or busy) won't run
+more than five minutes later. A
 timeout exits with status 124 (`exec` and `cp` alike) and says whether
 the worker may still run the request.
 `--ttl SECONDS` (up to a day:
