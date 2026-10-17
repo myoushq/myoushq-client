@@ -755,8 +755,8 @@ func (a *Agent) Listen(ctx context.Context, onNew func([]Entry), onTick func(), 
 		deliver()
 		return nil
 	}
-	// New wraps are subscribed to first, then everything the relay holds
-	// is fetched (all of it: fetchWraps) and handled as one batch, which
+	// New wraps are subscribed to first, then a page of what the relay
+	// holds is fetched (fetchWraps) and handled as one batch, which
 	// handleWraps puts in the order it was written; then each new wrap as
 	// it arrives (one that came in the meantime was in the fetch too, and
 	// is skipped as seen).

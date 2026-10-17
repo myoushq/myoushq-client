@@ -322,62 +322,42 @@ func jitteredNow() nostr.Timestamp {
 }
 
 // No `since`: gift wraps carry randomized past timestamps (NIP-59), so we
-// fetch everything the relay still holds and skip seen IDs.
+// ask for what the relay holds, whatever its time, and skip seen IDs.
 func (c *connection) inboxFilter() nostr.Filter {
 	return nostr.Filter{Kinds: []int{kindGiftWrap}, Tags: nostr.TagMap{"p": {c.pk}}}
 }
 
-const (
-	wrapPage     = 500 // gift wraps asked for at a time
-	maxWrapPages = 40  // 20,000 wraps, well past what the hub holds for one recipient
-)
+// wrapPage is how many gift wraps a fetch asks for: one page, the newest
+// timestamps first. Paging back with Until (inclusive; wrap timestamps are
+// random) would download everything stored on every fetch: one page until
+// the hub offers an arrival cursor.
+const wrapPage = 500
 
-// fetchWraps gets every gift wrap the relays hold for us, a page at a
-// time. A relay answers a query with one page (the hub: at most 1000, and
-// 250 to a query without a limit), newest timestamps first; wrap
-// timestamps are random up to two days back (NIP-59), so the first page
-// alone is a random subset, the same one on every poll, and the rest would
-// never be seen. While pages come back full, the next is asked for until
-// the oldest timestamp seen (inclusive: ids already seen are skipped); a
-// page with nothing new ends it too (more than a page in one second).
-// It is an error when no relay answered: Listen would otherwise go on
-// without what is waiting, and Poll report nothing new.
+// fetchWraps gets a page of the gift wraps the relays hold for us. It is
+// an error when no relay answered: Listen would otherwise go on without
+// what is waiting, and Poll report nothing new.
 func (c *connection) fetchWraps(ctx context.Context) ([]*nostr.Event, error) {
+	f := c.inboxFilter()
+	f.Limit = wrapPage
 	seen := map[string]bool{}
 	var all []*nostr.Event
 	var failed []string
 	for _, r := range c.relays {
-		f := c.inboxFilter()
-		f.Limit = wrapPage
-		for page := 0; page < maxWrapPages; page++ {
-			qctx, cancel := context.WithTimeout(ctx, 15*time.Second)
-			events, err := r.QuerySync(qctx, f)
-			if err == nil && qctx.Err() != nil {
-				err = qctx.Err() // QuerySync ends quietly when its time is up
+		qctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		events, err := r.QuerySync(qctx, f)
+		if err == nil && qctx.Err() != nil {
+			err = qctx.Err() // QuerySync ends quietly when its time is up
+		}
+		cancel()
+		if err != nil {
+			failed = append(failed, fmt.Sprintf("%s: %v", r.URL, err))
+			continue
+		}
+		for _, e := range events {
+			if !seen[e.ID] {
+				seen[e.ID] = true
+				all = append(all, e)
 			}
-			cancel()
-			if err != nil {
-				if page == 0 {
-					failed = append(failed, fmt.Sprintf("%s: %v", r.URL, err))
-				}
-				break
-			}
-			fresh := 0
-			var oldest nostr.Timestamp
-			for _, e := range events {
-				if oldest == 0 || e.CreatedAt < oldest {
-					oldest = e.CreatedAt
-				}
-				if !seen[e.ID] {
-					seen[e.ID] = true
-					all = append(all, e)
-					fresh++
-				}
-			}
-			if len(events) < wrapPage || fresh == 0 {
-				break
-			}
-			f.Until = &oldest
 		}
 	}
 	if len(failed) == len(c.relays) {
@@ -394,10 +374,10 @@ const storedWait = 10 * time.Second
 // streamWraps delivers new gift wraps as they arrive, until ctx ends or
 // every relay connection drops; ready is closed once every relay has the
 // subscription. It asks for new wraps only ("limit": 0): what the relay
-// holds comes from fetchWraps, which gets all of it, where a subscription
-// gets one page. A relay that sends stored wraps anyway has them handed
-// over as one batch at its EOSE (so handleWraps puts them in the order
-// they were written, not the random one of the wraps' timestamps).
+// holds comes from fetchWraps. A relay that sends stored wraps anyway has
+// them handed over as one batch at its EOSE (so handleWraps puts them in
+// the order they were written, not the random one of the wraps'
+// timestamps).
 func (c *connection) streamWraps(ctx context.Context, out chan<- []*nostr.Event, ready chan<- struct{}) error {
 	done := make(chan struct{}, len(c.relays))
 	live := c.inboxFilter()

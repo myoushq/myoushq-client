@@ -42,11 +42,11 @@ KIND_AUTH = 22242
 
 MESSAGE_TTL = datetime.timedelta(days=1)
 TIMEOUT = datetime.timedelta(seconds=15)
-# A relay answers a query with a page of stored events, newest first: the
-# hub's store at most 1000, and 250 when the filter has no limit. Wraps are
-# asked for a page at a time, older ones with `until`, up to FETCH_PAGES.
+# Gift wraps asked for in one fetch: one page, the newest timestamps
+# first. Paging back with `until` (inclusive; wrap timestamps are random)
+# would download everything stored on every fetch: one page until the hub
+# offers an arrival cursor.
 FETCH_PAGE = 500
-FETCH_PAGES = 40   # 20,000 wraps, more than a recipient's quota on the hub holds
 
 
 class RelayError(Exception):
@@ -173,41 +173,23 @@ class Connection:
 
     def _inbox_filter(self) -> Filter:
         # No `since`: gift wraps carry randomized past timestamps (NIP-59), so
-        # we fetch everything the relay still holds and skip seen IDs.
+        # we ask for what the relay holds, whatever its time, and skip seen IDs.
         return Filter().kind(Kind(KIND_GIFT_WRAP)).pubkey(self.keys.public_key())
 
     async def fetch_wraps(self) -> list[Event]:
-        """Every gift wrap the relays hold for us. One query gets a page
-        (FETCH_PAGE); while pages come back full, the next asks for those
-        no newer than the oldest seen (`until`: wrap timestamps are
-        random, so there is no telling which ones are new). Raises
-        RelayError when no relay is connected: an empty answer then would
-        look like an empty inbox."""
+        """A page of the gift wraps the relays hold for us (FETCH_PAGE).
+        Raises RelayError when no relay is connected: an empty answer then
+        would look like an empty inbox."""
         if not await self.connected():
             raise RelayError("; ".join(f"couldn't reach the relay at {u}" + (
                 f": {self.failures[str(u)]}" if str(u) in self.failures else "") for u in self.relays))
-        found: dict[str, Event] = {}
-        until = None
-        for _ in range(FETCH_PAGES):
-            f = self._inbox_filter().limit(FETCH_PAGE)
-            if until is not None:
-                f = f.until(until)
-            page = await self.client.fetch_events(ReqTarget.manual({u: [f] for u in self.relays}), TIMEOUT)
-            fresh = 0
-            for e in page:
-                key = e.id().to_hex()
-                if key not in found:
-                    found[key] = e
-                    fresh += 1
-            if len(page) < FETCH_PAGE or not fresh:
-                break
-            until = Timestamp.from_secs(min(e.created_at().as_secs() for e in page))
-        return list(found.values())
+        target = ReqTarget.manual({u: [self._inbox_filter().limit(FETCH_PAGE)] for u in self.relays})
+        return await self.client.fetch_events(target, TIMEOUT)
 
     async def stream_wraps(self) -> AsyncIterator[list[Event]]:
-        """Yield gift wraps in batches: first every stored one (one batch,
-        from fetch_wraps: a subscription would replay only a page), then
-        each new one as it arrives."""
+        """Yield gift wraps in batches: first the stored ones fetch_wraps
+        gets (one batch, which handle_wraps puts in the order written),
+        then each new one as it arrives."""
         # New events only ("limit": 0; the hub answers no stored ones), and
         # listening before subscribing, so that nothing falls between the
         # subscription and the fetch of what is stored (a wrap in both is

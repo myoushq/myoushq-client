@@ -135,12 +135,12 @@ func BenchmarkHandleWrapsSeen(b *testing.B) {
 	}
 }
 
-// More wraps than a relay answers in one page (the hub: 250 to a
-// subscription, at most 1000 to a query; Poll asks 500 at a time): Poll
-// and Listen get every one, in the order written. Before, Poll stored the
-// newest 500 by the wraps' random timestamps (the same ones on every
-// poll) and a listener's replay 250; the rest never came.
-func TestListenAndPollGetEveryStoredWrap(t *testing.T) {
+// More wraps than the hub answers a query or a subscription without a
+// limit (250), fewer than a page (wrapPage): Poll and a listener's
+// catch-up fetch get every one, as one batch in the order written. Before,
+// a listener's replay of its subscription stopped at 250, in the random
+// order of the wraps' timestamps.
+func TestListenAndPollGetAPageOfStoredWraps(t *testing.T) {
 	e := setup(t)
 	e.init("go-many", "go-poller", "go-listener")
 	e.pair("go-many", "go-poller", "code")
@@ -180,7 +180,8 @@ func TestListenAndPollGetEveryStoredWrap(t *testing.T) {
 		return s
 	}
 
-	want := sendN("go-poller", 520)
+	const many = 270
+	want := sendN("go-poller", many)
 	pst, _ := NewFileStorage(filepath.Join(e.dir, "go-poller"))
 	poller, _ := New(pst, "")
 	polled := time.Now()
@@ -193,7 +194,7 @@ func TestListenAndPollGetEveryStoredWrap(t *testing.T) {
 		t.Fatalf("poll: %d of %d (first %v)", len(g), len(want), g[:min(3, len(g))])
 	}
 
-	want = sendN("go-listener", 270)
+	want = sendN("go-listener", many)
 	lst, _ := NewFileStorage(filepath.Join(e.dir, "go-listener"))
 	listener, _ := New(lst, "")
 	lctx, cancel := context.WithCancel(ctx)
