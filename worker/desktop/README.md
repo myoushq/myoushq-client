@@ -213,7 +213,10 @@ and nothing needs installing: no Python, no pip. The app starts it as
 `myous-worker worker --alias … --description … --work <folder>/work`
 with `MYOUS_HOME` set to the worker folder; the review rules are built
 into it (the level in `review.json`, `worker.paused`, the questions in
-`approvals/`), the same as `worker/review.py`'s. The worker's own output
+`approvals/`), the same as `worker/review.py`'s, and it gets
+`MYOUS_DEFAULT_REVIEW=changes` (unless the app's environment sets it),
+so a `review.json` deleted while it runs leaves it asking before
+changes, as the window shows it. The worker's own output
 is in `worker.log` (Show worker log, in the ⋯ menu). Stop writes a
 `commands/quit` file in the worker folder (and sends SIGTERM outside
 Windows): the worker ends the command it runs with everything it

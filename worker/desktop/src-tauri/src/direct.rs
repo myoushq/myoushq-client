@@ -3,7 +3,9 @@
 //! this computer as the owner, as myous for Mac's direct mode does. For
 //! computers that can't run containers (Windows without WSL 2) and for
 //! owners who choose it. The review rules are built into the worker (no
-//! `--review`): the level in review.json, worker.paused, approvals/.
+//! `--review`): the level in review.json, worker.paused, approvals/;
+//! without a review.json the worker asks before changes
+//! (MYOUS_DEFAULT_REVIEW, `default_review`), as the window shows it.
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -90,6 +92,22 @@ pub fn worker_args(
     args
 }
 
+/// The variable the worker reads its level from when review.json is
+/// absent (a container's entrypoint sets it to changes).
+const DEFAULT_REVIEW: &str = "MYOUS_DEFAULT_REVIEW";
+
+/// What the worker gets as MYOUS_DEFAULT_REVIEW, given the app's own
+/// (`inherited`): changes, the level the window shows for a worker without
+/// a review.json, so a review.json deleted after the start doesn't drop
+/// the worker to trust; None (left as it is, passed on unchanged) when the
+/// owner set one in the app's environment. An empty value is no value.
+fn default_review(inherited: Option<OsString>) -> Option<&'static str> {
+    match inherited {
+        Some(v) if !v.is_empty() => None,
+        _ => Some("changes"),
+    }
+}
+
 fn children() -> &'static Mutex<HashMap<String, Child>> {
     static CHILDREN: std::sync::OnceLock<Mutex<HashMap<String, Child>>> =
         std::sync::OnceLock::new();
@@ -122,6 +140,9 @@ pub fn start(
         .stdin(Stdio::null())
         .stdout(log.try_clone().map_err(|e| e.to_string())?)
         .stderr(log);
+    if let Some(level) = default_review(std::env::var_os(DEFAULT_REVIEW)) {
+        cmd.env(DEFAULT_REVIEW, level);
+    }
     hide(&mut cmd);
     let child = cmd
         .spawn()
@@ -685,6 +706,18 @@ mod tests {
         std::fs::remove_dir_all(&home).unwrap();
     }
 
+    /// Without a review.json the worker falls back to MYOUS_DEFAULT_REVIEW:
+    /// the app passes changes, as the window shows it, unless the owner set
+    /// one in the app's environment, which the worker then gets unchanged.
+    #[test]
+    fn a_worker_without_review_json_asks_before_changes() {
+        assert_eq!(default_review(None), Some("changes"));
+        assert_eq!(default_review(Some(OsString::new())), Some("changes"));
+        for owners in ["trust", "all", "changes"] {
+            assert_eq!(default_review(Some(owners.into())), None, "{owners}");
+        }
+    }
+
     /// The worker the app carries is the same release as the app.
     #[test]
     fn the_worker_is_this_release() {
@@ -730,8 +763,8 @@ mod tests {
         crate::paths::send_command(&home, crate::paths::QUIT_COMMAND).unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
         let args = script(
-            "echo \"PATH=$PATH\"; echo started; sleep 30",
-            "Write-Output \"PATH=$env:PATH\"; Write-Output started; Start-Sleep 30",
+            "echo \"PATH=$PATH\"; echo \"REVIEW=$MYOUS_DEFAULT_REVIEW\"; echo started; sleep 30",
+            "Write-Output \"PATH=$env:PATH\"; Write-Output \"REVIEW=$env:MYOUS_DEFAULT_REVIEW\"; Write-Output started; Start-Sleep 30",
         );
         start(&h, &args, move |st| tx.send(st).unwrap()).unwrap();
         assert!(!quit.exists());
@@ -743,6 +776,18 @@ mod tests {
         assert!(
             log_tail(&h, 64 * 1024).lines().any(|l| l.trim() == path),
             "{path}"
+        );
+        // Its level without a review.json: changes, or the owner's from this environment.
+        let review = format!(
+            "REVIEW={}",
+            default_review(std::env::var_os(DEFAULT_REVIEW)).map_or_else(
+                || std::env::var(DEFAULT_REVIEW).unwrap_or_default(),
+                String::from
+            )
+        );
+        assert!(
+            log_tail(&h, 64 * 1024).lines().any(|l| l.trim() == review),
+            "{review}"
         );
         // SIGTERM ends it; on Windows, where only the quit file asks (and
         // this one doesn't take it), it is killed after STOP_GRACE.
