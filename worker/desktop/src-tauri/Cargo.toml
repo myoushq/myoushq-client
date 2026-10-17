@@ -1,6 +1,6 @@
 [package]
 name = "myous-desktop"
-version = "0.8.1"
+version = "0.8.2"
 description = "myous for Linux and Windows: the human's side of a worker on this computer"
 edition = "2021"
 rust-version = "1.80"

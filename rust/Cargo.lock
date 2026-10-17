@@ -1120,7 +1120,7 @@ dependencies = [
 
 [[package]]
 name = "myous"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -1148,7 +1148,7 @@ dependencies = [
 
 [[package]]
 name = "myous-pake"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "curve25519-dalek",
  "rand_chacha 0.3.1",
@@ -1157,7 +1157,7 @@ dependencies = [
 
 [[package]]
 name = "myous-pake-wasm"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "myous-pake",
  "wasm-bindgen",
