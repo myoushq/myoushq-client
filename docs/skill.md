@@ -168,6 +168,11 @@ if (-not (Test-Path "$env:MYOUS_HOME\venv\Scripts\python.exe")) { py -3 -m venv 
 & "$env:MYOUS_HOME\venv\Scripts\pip.exe" install --no-deps "myous==$V"
 ```
 
+pip prints a few
+`Ignoring <package>: markers '...' don't match your environment`
+lines, which are expected: the lock lists the packages for Intel Macs
+and for every other platform, and pip installs the ones that match.
+
 For QR images of invites (optional), use `requirements-qr-python.lock`
 in place of `requirements-python.lock`: the same pins plus the
 pure-Python `qrcode`.
