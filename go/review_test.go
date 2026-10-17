@@ -108,6 +108,36 @@ func TestReviewTrustAllowsAndPauseRefuses(t *testing.T) {
 	}
 }
 
+func TestReviewMissingOrCorruptFailsClosed(t *testing.T) {
+	r, home := reviewFor(t)
+	r.wait = 300 * time.Millisecond // the "all" cases wait for nobody; keep the test quick
+	review := filepath.Join(home, "review.json")
+	// Absent: never configured, so the default (trust) - a change runs.
+	if why := r.decide(context.Background(), req("exec", "a", pyKV{"cmd", "rm -rf x"})); why != "" {
+		t.Fatalf("absent review.json should be trust, got %q", why)
+	}
+	if r.level() != "trust" {
+		t.Fatalf("absent review.json: level %q, want trust", r.level())
+	}
+	// Present but unreadable, not JSON, or an invalid level: fail closed to
+	// "all", so even a read is asked about (W2 truncated review.json to drop
+	// the worker to trust; this closes that escalation).
+	for _, bad := range []string{"", "{", "not json", "[1, 2, 3]", `{"level": "bogus"}`, `{"level": 7}`, `"changes"`} {
+		os.WriteFile(review, []byte(bad), 0o600)
+		if r.level() != "all" {
+			t.Fatalf("%q: level %q, want all", bad, r.level())
+		}
+		if why := r.decide(context.Background(), req("get", "b", pyKV{"path", "x"})); why != "the owner didn't answer in time" {
+			t.Fatalf("%q should fail closed to all, got %q", bad, why)
+		}
+	}
+	// A valid level is still honoured.
+	setLevel(t, home, "changes")
+	if why := r.decide(context.Background(), req("get", "c", pyKV{"path", "x"})); why != "" {
+		t.Fatalf("changes level should allow a read, got %q", why)
+	}
+}
+
 func TestReviewChangesLevel(t *testing.T) {
 	r, home := reviewFor(t)
 	setLevel(t, home, "changes")

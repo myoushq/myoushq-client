@@ -81,13 +81,26 @@ READ_ONLY_POWERSHELL = {
 UNSAFE_POWERSHELL = ("(", "&", "@", "--%", "Invoke-", "iex")
 
 
+# A review.json that is present but can't be read as a valid level fails
+# closed to "all" (ask about everything), not open to "trust": a worker
+# whose setting file was truncated or corrupted (W2 used a truncated
+# review.json to drop the worker to "trust") asks rather than running
+# everything unreviewed. An absent file is a worker that was never
+# configured, and keeps the default.
+FAIL_CLOSED = "all"
+LEVELS = ("trust", "changes", "all")
+
+
 def level() -> str:
     try:
         with open(REVIEW_FILE) as f:
-            lv = json.load(f).get("level")
-        return lv if lv in ("trust", "changes", "all") else "trust"
-    except (OSError, ValueError, AttributeError):
-        return "trust"
+            data = json.load(f)
+    except FileNotFoundError:
+        return "trust"  # never configured: the default
+    except (OSError, ValueError):
+        return FAIL_CLOSED  # present but unreadable or not JSON
+    lv = data.get("level") if isinstance(data, dict) else None
+    return lv if lv in LEVELS else FAIL_CLOSED
 
 
 def _writes_a_file(words: list[str]) -> bool:
