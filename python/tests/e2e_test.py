@@ -234,7 +234,9 @@ class EndToEnd(unittest.TestCase):
     def start_worker(self, agent: str, work: Path) -> subprocess.Popen:
         # MYOUS_WORKER runs another client's worker on the same data
         # directory instead (the Go one: MYOUS_WORKER=path/to/go/myous).
-        env = dict(os.environ, MYOUS_HOME=str(self.tmp / agent), PYTHONUNBUFFERED="1")
+        # No allowance for clock differences: test_9b's request is seconds
+        # past its ttl, and must expire.
+        env = dict(os.environ, MYOUS_HOME=str(self.tmp / agent), PYTHONUNBUFFERED="1", MYOUS_CLOCK_ALLOWANCE="0")
         cmd = [os.environ["MYOUS_WORKER"]] if os.environ.get("MYOUS_WORKER") else [sys.executable, "-m", "myous"]
         with open(self.tmp / f"{agent}-worker.log", "w") as log:
             p = subprocess.Popen(cmd + ["worker", "--work", str(work), "--alias", agent],

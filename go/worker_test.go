@@ -132,6 +132,7 @@ func newWorkerFixture(t *testing.T) *workerFixture {
 	t.Setenv("MYOUS_PAUSE_FILE", "")
 	t.Setenv("MYOUS_APPROVAL_WAIT", "")
 	t.Setenv("MYOUS_DEFAULT_REVIEW", "") // no review.json is trust in these tests
+	t.Setenv("MYOUS_CLOCK_ALLOWANCE", "")
 	tmp, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
