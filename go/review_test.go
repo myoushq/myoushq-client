@@ -82,6 +82,7 @@ func TestReviewPowerShell(t *testing.T) {
 }
 
 func reviewFor(t *testing.T) (*builtinReview, string) {
+	t.Setenv("MYOUS_DEFAULT_REVIEW", "") // no review.json is trust here, unless a test sets one
 	home := t.TempDir()
 	return &builtinReview{home: home, pauseFile: filepath.Join(home, "worker.paused"), wait: 3 * time.Second,
 		limit: reviewTimeout}, home
@@ -112,7 +113,8 @@ func TestReviewMissingOrCorruptFailsClosed(t *testing.T) {
 	r, home := reviewFor(t)
 	r.wait = 300 * time.Millisecond // the "all" cases wait for nobody; keep the test quick
 	review := filepath.Join(home, "review.json")
-	// Absent: never configured, so the default (trust) - a change runs.
+	// Absent: never configured, so the default (trust without
+	// MYOUS_DEFAULT_REVIEW) - a change runs.
 	if why := r.decide(context.Background(), req("exec", "a", pyKV{"cmd", "rm -rf x"})); why != "" {
 		t.Fatalf("absent review.json should be trust, got %q", why)
 	}
@@ -121,8 +123,10 @@ func TestReviewMissingOrCorruptFailsClosed(t *testing.T) {
 	}
 	// Present but unreadable, not JSON, or an invalid level: fail closed to
 	// "all", so even a read is asked about (W2 truncated review.json to drop
-	// the worker to trust; this closes that escalation).
-	for _, bad := range []string{"", "{", "not json", "[1, 2, 3]", `{"level": "bogus"}`, `{"level": 7}`, `"changes"`} {
+	// the worker to trust; this closes that escalation). A default doesn't
+	// change that: the file is there.
+	t.Setenv("MYOUS_DEFAULT_REVIEW", "trust")
+	for _, bad := range []string{"", "{", "not json", "[1, 2, 3]", `{"level": "bogus"}`, `{"level": 7}`, `"changes"`, "null"} {
 		os.WriteFile(review, []byte(bad), 0o600)
 		if r.level() != "all" {
 			t.Fatalf("%q: level %q, want all", bad, r.level())
@@ -131,10 +135,66 @@ func TestReviewMissingOrCorruptFailsClosed(t *testing.T) {
 			t.Fatalf("%q should fail closed to all, got %q", bad, why)
 		}
 	}
+	os.Remove(review)
+	os.Mkdir(review, 0o700) // there, but can't be read
+	if r.level() != "all" {
+		t.Fatalf("a review.json that can't be read: level %q, want all", r.level())
+	}
+	os.Remove(review)
 	// A valid level is still honoured.
 	setLevel(t, home, "changes")
 	if why := r.decide(context.Background(), req("get", "c", pyKV{"path", "x"})); why != "" {
 		t.Fatalf("changes level should allow a read, got %q", why)
+	}
+}
+
+func TestReviewDefaultLevelForAnUnconfiguredWorker(t *testing.T) {
+	r, home := reviewFor(t)
+	r.wait = 300 * time.Millisecond // the "changes" case waits for nobody
+	log := filepath.Join(home, "worker.log")
+	// No review.json: the level is $MYOUS_DEFAULT_REVIEW (the container sets
+	// "changes"), else "trust".
+	t.Setenv("MYOUS_DEFAULT_REVIEW", "changes")
+	if why := r.decide(context.Background(), req("exec", "a", pyKV{"cmd", "ls -la"})); why != "" {
+		t.Fatalf("a read should run at changes: %q", why)
+	}
+	if why := r.decide(context.Background(), req("exec", "b", pyKV{"cmd", "touch x"})); why != "the owner didn't answer in time" {
+		t.Fatalf("a change should ask at changes: %q", why)
+	}
+	if exists(log) {
+		t.Fatal("a valid default wrote to worker.log")
+	}
+	// Unset or empty: trust, a change runs.
+	t.Setenv("MYOUS_DEFAULT_REVIEW", "")
+	if why := r.decide(context.Background(), req("exec", "c", pyKV{"cmd", "rm -rf x"})); why != "" {
+		t.Fatalf("empty should be trust: %q", why)
+	}
+	os.Unsetenv("MYOUS_DEFAULT_REVIEW")
+	if why := r.decide(context.Background(), req("exec", "d", pyKV{"cmd", "rm -rf x"})); why != "" {
+		t.Fatalf("unset should be trust: %q", why)
+	}
+	// Set but not a level: an unreadable safety setting asks about
+	// everything, even a read, and worker.log says why.
+	for _, v := range []string{"bogus", "Trust", " changes"} {
+		t.Setenv("MYOUS_DEFAULT_REVIEW", v)
+		if why := r.decide(context.Background(), req("get", "f", pyKV{"path", "x"})); why != "the owner didn't answer in time" {
+			t.Fatalf("%q should fail closed to all: %q", v, why)
+		}
+		raw, _ := os.ReadFile(log)
+		lines := pySplitLines(pyStrip(string(raw)))
+		var line map[string]any
+		if len(lines) == 0 || json.Unmarshal([]byte(lines[len(lines)-1]), &line) != nil {
+			t.Fatalf("worker.log: %q", raw)
+		}
+		if line["op"] != "review" || line["value"] != v || !strings.Contains(line["error"].(string), "MYOUS_DEFAULT_REVIEW isn't trust, changes or all") {
+			t.Fatalf("worker.log line: %v", line)
+		}
+	}
+	// A written review.json still wins over the default.
+	t.Setenv("MYOUS_DEFAULT_REVIEW", "changes")
+	setLevel(t, home, "trust")
+	if why := r.decide(context.Background(), req("exec", "e", pyKV{"cmd", "rm -rf x"})); why != "" {
+		t.Fatalf("review.json trust should win over the default: %q", why)
 	}
 }
 

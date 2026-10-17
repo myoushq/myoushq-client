@@ -16,10 +16,15 @@ Policy: only approved contacts' messages reach the worker at all, so
 refuses everything. Then the review level in <home>/review.json (the
 desktop app's setting) decides:
 
-- "trust" (default): everything runs.
+- "trust": everything runs.
 - "changes": reads run (get, and exec of a read-only command, see
   READ_ONLY); anything else asks the owner.
 - "all": every request asks the owner.
+
+Without a review.json the level is $MYOUS_DEFAULT_REVIEW (the container
+sets "changes"), or "trust" when that is unset. A review.json, or a
+MYOUS_DEFAULT_REVIEW, that can't be read as a level asks about everything
+("all") until it is fixed.
 
 Asking: the hook writes <home>/approvals/<id>.json (the request) and waits
 up to MYOUS_APPROVAL_WAIT seconds (default 120, inside an agent's default
@@ -81,22 +86,54 @@ READ_ONLY_POWERSHELL = {
 UNSAFE_POWERSHELL = ("(", "&", "@", "--%", "Invoke-", "iex")
 
 
+LEVELS = ("trust", "changes", "all")
 # A review.json that is present but can't be read as a valid level fails
 # closed to "all" (ask about everything), not open to "trust": a worker
 # whose setting file was truncated or corrupted (W2 used a truncated
 # review.json to drop the worker to "trust") asks rather than running
 # everything unreviewed. An absent file is a worker that was never
-# configured, and keeps the default.
+# configured, and keeps the default (default_level).
 FAIL_CLOSED = "all"
-LEVELS = ("trust", "changes", "all")
+LOG_FILE = os.path.join(HOME, "worker.log")
+
+
+def note(record: dict) -> None:
+    """One line in worker.log, as the worker writes its own (the owner's
+    app shows the log): for what the review can't say in a reason."""
+    try:
+        with open(LOG_FILE, "a") as f:
+            f.write(json.dumps(dict(record, at=int(time.time())), sort_keys=True) + "\n")
+    except OSError:
+        pass
+
+
+def default_level() -> str:
+    """The level of a worker that has never been configured (no
+    review.json): $MYOUS_DEFAULT_REVIEW, or "trust" when that is unset or
+    empty. The container's entrypoint sets it to "changes", so a fresh
+    container asks before anything that changes things, as direct mode (the
+    desktop app) already does; a level picked in the app writes
+    review.json, which then wins. A value that isn't a level fails closed
+    like a corrupt review.json (an unreadable safety setting asks, it
+    doesn't run everything), and says so in worker.log."""
+    lv = os.environ.get("MYOUS_DEFAULT_REVIEW", "")
+    if not lv:
+        return "trust"
+    if lv in LEVELS:
+        return lv
+    note({"op": "review", "value": lv,
+          "error": "MYOUS_DEFAULT_REVIEW isn't trust, changes or all, so every request is asked about (all)"})
+    return FAIL_CLOSED
 
 
 def level() -> str:
+    """review.json's level. Absent: the default (default_level). Present
+    but unreadable, not JSON, not an object or not a level: FAIL_CLOSED."""
     try:
         with open(REVIEW_FILE) as f:
             data = json.load(f)
     except FileNotFoundError:
-        return "trust"  # never configured: the default
+        return default_level()  # never configured
     except (OSError, ValueError):
         return FAIL_CLOSED  # present but unreadable or not JSON
     lv = data.get("level") if isinstance(data, dict) else None

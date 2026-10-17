@@ -69,6 +69,7 @@ class HookTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.home = Path(self.tmp.name)
         self.env = dict(os.environ, MYOUS_HOME=str(self.home), MYOUS_APPROVAL_WAIT="3")
+        self.env.pop("MYOUS_DEFAULT_REVIEW", None)   # no review.json is trust here, unless a test sets one
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -86,20 +87,54 @@ class HookTest(unittest.TestCase):
         self.assertEqual(self.run_hook({"op": "exec", "id": "a", "cmd": "ls"}), (1, "the worker is paused by its owner"))
 
     def test_missing_or_corrupt_review_fails_closed(self):
-        # No review.json at all: never configured, so the default (trust) -
-        # even a change runs.
+        # No review.json at all: never configured, so the default (trust
+        # without MYOUS_DEFAULT_REVIEW) - even a change runs.
         self.assertEqual(self.run_hook({"op": "exec", "id": "a", "cmd": "rm -rf x"})[0], 0)
         # Present but unreadable, not JSON, or an invalid level: fail closed
         # to "all", so even a read is asked about (W2 truncated review.json
-        # to drop the worker to trust; this closes that escalation).
+        # to drop the worker to trust; this closes that escalation). A
+        # default doesn't change that: the file is there.
         self.env["MYOUS_APPROVAL_WAIT"] = "1"
-        for bad in ["", "{", "not json", "[1, 2, 3]", '{"level": "bogus"}', '{"level": 7}', '"changes"']:
+        self.env["MYOUS_DEFAULT_REVIEW"] = "trust"
+        for bad in ["", "{", "not json", "[1, 2, 3]", '{"level": "bogus"}', '{"level": 7}', '"changes"', "null"]:
             (self.home / "review.json").write_text(bad)
             code, why = self.run_hook({"op": "get", "id": "b", "path": "x"})
             self.assertEqual((code, why), (1, "the owner didn't answer in time"), repr(bad))
+        (self.home / "review.json").unlink()
+        (self.home / "review.json").mkdir()   # there, but can't be read
+        self.assertEqual(self.run_hook({"op": "get", "id": "b", "path": "x"}), (1, "the owner didn't answer in time"))
+        (self.home / "review.json").rmdir()
         # A valid level is still honoured.
         self.level("changes")
         self.assertEqual(self.run_hook({"op": "get", "id": "c", "path": "x"})[0], 0)
+
+    def test_default_level_for_an_unconfigured_worker(self):
+        # No review.json: the level is $MYOUS_DEFAULT_REVIEW (the container's
+        # entrypoint sets "changes"), else "trust".
+        self.env["MYOUS_DEFAULT_REVIEW"] = "changes"
+        self.env["MYOUS_APPROVAL_WAIT"] = "1"
+        self.assertEqual(self.run_hook({"op": "exec", "id": "a", "cmd": "ls -la"})[0], 0)  # a read runs
+        code, why = self.run_hook({"op": "exec", "id": "b", "cmd": "touch x"})            # a change asks
+        self.assertEqual((code, why), (1, "the owner didn't answer in time"))
+        self.assertFalse((self.home / "worker.log").exists())
+        # Unset or empty: trust, a change runs.
+        self.env["MYOUS_DEFAULT_REVIEW"] = ""
+        self.assertEqual(self.run_hook({"op": "exec", "id": "c", "cmd": "rm -rf x"})[0], 0)
+        del self.env["MYOUS_DEFAULT_REVIEW"]
+        self.assertEqual(self.run_hook({"op": "exec", "id": "d", "cmd": "rm -rf x"})[0], 0)
+        # Set but not a level: an unreadable safety setting asks about
+        # everything, even a read, and worker.log says why.
+        for val in ("bogus", "Trust", " changes"):
+            self.env["MYOUS_DEFAULT_REVIEW"] = val
+            code, why = self.run_hook({"op": "get", "id": "f", "path": "x"})
+            self.assertEqual((code, why), (1, "the owner didn't answer in time"), repr(val))
+            line = json.loads((self.home / "worker.log").read_text().splitlines()[-1])
+            self.assertEqual((line["op"], line["value"]), ("review", val))
+            self.assertIn("MYOUS_DEFAULT_REVIEW isn't trust, changes or all", line["error"])
+        # A written review.json still wins over the default.
+        self.env["MYOUS_DEFAULT_REVIEW"] = "changes"
+        self.level("trust")
+        self.assertEqual(self.run_hook({"op": "exec", "id": "e", "cmd": "rm -rf x"})[0], 0)
 
     def test_changes_level(self):
         self.level("changes")

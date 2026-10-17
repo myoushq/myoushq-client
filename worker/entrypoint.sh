@@ -32,6 +32,12 @@ stop() {
 }
 trap stop TERM INT
 
+# The level a fresh container (no review.json yet) starts at: "changes", so
+# an agent's reads run but anything that changes things asks the owner. The
+# owner can set a different default in compose/.env, or pick a level in the
+# app (which writes review.json and then wins). review.py reads this.
+export MYOUS_DEFAULT_REVIEW="${MYOUS_DEFAULT_REVIEW:-changes}"
+
 # Where the worker is, for the owner's app: a phase in the status file
 # until the worker itself takes over writing it (starting, browser,
 # registering, then the worker's running or paused).

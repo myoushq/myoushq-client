@@ -141,16 +141,49 @@ type builtinReview struct {
 // rather than running everything unreviewed. W2 used a truncated
 // review.json to drop the worker to "trust"; this makes a corrupt or
 // unreadable setting file fail safe. An absent file is a worker that was
-// never configured, and keeps the default.
+// never configured, and keeps the default (defaultLevel).
 const failClosed = "all"
 
-// level is review.json's level: "trust" when the file is absent, failClosed
-// when it is present but unreadable or invalid.
+// note appends one line to worker.log, as the worker writes its own
+// (review.py's note): for what the review can't say in a reason.
+func (r *builtinReview) note(record pyObj) {
+	f, err := os.OpenFile(filepath.Join(r.home, "worker.log"), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o666)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	f.WriteString(pyDumps(record.with("at", time.Now().Unix()), true) + "\n")
+}
+
+// defaultLevel is review.py's default_level: the level of a worker that has
+// never been configured (no review.json), $MYOUS_DEFAULT_REVIEW, or "trust"
+// when that is unset or empty. The container's entrypoint sets it to
+// "changes", so a fresh container asks before anything that changes things,
+// as direct mode (the desktop app) already does; a level picked in the app
+// writes review.json, which then wins. A value that isn't a level fails
+// closed like a corrupt review.json (an unreadable safety setting asks, it
+// doesn't run everything), and says so in worker.log.
+func (r *builtinReview) defaultLevel() string {
+	lv := os.Getenv("MYOUS_DEFAULT_REVIEW")
+	if lv == "" {
+		return "trust"
+	}
+	if slices.Contains(reviewLevels, lv) {
+		return lv
+	}
+	r.note(pyObj{{"op", "review"}, {"value", lv},
+		{"error", "MYOUS_DEFAULT_REVIEW isn't trust, changes or all, so every request is asked about (all)"}})
+	return failClosed
+}
+
+// level is review.py's level: review.json's level. Absent: the default
+// (defaultLevel). Present but unreadable, not JSON, not an object or not a
+// level: failClosed.
 func (r *builtinReview) level() string {
 	raw, err := os.ReadFile(filepath.Join(r.home, "review.json"))
 	if err != nil {
 		if os.IsNotExist(err) {
-			return "trust" // never configured: the default
+			return r.defaultLevel() // never configured
 		}
 		return failClosed // present but unreadable
 	}
