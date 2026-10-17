@@ -77,10 +77,14 @@ if [ ! -x "$HOME/.cargo/bin/cargo-audit" ]; then
 	"$CARGO" install --locked cargo-audit >/dev/null 2>&1
 fi
 run "cargo audit rust" sh -c "cd rust && $CARGO audit"
-# Two allowed warnings here (not vulnerabilities): proc-macro-error is
+# Five allowed warnings here (not vulnerabilities): proc-macro-error is
 # unmaintained (RUSTSEC-2024-0370), and glib 0.18 has an unsound iterator
 # nothing in the tree calls (RUSTSEC-2024-0429); both come with Tauri 2's
-# GTK bindings (gtk 0.18) and go away when Tauri moves them.
+# GTK bindings (gtk 0.18) and go away when Tauri moves them. zvariant,
+# zbus_names and zvariant_derive are unmaintained (RUSTSEC-2026-0370,
+# RUSTSEC-2026-0371, RUSTSEC-2026-0372: merged into zbus 6); they come
+# with zbus 5, which Tauri's notification, opener and single-instance
+# plugins use for D-Bus on Linux, and go away when those plugins move.
 run "cargo audit desktop" sh -c "cd worker/desktop/src-tauri && $CARGO audit"
 
 [ $status = 0 ] && echo "all client checks clean" || echo "some client checks reported problems"
