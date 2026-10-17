@@ -256,13 +256,13 @@ func unread(st Storage, markRead bool) ([]Entry, error) {
 	if err != nil {
 		return nil, err
 	}
-	history, err := st.ReadHistory()
+	history, err := historySince(st, s.ReadSeq+1)
 	if err != nil {
 		return nil, err
 	}
 	entries := []Entry{}
 	for _, e := range history {
-		if e.Seq > s.ReadSeq && e.Direction != "out" && !e.consumedByCommand() {
+		if e.Direction != "out" && !e.consumedByCommand() {
 			if e.Peer != "" {
 				// So the agent has it when it answers.
 				e.Relationship, e.Sharing, e.About = contextOf(st, e.Peer)
