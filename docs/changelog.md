@@ -155,7 +155,7 @@ saying which plain reads still ask at `changes`.
 
 ## v0.8.1
 
-The worker asks first. 2026-10-16. A worker now starts at the `changes`
+The worker asks first. 2026-10-17. A worker now starts at the `changes`
 review level, and `changes` means what its name says: a plain read
 inside the work folder runs, everything else asks the owner. The
 decisions are the owner's of 2026-10-16 on the worker safety proposal.

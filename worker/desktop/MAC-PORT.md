@@ -1,7 +1,7 @@
 # myous for Mac on Tauri
 
-This app (`worker/desktop`) is myous for Mac from the release after
-v0.7.5, replacing `worker/mac` (Objective-C, the myous for Mac that
+This app (`worker/desktop`) is myous for Mac since v0.8.0 (2026-10-16),
+replacing `worker/mac` (Objective-C, the myous for Mac that
 v0.7.5 and earlier shipped), which is kept in the repository for now and
 no longer built or released. Where this file compares the two, "myous
 for Mac" is that Objective-C app. This file says what the Mac parts are,
@@ -275,8 +275,11 @@ build before a tag does.
 
 Not checked before a tag: signing with the Developer ID and
 notarization of this app (the throwaway keychain stays unlocked for six
-hours, longer than the job). The first release run is the test; if
-notarization rejects the app, Apple's log is in the job's output.
+hours, longer than the job). The release runs are the test: v0.8.0's
+and v0.8.1's passed signing and notarization, and since the v0.8.2
+candidate the disk image is notarized and stapled itself too (the step
+"notarize and staple the disk image"); if notarization rejects the app
+or the image, Apple's log is in the job's output.
 
 ## Differences a Mac user would notice
 
