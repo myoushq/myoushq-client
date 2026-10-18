@@ -281,7 +281,12 @@ repository): the Go client's own `go/internal/spake2`; the `spake2` crate
 the crate lacks, as strict as Go's; the WebAssembly build of `myous-pake`
 (`rust/wasm`, TypeScript); and `spake2` on PyPI (python-spake2, Python),
 which makes the same checks but rejects the identity only in its
-canonical encoding (Go and `myous-pake` reject it in any encoding). For
+canonical encoding (Go and `myous-pake` reject it in any encoding).
+python-spake2 is pure Python on big integers and not constant-time. That
+is accepted rather than replaced: whoever times it gets one sample per
+pairing (a fresh code and scalar each time, a mailbox claimed once and
+gone after 15 minutes, seen through HTTP polling), which at best narrows
+the secret's 30 bits to about 25, still for a single online guess. For
 other languages, use that WebAssembly build rather than porting the curve
 arithmetic: a subtle porting mistake can let whoever watches the mailbox
 guess the code offline.

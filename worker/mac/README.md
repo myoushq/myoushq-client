@@ -1,17 +1,17 @@
 # myous for Mac (Objective-C, superseded)
 
-> **Superseded by `worker/desktop` on macOS.** As of the release that
-> follows this change ("Unreleased" in `docs/changelog.md`), myous for
-> Mac is the Tauri app in
+> **Superseded by `worker/desktop` on macOS.** Since v0.8.0
+> (2026-10-16), myous for Mac is the Tauri app in
 > [`worker/desktop`](../desktop/README.md) (one codebase for Mac, Linux
 > and Windows): the release builds it, and `/download/mac` serves it under
 > the same name, `myous-v<version>.dmg`. This Objective-C app is kept, not
-> built by CI or released any more, until the Tauri app has shipped and
-> been tried; the owner decides when to delete it. `notarize.sh` and
-> `make-dmg.sh` here are still used by the Tauri app's build
-> (`worker/desktop/make-mac.sh` and the release's `mac-app` job), and
-> `compose-image.yml` by the published-image steps in `docs/worker.md`,
-> so they move rather than go when this folder is deleted.
+> built by CI or released any more, while the Tauri app, shipped in
+> v0.8.0, is being tried; the owner decides when to delete it.
+> `notarize.sh` and `make-dmg.sh` here are still used by the Tauri app's
+> build (`worker/desktop/make-mac.sh` and the release's `mac-app` job),
+> and `compose-image.yml` by the published-image steps in
+> `docs/worker.md`, so they move rather than go when this folder is
+> deleted.
 
 `myous.app` is the human's side of a worker on a Mac. It lives in the menu
 bar (the mark on a square in the state's colour), and its window walks

@@ -1,8 +1,11 @@
 # Releasing
 
-Clients are distributed as source only. A release is a git tag signed with
-the myoushq release key; agents verify it before building (see "Or
-build from verified source" in `docs/skill.md`).
+A release is a git tag signed with the myoushq release key. CI publishes
+each tag to PyPI, crates.io, GHCR (the worker image) and a GitHub release
+(the apps, the Python packages and locks), and stages it on npm for the
+owner to promote (step 4). Agents install the exact published version,
+or verify the tag and build ("Install a published package" and "Or build
+from verified source" in `docs/skill.md`).
 
 ## The release key (once)
 
@@ -44,6 +47,7 @@ Current release key: `SHA256:PevPZ8ORUnoGw3hg9Febw7KjXxCUv+sMkAXzw+rjQuk` (ED255
    `worker/desktop/package.json`'s), the install lines in `go/README.md`
    and `rust/README.md`, and add the release to `docs/changelog.md`:
    agents read it when their client tells them about the new release.
+   A release's date there is its tag's day in UTC.
    `scripts/check-versions.sh X.Y.Z` checks every file of this list (the
    changelog aside); a file that starts carrying the version goes into
    both.
@@ -106,12 +110,13 @@ publishes.
   stages the version, and you promote it live on npmjs.com with 2FA
   (staged publishing). Provenance is attached automatically.
 - **crates.io:** trusted publishing can only be configured for a crate
-  that exists, and `myous-pake` has never been published. Once, from a
+  that exists, so `myous-pake` 0.4.1 was published once by hand, from a
   real terminal (`cargo login` is interactive):
-  `cd rust && cargo publish -p myous-pake`. Then, for both `myous-pake`
-  and `myous` (the latter is our 0.0.1 placeholder): crate settings →
-  Trusted Publishing → GitHub: repository owner `myoushq`, name
-  `myoushq-client`, workflow `release.yml`, environment `release`.
+  `cd rust && cargo publish -p myous-pake`. Then both `myous-pake` and
+  `myous` (the latter was our 0.0.1 placeholder) got a trusted publisher:
+  crate settings → Trusted Publishing → GitHub: repository owner
+  `myoushq`, name `myoushq-client`, workflow `release.yml`, environment
+  `release`. CI has published both crates since v0.4.2.
 - **GHCR:** after the first push, set the `worker` package's visibility
   to public (organization → Packages → worker → settings). The
   `GITHUB_TOKEN` can push; no secret needed.
