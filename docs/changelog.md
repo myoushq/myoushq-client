@@ -23,14 +23,14 @@ desktop app with a screen reader and in dark mode, and shorter CI runs.
   up the same way after its own reconnects (nostr-sdk reconnects it
   after a hub restart or a network drop, and the new subscription
   brings nothing stored). A poll still gets one page of 500, as before.
-  The subscription needs a hub that answers `"limit": 0` with new wraps
-  only, as myoushq.com's has since 2026-10-16.
+  Any myous hub answers the `"limit": 0` subscription with new wraps
+  only.
 - **Go's `Poll` fails when no relay answered** (a timeout included)
   instead of reporting nothing new, as Python's has since v0.8.0, and a
   Go listener whose fetch got no answer reconnects instead of going on
   without what was waiting.
 - **A Python listener started while the relay can't be reached waits
-  for it**, then fetches and subscribes, and gives up after 120 seconds
+  for it**, then subscribes and fetches, and gives up after 120 seconds
   without it. v0.8.2's subscribed before it was connected and heard
   nothing once the relay came back.
 - **Writes per batch, not per message** (Python, Go and Rust). The
@@ -39,9 +39,11 @@ desktop app with a screen reader and in dark mode, and shorter CI runs.
   fsync'd pair each; the state is written first, so a crash in between
   loses the batch rather than giving its numbers to the next one (which
   hid one of the two from `inbox`). Nothing is written when nothing is
-  new, apart from the time of the poll. 500
-  messages in Python: 1001 fsyncs became 3; a 200-message backlog in
-  Go: 8-9 s became 0.3 s; 100 messages in Rust: 4.5 s became 0.11 s.
+  new, apart from the time of the poll. 500 messages in Python: 1001
+  fsyncs became 3; a 200-message backlog in Go: 8-9 s became 0.3 s; 100
+  messages in Rust: 4.5 s became 0.11 s. TypeScript writes the next
+  number before the entry too, though it still stores one message at a
+  time.
 - **Each atomic write has a temporary file of its own** (Python and
   Go), not one `name.json.tmp` shared by every process: two processes
   refreshing the hub's cached settings at once failed 10-15% of their

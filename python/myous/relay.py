@@ -218,7 +218,8 @@ class Connection:
                 backlog = await self.fetch_wraps()
                 handed.update(e.id().to_hex() for e in backlog)
                 yield backlog
-            elif (note.is_new_event() and note.event.kind().as_u16() == KIND_GIFT_WRAP
+            # A wrap that brought the news of the reconnect is still one to hand over.
+            if (note.is_new_event() and note.event.kind().as_u16() == KIND_GIFT_WRAP
                     and note.event.id().to_hex() not in handed):
                 yield [note.event]
 

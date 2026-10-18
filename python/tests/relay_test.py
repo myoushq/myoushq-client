@@ -148,6 +148,28 @@ class FetchWraps(unittest.TestCase):
         self.assertEqual(sorted(e.n for e in again), [0, 1, 2, 7])
         self.assertEqual(len(conn.client.queries), 2)
 
+    def test_the_wrap_that_reveals_a_reconnect_is_handed_over_too(self):
+        # The first notification after a reconnect may be a new wrap; one that
+        # the catch-up's page doesn't hold (older than the page) comes on its own.
+        conn = connection(stored(600))
+        old = FakeEvent(9000, 1)   # older than any page
+
+        async def run():
+            stream = conn.stream_wraps()
+            first = await stream.__anext__()
+            conn.client.events.append(old)
+            conn.client.connects += 1
+            await conn.client.live.put(SimpleNamespace(is_shutdown=lambda: False, is_new_event=lambda: True, event=old))
+            again = await asyncio.wait_for(stream.__anext__(), 5)
+            alone = await asyncio.wait_for(stream.__anext__(), 5)
+            await conn.client.live.put(None)
+            return first, again, alone
+
+        first, again, alone = asyncio.run(run())
+        self.assertEqual(len(first), relay.FETCH_PAGE)
+        self.assertEqual(sorted(e.n for e in again), sorted(e.n for e in first))
+        self.assertEqual([e.n for e in alone], [9000])
+
 
 if __name__ == "__main__":
     unittest.main()
