@@ -9,6 +9,7 @@ import sys
 import tempfile
 import time
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 try:
@@ -341,6 +342,40 @@ class RelayDown(unittest.TestCase):
         with self.assertRaises(OSError):
             asyncio.run(agent.listen())
         self.assertEqual(agent.relay_down_since, since)   # since the first time
+
+    def test_a_listener_started_while_the_relay_is_down_waits_for_it(self):
+        # The catch-up fetch fails when no relay is connected: a listener
+        # that starts during an outage waits for the relay (within the
+        # housekeeping's grace) instead of ending at once.
+        st = MemoryStorage()
+        st.key = Keys.generate().secret_key().to_bech32()
+        agent = Agent(st)
+        agent.advance_pairings = agent.check_notices = lambda: None
+
+        async def no_cards():
+            return []
+
+        agent.sync_cards = no_cards
+
+        class Conn:
+            checks, up_when_streamed = 0, None
+
+            async def connected(self):
+                self.checks += 1
+                return self.checks > 2
+
+            async def stream_wraps(self):
+                self.up_when_streamed = await self.connected()
+                yield []
+
+        async def relays():
+            return {}
+
+        conn = Conn()
+        conn.client = SimpleNamespace(relays=relays)
+        asyncio.run(agent._listen_on(conn, tick=1))
+        self.assertTrue(conn.up_when_streamed)
+        self.assertGreater(conn.checks, 3)
 
 
 class RelayUnreachable(unittest.TestCase):

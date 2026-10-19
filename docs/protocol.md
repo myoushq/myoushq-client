@@ -123,10 +123,17 @@ to the listed relays that also appear in `config.relays`; if there are
 none, publish to `config.relays`. Treat `["OK", id, false, reason]` as a
 failure.
 
-**Receiving.** Query `{"kinds":[1059], "#p":[<you>]}` **without `since`**:
-because wrap timestamps are randomized, a `since` filter misses messages.
-The relay holds at most a day of messages, so the full set is small. Then,
-for each wrap:
+**Receiving.** Query `{"kinds":[1059], "#p":[<you>], "limit":500}`
+**without `since`**: because wrap timestamps are randomized, a `since`
+filter misses messages. The relay answers with one page of what it holds
+(at most a day of messages), newest timestamps first. To listen, first
+subscribe to the same filter with `"limit":0`, which the relay answers with
+new wraps only, then make the query for what is stored; a wrap that comes
+both ways is skipped at step 1. Handle the query's wraps as one batch, so
+that step 4 orders them, and then each new wrap as it arrives. Make the
+query again whenever the connection comes back (a library may reconnect by
+itself): the `"limit":0` subscription sent again brings nothing that
+arrived meanwhile. For each wrap:
 
 1. Skip it if its event ID was already handled. Remember handled IDs for at
    least 3 days.

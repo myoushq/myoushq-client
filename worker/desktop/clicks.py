@@ -386,6 +386,25 @@ def main() -> int:
             check(asked == [["Max's Muse wants to run on Codex's worker", body, True, {"home": homes[1], "id": "q1"}]]
                   and shown == homes[1] and page.is_visible("#approval-row"),
                   f"{os_name}: a question's window shows the worker asking, the command as sent {asked} {shown}")
+            # A screen reader is told the question at once; the window came up for it (the preview's notification
+            # has no buttons), so the focus is on it.
+            page.wait_for_function("document.getElementById('announce-now').textContent.startsWith('Question on')")
+            said = page.inner_text("#announce-now")
+            focused = page.evaluate("document.activeElement.id")
+            check("wants to run grep" in said and "Allow or Refuse" in said and focused == "approval-row",
+                  f"{os_name}: the question is announced; the focus on it when the window came up for it {said!r} {focused!r}")
+
+        # The question by keyboard: Tab reaches Allow; once answered the focus goes to its row, and it is said.
+        go("approval")
+        for _ in range(6):
+            page.keyboard.press("Tab")
+            if page.evaluate("document.activeElement.id") == "allow":
+                break
+        page.keyboard.press("Enter")
+        page.wait_for_function("document.getElementById('announce').textContent.startsWith('Allowed')")
+        check(page.is_hidden("#approval-row") and page.evaluate("document.activeElement.dataset.id") == "r5",
+              "Allow by keyboard: the question goes, the focus on its row, \"Allowed\" said")
+        check(page.get_attribute("#approval-left", "aria-hidden") == "true", "the ticking seconds are not read out")
 
         # A Mac's worker in a container: Set up asks where its browser runs, as myous for Mac does.
         def env_of_start() -> dict:

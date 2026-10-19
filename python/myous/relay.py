@@ -42,6 +42,11 @@ KIND_AUTH = 22242
 
 MESSAGE_TTL = datetime.timedelta(days=1)
 TIMEOUT = datetime.timedelta(seconds=15)
+# Gift wraps asked for in one fetch: one page, the newest timestamps
+# first. Paging back with `until` (inclusive; wrap timestamps are random)
+# would download everything stored on every fetch: one page until the hub
+# offers an arrival cursor.
+FETCH_PAGE = 500
 
 
 class RelayError(Exception):
@@ -168,32 +173,55 @@ class Connection:
 
     def _inbox_filter(self) -> Filter:
         # No `since`: gift wraps carry randomized past timestamps (NIP-59), so
-        # we fetch everything the relay still holds and skip seen IDs.
+        # we ask for what the relay holds, whatever its time, and skip seen IDs.
         return Filter().kind(Kind(KIND_GIFT_WRAP)).pubkey(self.keys.public_key())
 
     async def fetch_wraps(self) -> list[Event]:
-        """The gift wraps the relays hold for us. Raises RelayError when no
-        relay is connected: an empty answer then would look like an empty
-        inbox."""
+        """A page of the gift wraps the relays hold for us (FETCH_PAGE).
+        Raises RelayError when no relay is connected: an empty answer then
+        would look like an empty inbox."""
         if not await self.connected():
             raise RelayError("; ".join(f"couldn't reach the relay at {u}" + (
                 f": {self.failures[str(u)]}" if str(u) in self.failures else "") for u in self.relays))
-        target = ReqTarget.manual({u: [self._inbox_filter().limit(500)] for u in self.relays})
+        target = ReqTarget.manual({u: [self._inbox_filter().limit(FETCH_PAGE)] for u in self.relays})
         return await self.client.fetch_events(target, TIMEOUT)
 
-    async def stream_wraps(self) -> AsyncIterator[Event]:
-        """Yield gift wraps as they arrive. Stored ones come first."""
-        target = ReqTarget.manual({u: [self._inbox_filter()] for u in self.relays})
-        # Listen before subscribing: stored wraps come back at once and would
-        # otherwise be missed.
+    async def _connects(self) -> int:
+        """How many times the relays have connected (nostr-sdk reconnects by itself)."""
+        return sum(r.stats().success() for r in (await self.client.relays()).values())
+
+    async def stream_wraps(self) -> AsyncIterator[list[Event]]:
+        """Yield gift wraps in batches: first the stored ones fetch_wraps
+        gets (one batch, which handle_wraps puts in the order written),
+        then each new one as it arrives, and those stored again after a
+        reconnect."""
+        # New events only ("limit": 0; the hub answers no stored ones), and
+        # listening before subscribing, so that nothing falls between the
+        # subscription and the fetch of what is stored (a wrap in both is
+        # skipped as seen).
+        target = ReqTarget.manual({u: [self._inbox_filter().limit(0)] for u in self.relays})
         notifications = self.client.notifications()
         await self.client.subscribe(target)
+        connects = await self._connects()
+        backlog = await self.fetch_wraps()
+        yield backlog
+        # What a fetch got comes through the notifications too: once is enough.
+        handed = {e.id().to_hex() for e in backlog}
         while True:
             note = await notifications.next()
             if note is None or note.is_shutdown():
                 return
-            if note.is_new_event() and note.event.kind().as_u16() == KIND_GIFT_WRAP:
-                yield note.event
+            if await self._connects() > connects:
+                # nostr-sdk reconnected and subscribed again, which ("limit": 0)
+                # brings nothing stored: what came meanwhile is fetched, as at the start.
+                connects = await self._connects()
+                backlog = await self.fetch_wraps()
+                handed.update(e.id().to_hex() for e in backlog)
+                yield backlog
+            # A wrap that brought the news of the reconnect is still one to hand over.
+            if (note.is_new_event() and note.event.kind().as_u16() == KIND_GIFT_WRAP
+                    and note.event.id().to_hex() not in handed):
+                yield [note.event]
 
 
 class Unwrapped:

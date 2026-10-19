@@ -446,7 +446,7 @@ class Agent:
         the history. Another process (a watcher) may store it first; the
         history is checked on every tick as well as on arrival. `conn` is
         the connection the request went out on: the wait starts there (one
-        connection per request; the subscription's replay of the inbox
+        connection per request; the listener's catch-up fetch of the inbox
         covers a reply that arrived in between), and a fresh one takes
         over if it drops. `expires`: when the request's ttl runs out, for
         the TimeoutError to say whether the worker may still run it.
@@ -554,9 +554,15 @@ class Agent:
 
             task = asyncio.ensure_future(housekeeping())
             try:
-                async for wrap in conn.stream_wraps():
+                # A relay that is down at the start gets the grace above too,
+                # where the catch-up fetch in stream_wraps would fail at once.
+                while not await conn.connected():
+                    if task.done():
+                        task.result()
+                    await asyncio.sleep(1)
+                async for wraps in conn.stream_wraps():
                     with self.st.lock():
-                        inbox.handle_wraps(self.st, self.keys, [wrap])
+                        inbox.handle_wraps(self.st, self.keys, wraps)
                     await deliveries.deliver()
                     if task.done():
                         task.result()

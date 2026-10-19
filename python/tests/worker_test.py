@@ -143,17 +143,41 @@ class WorkerTest(WorkerFixture):
         self.assertIn("[myous: killed after 1 second]", r["stderr"])
         self.assertLess(time.time() - started, 10)
 
-    def test_timeout_does_not_wait_for_an_escaped_grandchild(self):
+    @unittest.skipIf(processes.WINDOWS, "os.setsid")
+    def test_an_escaped_grandchild_does_not_hold_up_the_answer(self):
         # A daemon that leaves the process group and keeps our output open
-        # must not hang the worker: the shell is reaped, what was written stays.
-        cmd = f"{sys.executable} -c 'import os,time,sys; os.setsid(); print(\"started\", flush=True); time.sleep(20)' & wait"
-        started = time.time()
-        self.run_(self.w.handle(message(json.dumps({"myous": "exec", "id": RID, "cmd": cmd, "timeout": 1}))))
-        r = self.replies()[-1]
-        self.assertEqual(r["exit"], -1)
-        self.assertIn("[myous: killed after 1 second]", r["stderr"])
-        self.assertIn("started", r["stdout"])
-        self.assertLess(time.time() - started, 12)
+        # must not hang the worker: the shell is ended, what was written
+        # stays. The command is stopped (commands/stop-<id>, the same kill
+        # as a timeout's) once the daemon says it is running: a 1-second
+        # timeout raced the daemon's start and lost on a busy machine.
+        (self.home / "commands").mkdir(exist_ok=True)
+        ready = Path(self.tmp.name) / "daemon.pid"
+        daemon = ("import os,time; os.setsid(); print(\"started\", flush=True); "
+                  f"open(\"{ready}.tmp\", \"w\").write(str(os.getpid())); os.rename(\"{ready}.tmp\", \"{ready}\"); "
+                  "time.sleep(60)")
+        cmd = f"{sys.executable} -c '{daemon}' & wait"
+
+        async def stop_when_running():
+            while not ready.exists():
+                await asyncio.sleep(0.05)
+            (self.home / "commands" / f"stop-{RID}").touch()
+            return time.time()
+
+        async def both():
+            return await asyncio.gather(
+                self.w.handle(message(json.dumps({"myous": "exec", "id": RID, "cmd": cmd, "timeout": 120}))),
+                stop_when_running())
+
+        try:
+            _, stopped_at = self.run_(both())
+            r = self.replies()[-1]
+            self.assertEqual(r["exit"], -1)
+            self.assertIn("stopped by the owner", r["stderr"])
+            self.assertIn("started", r["stdout"])
+            self.assertLess(time.time() - stopped_at, 10)   # not the daemon's 60 seconds
+        finally:
+            if ready.exists():
+                processes.terminate(int(ready.read_text()))   # it escaped the kill by design
 
     def test_owner_stops_a_running_command(self):
         # The app drops commands/stop-<id>; the worker kills the command and
@@ -482,9 +506,32 @@ class WorkerTest(WorkerFixture):
     def test_request_records_are_pruned(self):
         for i in range(worker.REQUESTS_KEEP + 5):
             self.w.record(f"r{i:04d}", op="exec")
+            self.w.record(f"r{i:04d}", decision="allow")   # an update: nothing new to prune
         kept = sorted(p.name for p in (self.home / "requests").glob("*.json"))
         self.assertEqual(len(kept), worker.REQUESTS_KEEP)
         self.assertNotIn("r0000.json", kept)
+        self.assertEqual(json.loads((self.home / "requests" / "r0204.json").read_text()),
+                         {"id": "r0204", "op": "exec", "decision": "allow"})
+        with mock.patch.object(worker.Path, "glob", side_effect=AssertionError("listed")):
+            self.w.record("r0204", exit=0)   # updates don't list the directory
+
+    def test_output_is_read_only_as_far_as_it_is_kept(self):
+        reads = []
+        real = worker.tempfile.TemporaryFile
+
+        def tracked(*a, **kw):
+            f = real(*a, **kw)
+            read = f.read
+            f.read = lambda n=-1: reads.append(n) or read(n)
+            return f
+
+        with mock.patch.object(worker.tempfile, "TemporaryFile", tracked):
+            r = worker.run_command("head -c 300000 /dev/zero | tr '\\0' x; head -c 50000 /dev/zero | tr '\\0' y >&2",
+                                   self.work, 30)
+        self.assertEqual(sorted(reads), sorted([worker.STDOUT_LIMIT + 1, worker.STDERR_LIMIT + 1]))
+        self.assertTrue(r["truncated"])
+        self.assertEqual(r["stdout"], "x" * worker.STDOUT_LIMIT + f"\n[myous: output cut at {worker.STDOUT_LIMIT} bytes]")
+        self.assertEqual(r["stderr"], "y" * worker.STDERR_LIMIT + f"\n[myous: output cut at {worker.STDERR_LIMIT} bytes]")
 
     def test_windows_says_powershell(self):
         # On Windows the help, the pairing message and a command PowerShell

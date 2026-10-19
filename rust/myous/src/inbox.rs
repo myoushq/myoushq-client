@@ -35,14 +35,24 @@ pub fn save_state(st: &dyn Storage, state: Map<String, Value>) -> Result<()> {
 
 pub fn record(st: &dyn Storage, entry: Value) -> Result<Value> {
     let mut s = state(st)?;
-    let seq = s.get("next_seq").and_then(Value::as_u64).unwrap_or(1);
-    let mut entry = entry;
-    entry["seq"] = json!(seq);
-    entry["at"] = json!(now());
-    st.append_history(&entry)?;
-    s.insert("next_seq".into(), json!(seq + 1));
-    save_state(st, s)?;
-    Ok(entry)
+    Ok(record_all(st, &mut s, vec![entry])?.remove(0))
+}
+
+/// Give entries their seq and time and store them: `state` (with its
+/// other changes) in one write, then the history in one append. A crash
+/// between the two loses the entries rather than reusing their seqs.
+fn record_all(st: &dyn Storage, state: &mut Map<String, Value>, entries: Vec<Value>) -> Result<Vec<Value>> {
+    let first = state.get("next_seq").and_then(Value::as_u64).unwrap_or(1);
+    let at = now();
+    let entries: Vec<Value> = entries.into_iter().zip(first..).map(|(mut e, seq)| {
+        e["seq"] = json!(seq);
+        e["at"] = json!(at);
+        e
+    }).collect();
+    state.insert("next_seq".into(), json!(first + entries.len() as u64));
+    st.put("state", &Value::Object(state.clone()))?;
+    st.append_history_all(&entries)?;
+    Ok(entries)
 }
 
 /// Store messages from approved contacts, drop everything else.
@@ -59,9 +69,12 @@ pub fn handle_wraps(st: &dyn Storage, keys: &Keys, wraps: &[Event]) -> Result<Ve
         seen.insert(id, json!(now));
         fresh.push(wrap);
     }
-    seen.retain(|_, t| now - t.as_u64().unwrap_or(0) < SEEN_RETENTION);
+    let remembered = seen.len();
+    seen.retain(|_, t| now.saturating_sub(t.as_u64().unwrap_or(0)) < SEEN_RETENTION);
+    let seen_changed = !fresh.is_empty() || seen.len() != remembered;
     s.insert("seen".into(), Value::Object(seen));
-    save_state(st, s)?;
+    // Saved with the new entries' seqs, below: one state write per batch,
+    // none when every wrap was handled before (the common poll).
 
     // Wrap timestamps are randomized, so put messages in the order they were written.
     let mut messages: Vec<relay::Unwrapped> = fresh.iter().filter_map(|w| relay::unwrap(keys, w)).collect();
@@ -73,17 +86,21 @@ pub fn handle_wraps(st: &dyn Storage, keys: &Keys, wraps: &[Event]) -> Result<Ve
     let blob_api = st.get("hub")?.map(|c| crate::hub::blob_api(&c, c["url"].as_str().unwrap_or_default())).unwrap_or_default();
     let mut changed = false;
     let mut stored = vec![];
+    // Loaded once: a card received below changes a contact's card, never
+    // its status, alias or npub.
+    let known = contacts::load(st)?;
+    let approved = |sender: &str| known.get(sender).filter(|c| c.status == contacts::APPROVED).cloned();
     for m in messages {
         let sender = m.sender.to_hex();
         // Not paired, or blocked: drop silently.
-        let Some(contact) = contacts::approved(st, &sender)? else { continue };
+        let Some(contact) = approved(&sender) else { continue };
         if m.kind == crate::files::KIND_FILE {
             if let Some(entry) = file_entry(&m, &blob_api) {
-                stored.push(record(st, json!({
+                stored.push(json!({
                     "type": "file", "direction": "in", "peer": contact.npub, "alias": contact.alias,
                     "sent_at": m.sent_at, "name": entry.name, "mime": entry.mime, "size": entry.size,
                     "x": entry.x, "ox": entry.ox, "url": entry.url, "key": entry.key, "nonce": entry.nonce, "w": entry.w,
-                }))?);
+                }));
             }
             continue;
         }
@@ -97,7 +114,7 @@ pub fn handle_wraps(st: &dyn Storage, keys: &Keys, wraps: &[Event]) -> Result<Ve
             for (k, v) in fields {
                 entry[k] = v;
             }
-            stored.push(record(st, entry)?);
+            stored.push(entry);
             continue;
         }
         let (text, sent_at) = match &m.part {
@@ -113,26 +130,27 @@ pub fn handle_wraps(st: &dyn Storage, keys: &Keys, wraps: &[Event]) -> Result<Ve
         // A card is stored on the contact and noted; anything else is a message.
         if let Some((name, about)) = contacts::parse_card(&text) {
             let (_, line) = contacts::receive_card(st, &sender, &name, &about, now)?;
-            stored.push(record(st, json!({
+            stored.push(json!({
                 "type": "card", "direction": "in", "peer": contact.npub, "alias": contact.alias,
                 "name": name, "about": about, "text": line, "sent_at": sent_at,
-            }))?);
+            }));
             continue;
         }
-        stored.push(record(st, json!({
+        stored.push(json!({
             "type": "message", "direction": "in", "peer": contact.npub,
             "alias": contact.alias, "text": text, "sent_at": sent_at,
-        }))?);
+        }));
     }
     for (sender, text, sent_at) in parts::expire(&mut buf, now) {
         changed = true;
-        if let Some(contact) = contacts::approved(st, &sender)? {
-            stored.push(record(st, json!({
+        if let Some(contact) = approved(&sender) {
+            stored.push(json!({
                 "type": "message", "direction": "in", "peer": contact.npub,
                 "alias": contact.alias, "text": text, "sent_at": sent_at, "incomplete": true,
-            }))?);
+            }));
         }
     }
+    let stored = if seen_changed || !stored.is_empty() { record_all(st, &mut s, stored)? } else { stored };
     if changed {
         st.put("partials", &serde_json::to_value(&buf)?)?;
     }
@@ -342,6 +360,37 @@ mod tests {
             assert_eq!(e["type"], "message", "{id}");
         }
         assert!(unread(&st, false).unwrap().iter().all(|e| e["alias"] == "peer"), "nothing shows as family");
+    }
+
+    #[test]
+    fn a_batch_gets_consecutive_seqs_and_one_state_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let st = FileStorage::new(Some(dir.path().to_path_buf())).unwrap();
+        let (me, peer, stranger) = (Keys::generate(), Keys::generate(), Keys::generate());
+        contacts::add(&st, &peer.public_key().to_hex(), "peer").unwrap();
+        let batch = |texts: &[&str]| -> Vec<Event> { texts.iter().map(|t| wrap(&peer, &me, t)).collect() };
+        let mut wraps = batch(&["one", "two", "three"]);
+        wraps.push(wrap(&stranger, &me, "not a contact"));
+        let got = handle_wraps(&st, &me, &wraps).unwrap();
+        assert_eq!(got.iter().map(|e| e["seq"].as_u64().unwrap()).collect::<Vec<_>>(), [1, 2, 3]);
+        // The same wraps again: already seen.
+        assert!(handle_wraps(&st, &me, &wraps).unwrap().is_empty());
+        assert_eq!(record(&st, json!({"type": "message", "direction": "out", "text": "x"})).unwrap()["seq"], 4);
+        let got = handle_wraps(&st, &me, &batch(&["four", "five"])).unwrap();
+        assert_eq!(got.iter().map(|e| e["seq"].as_u64().unwrap()).collect::<Vec<_>>(), [5, 6]);
+        let history = st.read_history().unwrap();
+        assert_eq!(history.iter().map(|e| e["seq"].as_u64().unwrap()).collect::<Vec<_>>(), [1, 2, 3, 4, 5, 6]);
+        assert_eq!(history.iter().filter(|e| e["direction"] == "in").map(|e| e["text"].as_str().unwrap()).collect::<Vec<_>>(),
+                   ["one", "two", "three", "four", "five"]);
+        let s = state(&st).unwrap();
+        assert_eq!(s["next_seq"], 7);
+        assert_eq!(s["seen"].as_object().unwrap().len(), 6, "every wrap is remembered, the stranger's too");
+        // Nothing new: nothing written.
+        let modified = || std::fs::metadata(st.path("state.json")).unwrap().modified().unwrap();
+        let before = modified();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        assert!(handle_wraps(&st, &me, &wraps).unwrap().is_empty());
+        assert_eq!((st.read_history().unwrap().len(), modified()), (6, before));
     }
 
     #[test]

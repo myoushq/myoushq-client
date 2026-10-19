@@ -322,21 +322,35 @@ func jitteredNow() nostr.Timestamp {
 }
 
 // No `since`: gift wraps carry randomized past timestamps (NIP-59), so we
-// fetch everything the relay still holds and skip seen IDs.
+// ask for what the relay holds, whatever its time, and skip seen IDs.
 func (c *connection) inboxFilter() nostr.Filter {
 	return nostr.Filter{Kinds: []int{kindGiftWrap}, Tags: nostr.TagMap{"p": {c.pk}}}
 }
 
+// wrapPage is how many gift wraps a fetch asks for: one page, the newest
+// timestamps first. Paging back with Until (inclusive; wrap timestamps are
+// random) would download everything stored on every fetch: one page until
+// the hub offers an arrival cursor.
+const wrapPage = 500
+
+// fetchWraps gets a page of the gift wraps the relays hold for us. It is
+// an error when no relay answered: Listen would otherwise go on without
+// what is waiting, and Poll report nothing new.
 func (c *connection) fetchWraps(ctx context.Context) ([]*nostr.Event, error) {
 	f := c.inboxFilter()
-	f.Limit = 500
+	f.Limit = wrapPage
 	seen := map[string]bool{}
 	var all []*nostr.Event
+	var failed []string
 	for _, r := range c.relays {
 		qctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 		events, err := r.QuerySync(qctx, f)
+		if err == nil && qctx.Err() != nil {
+			err = qctx.Err() // QuerySync ends quietly when its time is up
+		}
 		cancel()
 		if err != nil {
+			failed = append(failed, fmt.Sprintf("%s: %v", r.URL, err))
 			continue
 		}
 		for _, e := range events {
@@ -346,32 +360,81 @@ func (c *connection) fetchWraps(ctx context.Context) ([]*nostr.Event, error) {
 			}
 		}
 	}
+	if len(failed) == len(c.relays) {
+		return nil, fmt.Errorf("could not fetch messages (%s)", strings.Join(failed, "; "))
+	}
 	return all, nil
 }
 
-// streamWraps delivers gift wraps as they arrive (stored ones first) until
-// ctx ends or every relay connection drops.
-func (c *connection) streamWraps(ctx context.Context, out chan<- *nostr.Event) error {
+// storedWait is how long streamWraps waits for a relay to say it has sent
+// everything it holds (EOSE) before it hands over what it has and goes on
+// with each wrap as it arrives.
+const storedWait = 10 * time.Second
+
+// streamWraps delivers new gift wraps as they arrive, until ctx ends or
+// every relay connection drops; ready is closed once every relay has the
+// subscription. It asks for new wraps only ("limit": 0): what the relay
+// holds comes from fetchWraps. A relay that sends stored wraps anyway has
+// them handed over as one batch at its EOSE (so handleWraps puts them in
+// the order they were written, not the random one of the wraps'
+// timestamps).
+func (c *connection) streamWraps(ctx context.Context, out chan<- []*nostr.Event, ready chan<- struct{}) error {
 	done := make(chan struct{}, len(c.relays))
+	live := c.inboxFilter()
+	live.LimitZero = true
 	for _, r := range c.relays {
-		sub, err := r.Subscribe(ctx, nostr.Filters{c.inboxFilter()})
+		sub, err := r.Subscribe(ctx, nostr.Filters{live})
 		if err != nil {
 			return err
 		}
 		go func(r *nostr.Relay, sub *nostr.Subscription) {
 			defer func() { done <- struct{}{} }()
+			send := func(batch []*nostr.Event) bool {
+				if len(batch) == 0 {
+					return true
+				}
+				select {
+				case out <- batch:
+					return true
+				case <-ctx.Done():
+					return false
+				}
+			}
+			var stored []*nostr.Event // until EOSE; nil after
+			live := false
+			goLive := func() bool {
+				if live {
+					return true
+				}
+				live = true
+				batch := stored
+				stored = nil
+				return send(batch)
+			}
+			storedEnd := time.NewTimer(storedWait)
+			defer storedEnd.Stop()
 			for {
 				select {
 				case e, ok := <-sub.Events:
 					if !ok {
+						goLive()
 						return
 					}
-					select {
-					case out <- e:
-					case <-ctx.Done():
+					if !live {
+						stored = append(stored, e)
+					} else if !send([]*nostr.Event{e}) {
+						return
+					}
+				case <-sub.EndOfStoredEvents:
+					if !goLive() {
+						return
+					}
+				case <-storedEnd.C:
+					if !goLive() {
 						return
 					}
 				case <-r.Context().Done():
+					goLive()
 					return
 				case <-ctx.Done():
 					return
@@ -379,6 +442,7 @@ func (c *connection) streamWraps(ctx context.Context, out chan<- *nostr.Event) e
 			}
 		}(r, sub)
 	}
+	close(ready)
 	for range c.relays {
 		select {
 		case <-done:

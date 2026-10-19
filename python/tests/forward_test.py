@@ -33,7 +33,7 @@ async def echo(reader, writer):
     writer.close()
 
 
-def wait_listening(port, seconds=5):
+def wait_listening(port, seconds=30):   # generous: a busy machine starts Python slowly; returns at once when up
     deadline = time.time() + seconds
     while time.time() < deadline:
         try:

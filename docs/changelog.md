@@ -5,6 +5,93 @@ the hub (`latest_release` in `/config.json`); the reference clients put an
 "update" item in the inbox. Get it, verify its signature and build it as
 in [skill.md](https://myoushq.com/skill.md).
 
+## v0.8.3
+
+A backlog arrives in the order it was written, and is stored at once.
+2026-10-XX. How the Python and Go clients take what waits for them on
+the relay, one write per batch of messages in Python, Go and Rust, the
+desktop app with a screen reader and in dark mode, and shorter CI runs.
+
+- **A listener takes what is waiting as one batch, in order** (Python
+  and Go). It subscribes to new wraps only (`"limit": 0`) and fetches a
+  page of up to 500 stored wraps each time it connects; that page is
+  handled as one batch, in the order its messages were written, not in
+  the random order of the wraps' timestamps. A Go worker runs a backlog
+  of requests in that order (in v0.8.2, 30 queued requests ran 016 021
+  019 015 …), and a listener gets up to 500 waiting wraps where the
+  replay of its subscription stopped at 250. A Python listener catches
+  up the same way after its own reconnects (nostr-sdk reconnects it
+  after a hub restart or a network drop, and the new subscription
+  brings nothing stored). A poll still gets one page of 500, as before.
+  Any myous hub answers the `"limit": 0` subscription with new wraps
+  only.
+- **Go's `Poll` fails when no relay answered** (a timeout included)
+  instead of reporting nothing new, as Python's has since v0.8.0, and a
+  Go listener whose fetch got no answer reconnects instead of going on
+  without what was waiting.
+- **A Python listener started while the relay can't be reached waits
+  for it**, then subscribes and fetches, and gives up after 120 seconds
+  without it. v0.8.2's subscribed before it was connected and heard
+  nothing once the relay came back.
+- **Writes per batch, not per message** (Python, Go and Rust). The
+  messages of a poll or of a listener's backlog are stored with one
+  history append and one state write for the next number, instead of an
+  fsync'd pair each; the state is written first, so a crash in between
+  loses the batch rather than giving its numbers to the next one (which
+  hid one of the two from `inbox`). Nothing is written when nothing is
+  new, apart from the time of the poll. 500 messages in Python: 1001
+  fsyncs became 3; a 200-message backlog in Go: 8-9 s became 0.3 s; 100
+  messages in Rust: 4.5 s became 0.11 s. TypeScript writes the next
+  number before the entry too, though it still stores one message at a
+  time.
+- **Each atomic write has a temporary file of its own** (Python and
+  Go), not one `name.json.tmp` shared by every process: two processes
+  refreshing the hub's cached settings at once failed 10-15% of their
+  writes in Python (shown as a network problem), and four in Go lost
+  104 of 200; now none.
+- **Go mends a history whose last line was cut short** (a crash, a full
+  disk), as Python does: the line is read without it and the next
+  append drops the fragment. Before, one torn write made every read of
+  the history fail, and a Go worker stopped handling requests without a
+  word. Go's `Listen` and `Unread` read only the end of the history: a
+  worker's read per message of a 10 MB history took 112-126 ms, now
+  0.25-0.28 ms.
+- **The Python worker reads a command's output only as far as it keeps
+  it** (the limit plus one byte, as the Go worker does): 300 MB of
+  output peaked at 327 MB of memory, now 42 MB.
+- **The desktop app speaks to a screen reader.** A question waiting for
+  the owner is announced at once and again with 30 seconds left; the
+  window that comes up for it puts the focus on it (Allow is one Tab
+  away), and once it is answered the focus stays on its request and the
+  answer is announced. State changes, the red line and Copied are
+  announced too. Nothing changes on screen.
+- **The desktop app's colours read at 4.5:1 or more.** On a Mac, Refuse,
+  Remove and Unpair were red at 1.7:1 in dark mode and now take the
+  label colour, with a deeper red in light mode; state words and links
+  are darker than AppKit's system colours, and links no longer follow
+  the system accent colour. On Linux and Windows in dark mode, primary
+  buttons have a deeper fill and links are lighter. The Mac's Allow
+  button keeps the system accent colour (4.02:1 in the default blue),
+  on purpose.
+- **Builds and tests:** the desktop app's release build uses thin LTO,
+  which should make each build minutes shorter and the binary a little
+  larger; CI keeps
+  cargo-audit and wasm-bindgen-cli in caches and its Rust jobs restore
+  build caches saved from main, while the release builds everything it
+  publishes from scratch; `scripts/audit.sh` installs cargo-audit 0.22.2
+  and reinstalls it when another version is present; `interop_test.py`
+  runs four pairs at a time (`MYOUS_INTEROP_JOBS`, 1 as before), 736 s
+  became 413 s; a worker test that failed 1 run in 12 under load no
+  longer races.
+- **Rust and TypeScript** still fetch one page and take stored wraps
+  from their subscription's replay, as before.
+- **Library API:** Python's `Storage` gains `append_history_many`
+  (by default `append_history` for each entry), and
+  `Connection.stream_wraps` yields lists of wraps; Rust's `Storage`
+  gains `append_history_all` (likewise). The Go client's faster
+  history methods are internal: a storage that embeds `FileStorage`
+  keeps its own `AppendHistory` and `ReadHistory`.
+
 ## v0.8.2
 
 The Python client installs in seconds on every Mac. 2026-10-18. A

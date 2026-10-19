@@ -11,6 +11,10 @@ on:
 permissions:
   contents: read
 
+env:
+  # The wasm-bindgen CLI matches rust/wasm/Cargo.toml's wasm-bindgen (=).
+  WASM_BINDGEN_VERSION: "0.2.129"
+
 jobs:
   python:
     runs-on: ubuntu-24.04
@@ -99,6 +103,14 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+      # Dependencies' build output from main's last run (rust-cache cleans out
+      # the workspace's own crates). Saved from main only: pull requests restore
+      # it but don't fill the repository's 10 GB with entries of their own.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: rust
+          shared-key: rust
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cd rust && cargo test --locked -p myous-pake -p myous
   typescript:
     runs-on: ubuntu-24.04
@@ -106,10 +118,22 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
         with: { targets: wasm32-unknown-unknown }
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: rust
+          shared-key: wasm
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with: { node-version: "22" }
+      # wasm-bindgen-cli from a cache keyed on its version: cargo install
+      # compiles it for about 100 s otherwise.
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: ~/.cargo/bin/wasm-bindgen
+          key: wasm-bindgen-${{ runner.os }}-${{ env.WASM_BINDGEN_VERSION }}
       - run: |
-          cargo install --locked wasm-bindgen-cli --version 0.2.129
+          wasm-bindgen --version 2>/dev/null | grep -qx "wasm-bindgen $WASM_BINDGEN_VERSION" \
+            || cargo install --locked --force wasm-bindgen-cli --version "$WASM_BINDGEN_VERSION"
           sh rust/wasm/build.sh
           cd typescript && npm ci && npm run build && npm test
   desktop-app-linux:
@@ -125,6 +149,11 @@ jobs:
         with: { node-version: "22" }
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
         with: { components: rustfmt }
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: worker/desktop/src-tauri
+          shared-key: desktop
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with: { python-version: "3.12" }
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
@@ -178,6 +207,11 @@ jobs:
         with: { node-version: "22" }
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
         with: { components: "clippy, rustfmt" }
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: worker/desktop/src-tauri
+          shared-key: desktop
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with: { go-version-file: go/go.mod, cache-dependency-path: go/go.sum }
       - run: sh worker/build-worker.sh x86_64-pc-windows-msvc worker/desktop/src-tauri/binaries "$(node -p 'require("./worker/desktop/package.json").version')"
@@ -200,6 +234,11 @@ jobs:
         with: { node-version: "22" }
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
         with: { targets: "aarch64-apple-darwin,x86_64-apple-darwin", components: "clippy, rustfmt" }
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: worker/desktop/src-tauri
+          shared-key: desktop
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with: { go-version-file: go/go.mod, cache-dependency-path: go/go.sum }
       - run: sh worker/build-worker.sh host worker/desktop/src-tauri/binaries "$(node -p 'require("./worker/desktop/package.json").version')"
@@ -218,5 +257,18 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with: { node-version: "22" }
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+      # cargo-audit from a cache keyed on scripts/audit.sh (which pins its
+      # version): cargo install compiles it for nearly 3 minutes otherwise.
+      # Restore and save are separate so a failing audit still keeps it.
+      - id: cargo-audit
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: ~/.cargo/bin/cargo-audit
+          key: cargo-audit-${{ runner.os }}-${{ hashFiles('scripts/audit.sh') }}
       - run: cd typescript && npm ci
       - run: CARGO=cargo sh scripts/audit.sh
+      - if: always() && steps.cargo-audit.outputs.cache-hit != 'true'
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: ~/.cargo/bin/cargo-audit
+          key: cargo-audit-${{ runner.os }}-${{ hashFiles('scripts/audit.sh') }}
