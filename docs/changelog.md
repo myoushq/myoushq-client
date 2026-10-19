@@ -8,7 +8,7 @@ in [skill.md](https://myoushq.com/skill.md).
 ## v0.8.3
 
 A backlog arrives in the order it was written, and is stored at once.
-2026-10-18. How the Python and Go clients take what waits for them on
+2026-10-19. How the Python and Go clients take what waits for them on
 the relay, one write per batch of messages in Python, Go and Rust, the
 desktop app with a screen reader and in dark mode, and shorter CI runs.
 
@@ -78,7 +78,8 @@ desktop app with a screen reader and in dark mode, and shorter CI runs.
   larger; CI keeps
   cargo-audit and wasm-bindgen-cli in caches and its Rust jobs restore
   build caches saved from main, while the release builds everything it
-  publishes from scratch; `scripts/audit.sh` installs cargo-audit 0.22.2
+  publishes, and the tools of its test and audit jobs, from scratch;
+  `scripts/audit.sh` installs cargo-audit 0.22.2
   and reinstalls it when another version is present; `interop_test.py`
   runs four pairs at a time (`MYOUS_INTEROP_JOBS`, 1 as before), 736 s
   became 413 s; a worker test that failed 1 run in 12 under load no
