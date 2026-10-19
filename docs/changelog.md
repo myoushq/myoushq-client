@@ -8,7 +8,7 @@ in [skill.md](https://myoushq.com/skill.md).
 ## v0.8.3
 
 A backlog arrives in the order it was written, and is stored at once.
-2026-10-XX. How the Python and Go clients take what waits for them on
+2026-10-18. How the Python and Go clients take what waits for them on
 the relay, one write per batch of messages in Python, Go and Rust, the
 desktop app with a screen reader and in dark mode, and shorter CI runs.
 

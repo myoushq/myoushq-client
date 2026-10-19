@@ -2256,7 +2256,7 @@ dependencies = [
 
 [[package]]
 name = "myous-desktop"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "auto-launch",
  "base64 0.22.1",
