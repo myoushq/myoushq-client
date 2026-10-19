@@ -89,7 +89,7 @@ jobs:
       # not through the go command, whose download flaked) and sets
       # GOTOOLCHAIN=local for the rest of the job; every job here does so.
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
-        with: { go-version-file: go/go.mod, cache-dependency-path: go/go.sum }
+        with: { go-version-file: go/go.mod, cache: false }  # no module cache from another run
       - run: cd go && go vet ./... && go test ./...
 
   test-rust:
@@ -130,7 +130,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with: { ref: "refs/tags/${{ env.TAG }}" }
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
-        with: { go-version-file: go/go.mod, cache-dependency-path: go/go.sum }
+        with: { go-version-file: go/go.mod, cache: false }  # no module cache from another run
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with: { python-version: "3.12" }
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -316,7 +316,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
         with: { targets: "aarch64-apple-darwin,x86_64-apple-darwin" }
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
-        with: { go-version-file: go/go.mod, cache-dependency-path: go/go.sum }
+        with: { go-version-file: go/go.mod, cache: false }  # no module cache from another run
       - name: test on this Mac
         run: |
           set -eu
@@ -427,7 +427,7 @@ jobs:
         with: { node-version: "22" }
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
-        with: { go-version-file: go/go.mod, cache-dependency-path: go/go.sum }
+        with: { go-version-file: go/go.mod, cache: false }  # no module cache from another run
       - name: system libraries for Tauri
         run: |
           sudo apt-get update -qq
@@ -462,7 +462,7 @@ jobs:
         with: { node-version: "22" }
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
-        with: { go-version-file: go/go.mod, cache-dependency-path: go/go.sum }
+        with: { go-version-file: go/go.mod, cache: false }  # no module cache from another run
       - name: build the installer (unsigned; SHA256SUMS on the release vouches for it)
         shell: bash
         run: |

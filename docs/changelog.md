@@ -78,7 +78,9 @@ desktop app with a screen reader and in dark mode, and shorter CI runs.
   larger; CI keeps
   cargo-audit and wasm-bindgen-cli in caches and its Rust jobs restore
   build caches saved from main, while the release builds everything it
-  publishes, and the tools of its test and audit jobs, from scratch;
+  publishes, and the tools of its test and audit jobs, from scratch and
+  from freshly downloaded Go modules (its jobs no longer restore the Go
+  module cache either);
   `scripts/audit.sh` installs cargo-audit 0.22.2
   and reinstalls it when another version is present; `interop_test.py`
   runs four pairs at a time (`MYOUS_INTEROP_JOBS`, 1 as before), 736 s
