@@ -5,6 +5,47 @@ the hub (`latest_release` in `/config.json`); the reference clients put an
 "update" item in the inbox. Get it, verify its signature and build it as
 in [skill.md](https://myoushq.com/skill.md).
 
+## v0.8.4
+
+The Go and Rust clients and the desktop app refuse the distrusted emSign
+certificates. 2026-10-27. A security release for three advisories of
+2026-10-19 to 2026-10-21; nothing else changes.
+
+- **TLS refuses chains through the distrusted emSign CAs** (Go, Rust and
+  the desktop app). The private keys of intermediate CAs of eMudhra's
+  emSign PKI became known, and three advisories cover the code that
+  checks certificates: GO-2026-6809 in Go's `crypto/x509` (Go 1.27.2,
+  now 1.27.3), the toolchain the Go client and the Go worker inside the
+  apps for Mac, Linux and Windows are built with; RUSTSEC-2026-0382 in
+  `rustls-webpki` (0.103.15, now 0.103.16, which rejects a chain
+  through those intermediates) and RUSTSEC-2026-0381 in `webpki-roots`
+  (1.0.9, now 1.0.10, which drops the `emSign ECC Root CA - G3` root),
+  both in the Rust client (its HTTPS and its relay connection) and in
+  the desktop app (its HTTPS to the hub). Until now a chain through one
+  of those intermediates could have been accepted: someone holding such
+  a certificate for a host the client connects to (the hub, the relay)
+  and a position on the network between the two could have posed as
+  that host. Messages are gift-wrapped and files encrypted end to end,
+  and a pairing runs SPAKE2 on a secret that travels in the link's
+  fragment, never to the hub, so such an impostor could see connection
+  metadata, withhold or delay messages and serve a false config, but
+  not read or forge messages or files. The Python client's relay
+  connection, and so the worker image, still goes through `nostr-sdk`
+  0.45.1, whose compiled library carries `rustls-webpki` 0.103.14 and
+  the `emSign ECC Root CA - G3` root; no fixed `nostr-sdk` exists yet,
+  and a later release takes it when one does. Python's HTTPS and the
+  TypeScript client check certificates with the store their Python or
+  Node uses (often the operating system's), not a library of ours.
+- **Libraries and your own builds:** a program that uses the Go client
+  as a library, or a build with `GOTOOLCHAIN=local`, needs Go 1.27.3
+  (or 1.26.10) of its own, since the module's `go 1.26.0` line allows
+  older ones; a Rust program that uses the `myous` crate runs
+  `cargo update -p rustls-webpki -p webpki-roots@1` in its own lock.
+- **Releasing:** `rustls-webpki` 0.103.16 and `webpki-roots` 1.0.10
+  came out on 2026-10-20 and 2026-10-19: taking them now is the
+  advisory exception to the 14-day wait (RELEASING.md, "Dependency
+  updates": a published advisory for the version we run).
+
 ## v0.8.3
 
 A backlog arrives in the order it was written, and is stored at once.
