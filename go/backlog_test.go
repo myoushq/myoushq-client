@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -56,6 +57,48 @@ func TestHandleWrapsWritesTheStateOnlyWhenItChanged(t *testing.T) {
 	handleWraps(st, sk, []*nostr.Event{{ID: "aa"}})
 	if s, _ := loadState(st); st.puts["state"] != 2 || len(s.Seen) != 1 {
 		t.Fatalf("%d writes; seen %v", st.puts["state"], s.Seen)
+	}
+}
+
+// Messages wrapped back to back, several within a millisecond, come out
+// of handleWraps in the order written whatever order the relay gives:
+// their (created_at, ms) never tie. Before, two in the same millisecond
+// kept the relay's order, which is random.
+func TestMessagesWrappedWithinAMillisecondKeepTheirOrder(t *testing.T) {
+	fs, err := NewFileStorage(filepath.Join(t.TempDir(), "h"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sk := nostr.GeneratePrivateKey()
+	pk, _ := nostr.GetPublicKey(sk)
+	const n = 300
+	wraps, sender := wrapsFrom(t, pk, n)
+	if _, err := addContact(fs, sender, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	var prev message
+	for i, w := range wraps {
+		m, ok := unwrap(sk, w)
+		if !ok {
+			t.Fatalf("wrap %d doesn't open", i)
+		}
+		if m.sentAt != m.ms/1000 || (i > 0 && m.ms <= prev.ms) {
+			t.Fatalf("wrap %d: created_at %d, ms %d after %d", i, m.sentAt, m.ms, prev.ms)
+		}
+		prev = m
+	}
+	slices.Reverse(wraps) // the opposite order: a tie would come out reversed
+	got, err := handleWraps(fs, sk, wraps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want, texts []string
+	for i, e := range got {
+		want = append(want, fmt.Sprintf("message %03d", i))
+		texts = append(texts, e.Text)
+	}
+	if len(got) != n || strings.Join(texts, "|") != strings.Join(want, "|") {
+		t.Fatalf("%d of %d, %s", len(got), n, firstMismatch(want, texts))
 	}
 }
 
@@ -152,6 +195,16 @@ func BenchmarkHandleWrapsSeen(b *testing.B) {
 	}
 }
 
+// firstMismatch says where got first differs from want, with both values.
+func firstMismatch(want, got []string) string {
+	for i := range min(len(want), len(got)) {
+		if want[i] != got[i] {
+			return fmt.Sprintf("first difference at %d: sent %q, got %q", i, want[i], got[i])
+		}
+	}
+	return fmt.Sprintf("the first %d agree", min(len(want), len(got)))
+}
+
 // More wraps than the hub answers a query or a subscription without a
 // limit (250), fewer than a page (wrapPage): Poll and a listener's
 // catch-up fetch get every one, as one batch in the order written. Before,
@@ -208,7 +261,7 @@ func TestListenAndPollGetAPageOfStoredWraps(t *testing.T) {
 	}
 	t.Logf("poll of %d took %v", len(want), time.Since(polled))
 	if g := texts(got); strings.Join(g, "|") != strings.Join(want, "|") {
-		t.Fatalf("poll: %d of %d (first %v)", len(g), len(want), g[:min(3, len(g))])
+		t.Fatalf("poll: %d of %d, %s", len(g), len(want), firstMismatch(want, g))
 	}
 
 	want = sendN("go-listener", many)
@@ -235,7 +288,7 @@ func TestListenAndPollGetAPageOfStoredWraps(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	if strings.Join(heard, "|") != strings.Join(want, "|") {
-		t.Fatal("listen: out of order")
+		t.Fatalf("listen: out of order, %s", firstMismatch(want, heard))
 	}
 	// A fetch that gets no answer is an error, not an empty inbox.
 	gone, cancelGone := context.WithCancel(ctx)
