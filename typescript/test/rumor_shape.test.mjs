@@ -2,7 +2,9 @@
 // send us one: unwrapping happens before the sender is looked up. A rumor
 // of the wrong shape is dropped like any invalid message; it must not
 // throw, which lost every message fetched with it (the batch is already
-// marked seen) and ended the listener. Offline. Run after `npm run build`.
+// marked seen) and ended the listener. Also the "ms" of the rumors we
+// send: those sent within a millisecond never tie (nextMs). Offline. Run
+// after `npm run build`.
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";

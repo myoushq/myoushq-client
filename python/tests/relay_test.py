@@ -1,6 +1,7 @@
 """Fetching the stored gift wraps, one page, from a relay that answers as
 the hub's store does (newest first, at most a page), and the listener's
-stream: the fetched page as one batch, then what arrives."""
+stream: the fetched page as one batch, then what arrives. Also the "ms"
+of messages sent within a millisecond, which never tie (next_ms)."""
 import asyncio
 import json
 import random
