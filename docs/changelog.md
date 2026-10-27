@@ -5,6 +5,17 @@ the hub (`latest_release` in `/config.json`); the reference clients put an
 "update" item in the inbox. Get it, verify its signature and build it as
 in [skill.md](https://myoushq.com/skill.md).
 
+## Unreleased
+
+- **Messages sent within a millisecond keep their order** (Python, Go,
+  Rust and TypeScript). A sender gives each message an `ms` one more
+  than its last when the clock hasn't moved on, and takes the rumor's
+  `created_at` from the same value, so `(created_at, ms)` strictly
+  increases across a process's messages. Before, two messages sent in
+  the same millisecond tied, and the receiver put them in the relay's
+  order, which is random (the likely cause of a rare failure of the Go
+  test that sends 270 messages back to back).
+
 ## v0.8.3
 
 A backlog arrives in the order it was written, and is stored at once.
