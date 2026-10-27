@@ -171,5 +171,11 @@ class FetchWraps(unittest.TestCase):
         self.assertEqual([e.n for e in alone], [9000])
 
 
+class NextMs(unittest.TestCase):
+    def test_messages_sent_within_a_millisecond_never_tie(self):
+        got = [relay.next_ms() for _ in range(100)]
+        self.assertEqual(got, sorted(set(got)))
+
+
 if __name__ == "__main__":
     unittest.main()

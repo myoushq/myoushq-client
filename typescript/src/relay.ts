@@ -92,9 +92,12 @@ export class Connection {
   private async sendRumor(recipient: string, kind: number, content: string, extraTags: string[][], targets?: Relay[]): Promise<string> {
     targets ??= await this.deliveryTargets(recipient);
     // Nostr timestamps are whole seconds; the encrypted "ms" tag keeps
-    // messages sent within the same second in order.
+    // messages sent within the same second in order. Both come from one
+    // nextMs, so that (created_at, ms) never ties or goes back between our
+    // messages.
+    const ms = nextMs();
     const rumor = createRumor({
-      kind, content, tags: [["p", recipient], ["ms", String(Date.now())], ...extraTags],
+      kind, content, created_at: Math.floor(ms / 1000), tags: [["p", recipient], ["ms", String(ms)], ...extraTags],
     }, this.secretKey);
     const wrap = giftWrap(createSeal(rumor, this.secretKey, recipient), recipient);
     await this.publish(wrap, targets);
@@ -124,6 +127,19 @@ export class Connection {
       }
     });
   }
+}
+
+let lastMs = 0;
+
+/**
+ * The time in milliseconds, or one more than the last one it gave when the
+ * clock hasn't moved on (or went back): two messages sent within a
+ * millisecond would otherwise tie, and a receiver would put them in the
+ * relay's order, which is random.
+ */
+export function nextMs(): number {
+  lastMs = Math.max(Date.now(), lastMs + 1);
+  return lastMs;
 }
 
 /**
