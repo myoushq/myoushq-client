@@ -107,7 +107,12 @@ A message is a NIP-17 private direct message: rumor → seal (NIP-59, kind
 **Rumor** (unsigned): kind `14`, content = the text, author = sender, tags:
 - `["p", <recipient hex>]`
 - `["ms", <sender's Unix time in milliseconds, decimal>]`, for ordering
-  messages written within the same second.
+  messages written within the same second. A sender should keep `ms`
+  strictly increasing within a process (one more than its last value
+  when the clock hasn't passed it, or went back) and set the rumor's
+  `created_at` to floor(`ms` / 1000), so that its own messages never tie;
+  messages from different processes, and from older senders, may still
+  tie and then keep the relay's order.
 
 **Gift wrap** tags:
 - `["p", <recipient hex>]`

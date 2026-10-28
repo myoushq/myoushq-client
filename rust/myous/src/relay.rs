@@ -124,11 +124,15 @@ impl Connection {
             None => self.delivery_targets(recipient).await?,
         };
         // Nostr timestamps are whole seconds; the encrypted "ms" tag keeps
-        // messages sent within the same second in order.
-        let mut tags = vec![Tag::public_key(recipient), Tag::parse(["ms".to_string(), now_ms().to_string()])?];
+        // messages sent within the same second in order. Both come from one
+        // next_ms, so that (created_at, ms) never ties or goes back between
+        // our messages.
+        let ms = next_ms();
+        let mut tags = vec![Tag::public_key(recipient), Tag::parse(["ms".to_string(), ms.to_string()])?];
         tags.extend(extra_tags);
         let rumor = EventBuilder::new(kind, content)
             .tags(tags)
+            .custom_created_at(Timestamp::from_secs(ms / 1000))
             .finalize_unsigned(self.keys.public_key());
         // Expiration from the real time: the wrap's created_at is randomized
         // into the past, and anchoring to it would expire messages early.
@@ -219,8 +223,16 @@ pub fn unwrap(keys: &Keys, wrap: &Event) -> Option<Unwrapped> {
     Some(Unwrapped { sender: gift.sender, kind, text: rumor.content, tags, sent_at, ms, part })
 }
 
-fn now_ms() -> u128 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis()
+/// The time in milliseconds, or one more than the last one it gave when
+/// the clock hasn't moved on (or went back): two messages sent within a
+/// millisecond would otherwise tie, and a receiver would put them in the
+/// relay's order, which is random.
+fn next_ms() -> u64 {
+    static LAST: std::sync::Mutex<u64> = std::sync::Mutex::new(0);
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
+    let mut last = LAST.lock().unwrap();
+    *last = now.max(*last + 1);
+    *last
 }
 
 #[cfg(test)]
@@ -235,5 +247,13 @@ mod tests {
         let err = conn.fetch_wraps().await.unwrap_err().to_string();
         conn.close().await;
         assert_eq!(err, "couldn't reach the relay at ws://127.0.0.1:1");
+    }
+
+    /// Messages sent within a millisecond get different "ms" tags, in the
+    /// order sent: a receiver never sees them tie.
+    #[test]
+    fn next_ms_never_repeats() {
+        let got: Vec<u64> = (0..100).map(|_| next_ms()).collect();
+        assert!(got.windows(2).all(|w| w[0] < w[1]), "not strictly increasing");
     }
 }

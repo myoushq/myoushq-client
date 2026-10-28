@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -274,14 +275,16 @@ func (c *connection) sendFileMessage(ctx context.Context, recipient, url string,
 // derive the expiration from the wrap's randomized (past) timestamp, so
 // messages would expire anywhere from 0 to 24 hours after sending.
 func (c *connection) wrap(recipient string, kind int, text string, extraTags nostr.Tags) (nostr.Event, error) {
+	// Nostr timestamps are whole seconds; "ms" keeps messages sent within
+	// the same second in order. Both come from one nextMs, so that
+	// (created_at, ms) never ties or goes back between our messages.
+	ms := nextMs()
 	rumor := nostr.Event{
 		PubKey:    c.pk,
-		CreatedAt: nostr.Now(),
+		CreatedAt: nostr.Timestamp(ms / 1000),
 		Kind:      kind,
-		// Nostr timestamps are whole seconds; "ms" keeps messages sent within
-		// the same second in order.
-		Tags:    append(nostr.Tags{{"p", recipient}, {"ms", strconv.FormatInt(time.Now().UnixMilli(), 10)}}, extraTags...),
-		Content: text,
+		Tags:      append(nostr.Tags{{"p", recipient}, {"ms", strconv.FormatInt(ms, 10)}}, extraTags...),
+		Content:   text,
 	}
 	rumor.ID = rumor.GetID()
 
@@ -315,6 +318,22 @@ func (c *connection) wrap(recipient string, kind int, text string, extraTags nos
 		Tags:      nostr.Tags{{"p", recipient}, {"expiration", expires}},
 	}
 	return wrap, wrap.Sign(ephemeral)
+}
+
+var (
+	msMu   sync.Mutex
+	lastMs int64 // the "ms" of the last message this process wrapped
+)
+
+// nextMs is the time in milliseconds, or one more than the last one it
+// gave when the clock hasn't moved on (or went back): two messages sent
+// within a millisecond would otherwise tie, and a receiver would put
+// them in the relay's order, which is random.
+func nextMs() int64 {
+	msMu.Lock()
+	defer msMu.Unlock()
+	lastMs = max(time.Now().UnixMilli(), lastMs+1)
+	return lastMs
 }
 
 func jitteredNow() nostr.Timestamp {

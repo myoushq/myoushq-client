@@ -2,7 +2,9 @@
 // send us one: unwrapping happens before the sender is looked up. A rumor
 // of the wrong shape is dropped like any invalid message; it must not
 // throw, which lost every message fetched with it (the batch is already
-// marked seen) and ended the listener. Offline. Run after `npm run build`.
+// marked seen) and ended the listener. Also the "ms" of the rumors we
+// send: those sent within a millisecond never tie (nextMs). Offline. Run
+// after `npm run build`.
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -12,7 +14,7 @@ import { generateSecretKey, getPublicKey } from "nostr-tools/pure";
 import { createSeal, createWrap, wrapEvent } from "nostr-tools/nip59";
 import { Agent } from "../dist/agent.js";
 import * as contacts from "../dist/contacts.js";
-import { KIND_CHAT, unwrap } from "../dist/relay.js";
+import { KIND_CHAT, nextMs, unwrap } from "../dist/relay.js";
 import { FileStorage } from "../dist/storage.js";
 
 let tmp;
@@ -45,4 +47,9 @@ test("rumors of the wrong shape are dropped, and the messages that came with the
   const good = wrapEvent({ kind: KIND_CHAT, content: "the meeting moved to 3pm", tags: [["p", me]], created_at: now }, peerKey, me);
   const stored = await agent.handleWraps([...bad, good]); // private in TypeScript; the lock is irrelevant here
   assert.deepEqual(stored.map((e) => [e.alias, e.text]), [["peer", "the meeting moved to 3pm"]]);
+});
+
+test("messages sent within a millisecond never tie", () => {
+  const got = Array.from({ length: 100 }, () => nextMs());
+  assert.deepEqual(got, [...new Set(got)].sort((a, b) => a - b));
 });

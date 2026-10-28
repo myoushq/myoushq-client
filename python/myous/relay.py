@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import json
+import threading
 import time
 from typing import AsyncIterator, Optional
 
@@ -163,9 +164,13 @@ class Connection:
     async def _send_rumor(self, kind: int, recipient: PublicKey, content: str,
                           extra_tags: list[list[str]] | None, targets: list[RelayUrl] | None) -> str:
         targets = targets or await self.delivery_targets(recipient)
-        tags = [Tag.public_key(recipient), Tag.parse(["ms", str(time.time_ns() // 1_000_000)])]
+        # created_at and "ms" from one next_ms: (created_at, ms) never ties
+        # or goes back between our messages.
+        ms = next_ms()
+        tags = [Tag.public_key(recipient), Tag.parse(["ms", str(ms)])]
         tags += [Tag.parse(t) for t in extra_tags or []]
-        rumor = EventBuilder(Kind(kind), content).tags(tags).finalize_unsigned(self.keys.public_key())
+        rumor = (EventBuilder(Kind(kind), content).tags(tags).custom_created_at(Timestamp.from_secs(ms // 1000))
+                 .finalize_unsigned(self.keys.public_key()))
         expires = Timestamp.from_secs(now() + int(MESSAGE_TTL.total_seconds()))
         wrap = nip59_make_gift_wrap(self.keys, recipient, rumor, None, [Tag.expiration(expires)])
         await self.publish(wrap, targets)
@@ -267,3 +272,18 @@ def unwrap(keys: Keys, wrap: Event) -> Unwrapped | None:
 
 def now() -> int:
     return Timestamp.now().as_secs()
+
+
+_last_ms = 0
+_ms_lock = threading.Lock()
+
+
+def next_ms() -> int:
+    """The time in milliseconds, or one more than the last one it gave
+    when the clock hasn't moved on (or went back): two messages sent
+    within a millisecond would otherwise tie, and a receiver would put
+    them in the relay's order, which is random."""
+    global _last_ms
+    with _ms_lock:
+        _last_ms = max(time.time_ns() // 1_000_000, _last_ms + 1)
+        return _last_ms
