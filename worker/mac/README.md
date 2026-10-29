@@ -243,12 +243,14 @@ requires; the app needs no entitlements), for the worker inside the app
 first and then the app. `notarize.sh` zips the app, submits it with an
 App Store Connect API key, waits, prints Apple's log on rejection, and
 staples the ticket (retrying for up to ten minutes, as the ticket can
-take a while to reach Apple's servers). `make-dmg.sh` makes the image
-with an Applications shortcut, signs it with `--sign`, and appends the
-checksum to `SHA256SUMS` next to it. Given the `.dmg`, `notarize.sh`
-submits the image as it is and staples it the same way; the release
-does that after `make-dmg.sh`, checks the image with
-`xcrun stapler validate` and
+take a while to reach Apple's servers) and validates the staple with
+`xcrun stapler validate` (retrying too, up to five minutes: the
+validation asks the same servers and can lose them, as v0.8.4's first
+run did). `make-dmg.sh` makes the image with an Applications shortcut,
+signs it with `--sign`, and appends the checksum to `SHA256SUMS` next
+to it. Given the `.dmg`, `notarize.sh` submits the image as it is and
+staples and validates it the same way; the release does that after
+`make-dmg.sh`, checks the image with
 `spctl -a -t open --context context:primary-signature`, and writes
 `SHA256SUMS` only then, as stapling changes the image's bytes.
 
