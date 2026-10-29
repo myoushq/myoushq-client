@@ -399,10 +399,11 @@ jobs:
           set -eu
           # The image gets its own ticket: with only the app's, the stapler
           # finds none on the image and Gatekeeper rejects the image itself.
+          # notarize.sh validates the staple (with retries); spctl is
+          # Gatekeeper's own check of the image.
           echo "$NOTARY_KEY" | base64 --decode > /tmp/notary.p8
           worker/mac/notarize.sh "out/myous-$TAG.dmg" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" --key /tmp/notary.p8
           rm /tmp/notary.p8
-          xcrun stapler validate "out/myous-$TAG.dmg"
           spctl -a -t open --context context:primary-signature -vv "out/myous-$TAG.dmg"
       - name: checksum (after stapling, which changes the image's bytes)
         run: |

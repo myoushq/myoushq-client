@@ -56,5 +56,14 @@ until xcrun stapler staple "$APP"; do
 	echo "stapling failed (attempt $n), retrying in 30 s" >&2
 	sleep 30
 done
-xcrun stapler validate "$APP"
+# Validate the stapled ticket. The validation talks to the same service
+# and can lose the connection too (error 68 on v0.8.4's release run,
+# 2026-10-28, after a successful staple), so try up to ten times.
+n=0
+until xcrun stapler validate "$APP"; do
+	n=$((n + 1))
+	[ "$n" -lt 10 ] || { echo "validation failed $n times" >&2; exit 1; }
+	echo "validation failed (attempt $n), retrying in 30 s" >&2
+	sleep 30
+done
 echo "notarized and stapled: $APP (submission $ID)"

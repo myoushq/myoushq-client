@@ -15,6 +15,10 @@ in [skill.md](https://myoushq.com/skill.md).
   the same millisecond tied, and the receiver put them in the relay's
   order, which is random (the likely cause of a rare failure of the Go
   test that sends 270 messages back to back).
+- **Releasing:** the Mac job's final check of the stapled disk image
+  retries when Apple's ticket service drops the connection (Error 68),
+  as the stapling already did; v0.8.4's first run failed on that check
+  after a successful staple.
 
 ## v0.8.4
 
