@@ -5,7 +5,14 @@ the hub (`latest_release` in `/config.json`); the reference clients put an
 "update" item in the inbox. Get it, verify its signature and build it as
 in [skill.md](https://myoushq.com/skill.md).
 
-## Unreleased
+## v0.8.5
+
+The release with the apps that v0.8.4 lacked. 2026-10-30. v0.8.4's
+apps and its GitHub release never appeared: its release run's Mac job
+failed twice on a check of the stapled disk image, after the stapling
+itself had succeeded. v0.8.4's packages on PyPI, crates.io and npm and
+its worker image are the same code as its tag and stay; v0.8.5 is
+v0.8.4 plus the two items below.
 
 - **Messages sent within a millisecond keep their order** (Python, Go,
   Rust and TypeScript). A sender gives each message an `ms` one more
@@ -15,10 +22,13 @@ in [skill.md](https://myoushq.com/skill.md).
   the same millisecond tied, and the receiver put them in the relay's
   order, which is random (the likely cause of a rare failure of the Go
   test that sends 270 messages back to back).
-- **Releasing:** the Mac job's final check of the stapled disk image
-  retries when Apple's ticket service drops the connection (Error 68),
-  as the stapling already did; v0.8.4's first run failed on that check
-  after a successful staple.
+- **Releasing:** the fix this release is for. The Mac job's check of
+  the stapled disk image retries when Apple's ticket service drops the
+  connection (Error 68), as the stapling already did: `notarize.sh`
+  validates the staple up to ten times, 30 s apart, and the workflow no
+  longer validates the image a second time on its own, the check
+  v0.8.4's run failed on twice. `spctl`, Gatekeeper's check of the
+  image, stays.
 
 ## v0.8.4
 
