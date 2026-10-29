@@ -37,6 +37,7 @@ jobs:
           else
             ref=main
           fi
+          echo "auditing $ref at $(git rev-parse --short HEAD)"
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
       # setup-go 6 installs the Go of go.mod's toolchain line (from GitHub,
       # not through the go command, whose download flaked) and sets

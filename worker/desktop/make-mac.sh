@@ -131,10 +131,10 @@ if [ "$DMG" = 1 ]; then
 		../mac/make-dmg.sh "$APP" "build/myous-$VERSION.dmg"
 	fi
 	if [ -n "$KEY_ID" ]; then
-		# The image gets its own ticket, as in release.yml; stapling changes
-		# its bytes, so its line in SHA256SUMS is written again.
+		# The image gets its own ticket, as in release.yml (notarize.sh
+		# validates the staple, with retries); stapling changes its bytes,
+		# so its line in SHA256SUMS is written again.
 		../mac/notarize.sh "build/myous-$VERSION.dmg" --key-id "$KEY_ID" --issuer "$ISSUER" --key "$KEY"
-		xcrun stapler validate "build/myous-$VERSION.dmg"
 		awk -v f="myous-$VERSION.dmg" '$2 != f' build/SHA256SUMS > build/SHA256SUMS.new
 		(cd build && shasum -a 256 "myous-$VERSION.dmg") >> build/SHA256SUMS.new
 		mv build/SHA256SUMS.new build/SHA256SUMS
