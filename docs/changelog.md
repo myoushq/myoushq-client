@@ -23,7 +23,7 @@ in [skill.md](https://myoushq.com/skill.md).
 ## v0.8.4
 
 The Go and Rust clients and the desktop app refuse the distrusted emSign
-certificates. 2026-10-27. A security release for three advisories of
+certificates. 2026-10-28. A security release for three advisories of
 2026-10-19 to 2026-10-21; nothing else changes.
 
 - **TLS refuses chains through the distrusted emSign CAs** (Go, Rust and
