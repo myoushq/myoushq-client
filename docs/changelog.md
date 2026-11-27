@@ -7,8 +7,9 @@ in [skill.md](https://myoushq.com/skill.md).
 
 ## v0.8.5
 
-The release with the apps that v0.8.4 lacked. 2026-11-27. v0.8.4's
-apps and its GitHub release never appeared: its release run's Mac job
+The release with the apps that v0.8.4 lacked, and three fixes from
+the daily audit. 2026-11-27. v0.8.4's apps and its GitHub release
+never appeared: its release run's Mac job
 failed twice on a check of the stapled disk image, after the stapling
 itself had succeeded. v0.8.4's packages on PyPI, crates.io and npm and
 its worker image are the same code as its tag and stay; v0.8.5 is
@@ -42,6 +43,11 @@ v0.8.4 plus the items below.
   longer validates the image a second time on its own, the check
   v0.8.4's run failed on twice. `spctl`, Gatekeeper's check of the
   image, stays.
+- **Releasing, the 14-day wait:** `url` 2.5.9 (with `form_urlencoded`
+  1.2.3, which it requires) and `cookie` 0.18.3 came out on 2026-11-20
+  and 2026-11-23: taking them now is the advisory exception
+  (RELEASING.md, "Dependency updates": a published advisory for the
+  version we run). Go 1.27.4 came out on 2026-11-02, past the wait.
 
 ## v0.8.4
 
