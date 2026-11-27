@@ -7,13 +7,26 @@ in [skill.md](https://myoushq.com/skill.md).
 
 ## v0.8.5
 
-The release with the apps that v0.8.4 lacked. 2026-10-30. v0.8.4's
+The release with the apps that v0.8.4 lacked. 2026-11-27. v0.8.4's
 apps and its GitHub release never appeared: its release run's Mac job
 failed twice on a check of the stapled disk image, after the stapling
 itself had succeeded. v0.8.4's packages on PyPI, crates.io and npm and
 its worker image are the same code as its tag and stay; v0.8.5 is
-v0.8.4 plus the two items below.
+v0.8.4 plus the items below.
 
+- **Security fixes from the daily audit** (Go, Rust and the desktop
+  app). GO-2026-6859 in Go's `net/http` (Go 1.27.3, now 1.27.4), the
+  toolchain the Go client and the Go worker inside the apps are built
+  with: a header race in `MaxBytesReader` could crash an HTTP/1
+  server, which the Go client doesn't run, though its HTTP and relay
+  code go through the package's affected functions; the hub is
+  updated separately. RUSTSEC-2026-0592 in `url` (2.5.8, now 2.5.9),
+  in the Rust client and the desktop app: `Url::origin()` overflowed
+  the stack on deeply nested `blob:` URLs, and nothing in either calls
+  it. RUSTSEC-2026-0594 in `cookie` (0.18.2, now 0.18.3), in the
+  desktop app: private cookies could repeat a nonce after a fork, and
+  the app takes `cookie` through Tauri without private cookies, so
+  that code isn't in it.
 - **Messages sent within a millisecond keep their order** (Python, Go,
   Rust and TypeScript). A sender gives each message an `ms` one more
   than its last when the clock hasn't moved on, and takes the rumor's
